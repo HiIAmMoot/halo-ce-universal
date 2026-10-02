@@ -1,0 +1,56 @@
+/*
+TEST_FORMAT.C
+
+The layout the 32-bit game and the 64-bit renderer share. The header checks
+the same offsets at compile time in both compilers; these tests check them
+again at run time so a failure names the field.
+*/
+
+#include "ueb_test.h"
+#include "ue_bridge_format.h"
+
+#include <stddef.h>
+
+static void format_directory_layout(void)
+{
+	UEB_CHECK(sizeof(struct ue_bridge_directory) == 120);
+	UEB_CHECK(offsetof(struct ue_bridge_directory, sequence) == 8);
+	UEB_CHECK(offsetof(struct ue_bridge_directory, game_pid) == 12);
+	UEB_CHECK(offsetof(struct ue_bridge_directory, session_id) == 16);
+	UEB_CHECK(offsetof(struct ue_bridge_directory, section_name) == 24);
+}
+
+static void format_header_layout(void)
+{
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1216);
+	UEB_CHECK(offsetof(struct ue_bridge_header, session_id) == 16);
+	UEB_CHECK(offsetof(struct ue_bridge_header, qpc_frequency) == 24);
+	UEB_CHECK(offsetof(struct ue_bridge_header, tick_ring) == 48);
+	UEB_CHECK(offsetof(struct ue_bridge_header, frame_ring) == 64);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_log_path) == 80);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_heartbeat_qpc) == 600);
+	UEB_CHECK(offsetof(struct ue_bridge_header, load_epoch) == 608);
+	UEB_CHECK(offsetof(struct ue_bridge_header, crash) == 632);
+	UEB_CHECK(offsetof(struct ue_bridge_header, ue_heartbeat_qpc) == 648);
+	UEB_CHECK(offsetof(struct ue_bridge_header, ue_pid) == 656);
+	UEB_CHECK(offsetof(struct ue_bridge_header, ue_dump_done) == 684);
+	UEB_CHECK(offsetof(struct ue_bridge_header, ue_session_dir) == 696);
+	UEB_CHECK(sizeof(struct ue_bridge_header) <= UE_BRIDGE_HEADER_SIZE);
+}
+
+static void format_slot_layout(void)
+{
+	UEB_CHECK(sizeof(struct ue_bridge_slot) == 24);
+	UEB_CHECK(offsetof(struct ue_bridge_slot, id) == 8);
+	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 32);
+	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) <= UE_BRIDGE_SLOT_SIZE);
+	UEB_CHECK(UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * (UE_BRIDGE_TICK_SLOTS + UE_BRIDGE_FRAME_SLOTS) <= UE_BRIDGE_SECTION_SIZE);
+}
+
+const struct ueb_test ueb_format_tests[] =
+{
+	{ "format_directory_layout", format_directory_layout },
+	{ "format_header_layout", format_header_layout },
+	{ "format_slot_layout", format_slot_layout },
+	{ 0, 0 }
+};
