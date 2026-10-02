@@ -30,7 +30,10 @@ volatile struct ue_bridge_slot *ue_bridge_ring_begin_write(volatile uint8_t *bas
 	volatile struct ue_bridge_slot *slot = ring_slot(base, ring, ring->published);
 
 	ueb_store_u32(&slot->sequence, ueb_load_u32(&slot->sequence) + 1u);
-	/* the odd sequence must be visible before any of the payload */
+	/* the odd sequence must be visible before any of the payload. The fence
+	stops the compiler moving payload stores above it; x86 hardware already
+	keeps the order, so no test can detect a removed fence and this comment is
+	the only guard. */
 	ueb_fence();
 	return slot;
 }
@@ -55,6 +58,9 @@ int ue_bridge_slot_try_read(const volatile struct ue_bridge_slot *slot, uint32_t
 	memcpy(out, (const void *)(uintptr_t)slot, size);
 	if (between)
 		between(context);
+	/* stops the compiler moving the copy's loads below the re-check; x86
+	hardware keeps that order, so no test can detect a removed fence and this
+	comment is the only guard */
 	ueb_fence();
 	return ueb_load_u32(&slot->sequence) == before;
 }

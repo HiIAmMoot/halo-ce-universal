@@ -53,18 +53,20 @@ MUTANTS = [
 
 def killed(mutant: Mutant) -> bool:
     path = ue_bridge_tests.ROOT / mutant.path
-    text = path.read_text(encoding="utf-8")
-    if text.count(mutant.original) != 1:
+    # bytes, not text: text mode would rewrite line endings, so restoring would not be byte for byte
+    data = path.read_bytes()
+    original = mutant.original.encode("utf-8")
+    if data.count(original) != 1:
         raise RuntimeError(f"{mutant.path}: {mutant.original!r} must occur exactly once")
     try:
-        path.write_text(text.replace(mutant.original, mutant.mutated), encoding="utf-8")
+        path.write_bytes(data.replace(original, mutant.mutated.encode("utf-8")))
         try:
             exe = ue_bridge_tests.build()
         except subprocess.CalledProcessError:
             return True  # a mutant that doesn't compile is killed by the build
         return subprocess.run([str(exe), mutant.killed_by], capture_output=True).returncode == 1
     finally:
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(data)
 
 
 def main() -> int:

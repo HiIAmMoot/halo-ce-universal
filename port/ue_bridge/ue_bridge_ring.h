@@ -115,12 +115,19 @@ void ue_bridge_ring_end_write(volatile struct ue_bridge_ring_desc *ring, volatil
 
 /* copies min(out_size, slot_size) bytes of the slot into out; 1 when the copy
 is one complete write. between, when set, runs between the copy and the
-re-check (tests use it to change the slot mid-read). */
+re-check (tests use it to change the slot mid-read). out_size must not exceed
+slot_size, or the tail of out is left unwritten. slot must lie inside the
+reader's own mapping. */
 int ue_bridge_slot_try_read(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, void *out, uint32_t out_size,
 	ue_bridge_read_hook between, void *context);
 
 /* the newest complete slot, or the one before it when the newest is being
-rewritten; *published (when set) receives the ring's write count */
+rewritten; *published (when set) receives the ring's write count.
+The descriptor must have passed ue_bridge_ring_valid against the size of the
+reader's own mapping, never a size read from the shared header. A reader that
+does not trust the writer passes its own copy of the validated geometry and
+reads only published live. out_size must not exceed slot_size, or the tail of
+out is left unwritten. */
 enum ue_bridge_read_result ue_bridge_ring_read_newest(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
 	void *out, uint32_t out_size, uint32_t *published);
 
