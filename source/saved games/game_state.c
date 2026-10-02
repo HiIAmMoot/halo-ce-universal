@@ -196,7 +196,8 @@ static game_state_after_load_proc after_load_procs[] =
 	game_state_set_revert_time,
 	player_control_fix_for_loaded_game_state,
 	director_initialize_for_saved_game,
-	scripted_hud_messages_clear
+	scripted_hud_messages_clear,
+	ue_bridge_game_state_loaded
 };
 
 /* ---------- public code */

@@ -36,6 +36,13 @@ void render_interpolation_first_person(short local_player_index, struct real_mat
 	short node_count, struct render_camera const *camera);
 float render_interpolation_game_time_sec(long ticks);
 
+/* the HaloCEUE renderer's bridge (port/linux/src/ue_bridge_game.c) */
+void ue_bridge_game_loading(int loading);
+void ue_bridge_game_tick(long tick);
+void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
+void ue_bridge_game_map_loaded(void);
+void ue_bridge_game_state_loaded(void);
+
 /* the width of the screen the game draws, 480 lines tall: the device's or
 the display's shape, or 640 (port/linux/src/d3d8_gl.c) */
 long halo_screen_width(void);

@@ -1412,6 +1412,7 @@ static void main_new_map(
 	struct game_options *options)
 {
 	input_flush();
+	ue_bridge_game_loading(TRUE);
 	if (game_load(options))
 	{
 		game_initialize_for_new_map();
@@ -1420,6 +1421,7 @@ static void main_new_map(
 	{
 		error(_error_immediate, "game_load() failed.");
 	}
+	ue_bridge_game_loading(FALSE);
 
 	if (!errors_handle())
 	{

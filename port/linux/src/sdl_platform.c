@@ -15,6 +15,7 @@ and the debug keyboard that the game's console reads.
 #include "port_config.h"
 #include "p2p.h"
 #include "xiso.h"
+#include "ue_bridge_platform.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -758,6 +759,7 @@ void platform_pump_events(void)
 	static BOOL looked_at_clipboard;
 	BOOL look_at_clipboard = !looked_at_clipboard;
 
+	ue_bridge_game_pump();
 	if (!platform_window || SDL_GetCurrentThreadID() != platform_event_thread)
 		return;
 	if (exit_ticks == (Uint64)-1)

@@ -384,6 +384,7 @@ void render_interpolation_tick(void)
 	struct object_datum *object;
 	long previous_tick = interpolation_tick++;
 
+	ue_bridge_game_tick(interpolation_tick);
 	if (!halo_interpolation_enabled())
 		return;
 	/* the cameras' corrections a tick on, as the objects' (below) */
@@ -478,6 +479,7 @@ void render_interpolation_reset(void)
 {
 	long index;
 
+	ue_bridge_game_map_loaded();
 	if (interpolated_objects)
 	{
 		for (index = 0; index < MAXIMUM_INTERPOLATED_OBJECTS; index++)
@@ -498,6 +500,7 @@ void render_interpolation_frame_begin(void)
 	interpolation_rendering = halo_interpolation_enabled();
 	interpolation_frame++;
 	interpolation_fraction = game_time_get_tick_fraction();
+	ue_bridge_game_frame_begin(interpolation_frame, interpolation_fraction);
 }
 
 void render_interpolation_frame_end(void)

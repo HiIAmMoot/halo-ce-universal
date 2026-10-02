@@ -31,7 +31,9 @@ SOURCES = [
     BRIDGE / "tests" / "test_format.c",
     BRIDGE / "tests" / "test_ring.c",
     BRIDGE / "tests" / "test_policy.c",
+    ROOT / "port" / "linux" / "src" / "ue_bridge_game.c",
     BRIDGE / "tests" / "test_core.c",
+    BRIDGE / "tests" / "test_game.c",
 ]
 LIBRARIES: list[str] = []
 

@@ -18,6 +18,7 @@ static const struct ueb_test *const suites[] =
 	ueb_ring_tests,
 	ueb_policy_tests,
 	ueb_core_tests,
+	ueb_game_tests,
 	0
 };
 

@@ -1,0 +1,131 @@
+/*
+UE_BRIDGE_GAME.C
+
+The game's use of the UE bridge (ue_bridge.h): started by the first hook when
+config.toml's ue_bridge.enabled is true, fed by the port's tick, frame and map
+functions (render_interpolation.c) and by the game state's after-load procs
+(game_state.c), and stopped at exit.
+*/
+
+#include "port_config.h"
+#include "ue_bridge.h"
+#include "ue_bridge_platform.h"
+#include "../include/halo_port_capacity.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* platform.h's; declared here so the tests can link this file without the platform layer */
+void platform_log(const char *format, ...);
+const char *platform_data_root(void);
+
+static int start_attempted;
+static int started;
+static int exit_handler_registered;
+static char log_path[1024];
+
+static void at_exit(void)
+{
+	ue_bridge_game_shutdown();
+}
+
+static void ensure_started(void)
+{
+	struct ue_bridge_settings settings;
+	struct ue_bridge_watch_config watch;
+	const struct ue_bridge_os *os;
+	const char *on_peer_exit;
+
+	if (start_attempted)
+		return;
+	start_attempted = 1;
+	if (!config_boolean("ue_bridge.enabled"))
+		return;
+	os = ue_bridge_platform_os();
+	if (!os)
+		return;
+	snprintf(log_path, sizeof(log_path), "%s/debug.txt", platform_data_root());
+	settings.enabled = 1;
+	settings.log_path = log_path;
+	settings.max_objects = HALO_PORT_MAXIMUM_OBJECTS_PER_MAP;
+	on_peer_exit = config_string("ue_bridge.on_peer_exit");
+	watch.request_quit = ue_bridge_request_quit;
+	watch.continue_on_peer_exit = strcmp(on_peer_exit, "continue") == 0;
+	if (!watch.continue_on_peer_exit && strcmp(on_peer_exit, "shutdown") != 0)
+		platform_log("ue bridge: ue_bridge.on_peer_exit \"%s\" is neither \"shutdown\" nor \"continue\"; using \"shutdown\"", on_peer_exit);
+	if (!ue_bridge_start(&settings, os))
+		return;
+	ue_bridge_platform_install_crash_hook();
+	if (!ue_bridge_platform_start_watcher(&watch))
+	{
+		platform_log("ue bridge: cannot start the watcher thread; the bridge is off");
+		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+		return;
+	}
+	started = 1;
+	if (!exit_handler_registered)
+	{
+		exit_handler_registered = 1;
+		atexit(at_exit);
+	}
+	platform_log("ue bridge: on, session %016llx", (unsigned long long)ue_bridge_session_id());
+}
+
+void ue_bridge_game_shutdown(void)
+{
+	if (started)
+	{
+		started = 0;
+		ue_bridge_platform_stop_watcher();
+		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	}
+	start_attempted = 0;
+}
+
+/* every main-loop pass (platform_pump_events): menus and pauses included */
+void ue_bridge_game_pump(void)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_heartbeat();
+}
+
+/* around a map load (main_new_map), when the main loop doesn't pass for seconds */
+void ue_bridge_game_loading(int loading)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_set_busy(loading);
+}
+
+void ue_bridge_game_tick(long tick)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_publish_tick((uint64_t)tick);
+}
+
+void ue_bridge_game_frame_begin(long frame, float interpolation_fraction)
+{
+	ensure_started();
+	if (started)
+	{
+		ue_bridge_heartbeat();
+		ue_bridge_publish_frame((uint64_t)frame, interpolation_fraction);
+	}
+}
+
+void ue_bridge_game_map_loaded(void)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_bump_load_epoch();
+}
+
+/* a checkpoint revert or a saved game: game_state.c's after-load procs */
+void ue_bridge_game_state_loaded(void)
+{
+	if (started)
+		ue_bridge_bump_state_epoch();
+}
