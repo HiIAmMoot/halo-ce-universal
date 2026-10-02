@@ -759,9 +759,12 @@ void platform_pump_events(void)
 	static BOOL looked_at_clipboard;
 	BOOL look_at_clipboard = !looked_at_clipboard;
 
-	ue_bridge_game_pump();
 	if (!platform_window || SDL_GetCurrentThreadID() != platform_event_thread)
 		return;
+	/* below the guard: input polling calls this from other threads too, and a
+	heartbeat written there would hide a hung main loop from the renderer and
+	race the bridge's lazy start */
+	ue_bridge_game_pump();
 	if (exit_ticks == (Uint64)-1)
 	{
 		double seconds = config_real("debug.exit_after");
