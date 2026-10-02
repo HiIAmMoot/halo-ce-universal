@@ -26,10 +26,12 @@ BUILD = ROOT / "build" / "ue_bridge_tests"
 SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
     BRIDGE / "ue_bridge_policy.c",
+    ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     BRIDGE / "tests" / "test_main.c",
     BRIDGE / "tests" / "test_format.c",
     BRIDGE / "tests" / "test_ring.c",
     BRIDGE / "tests" / "test_policy.c",
+    BRIDGE / "tests" / "test_core.c",
 ]
 LIBRARIES: list[str] = []
 

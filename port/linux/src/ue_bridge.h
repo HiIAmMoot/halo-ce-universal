@@ -1,0 +1,64 @@
+/*
+UE_BRIDGE.H
+
+The game side of the bridge to the HaloCEUE renderer (port/ue_bridge, and the
+Phase 0 design in the HaloCEUE repository): the bridge section and the
+directory entry, the tick and frame rings, the epochs and the heartbeat.
+ue_bridge_game.c starts it when config.toml's ue_bridge.enabled is true. The
+operating system comes in through a table (ue_bridge_platform.h on the game,
+a fake in port/ue_bridge/tests), so this file has no platform calls.
+*/
+
+#ifndef UE_BRIDGE_H
+#define UE_BRIDGE_H
+
+#include <stdint.h>
+
+#include "../../ue_bridge/ue_bridge_format.h"
+
+struct ue_bridge_os
+{
+	/* maps the named read-write section of size bytes, creating it zero-filled
+	when it doesn't exist (an existing one keeps its contents); NULL on
+	failure. *handle receives what unmap_section takes. */
+	void *(*map_section)(const char *name, uint32_t size, void **handle);
+	void (*unmap_section)(void *view, void *handle);
+	uint64_t (*qpc)(void);
+	uint64_t (*qpc_frequency)(void);
+	uint32_t (*pid)(void);
+	uint64_t (*random64)(void);
+	int (*debugger_present)(void);
+	void (*log)(const char *message);
+	/* the platform's path encoding to UTF-8 (the header's); NULL when paths
+	already are UTF-8 */
+	void (*path_to_utf8)(const char *path, char *utf8, uint32_t capacity);
+};
+
+struct ue_bridge_settings
+{
+	int enabled;
+	/* in the platform's path encoding; NULL for none */
+	const char *log_path;
+	uint32_t max_objects;
+};
+
+/* 1 when the bridge is active (already, or now) */
+int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_bridge_os *os);
+/* publishes stopping (a UE_BRIDGE_STOP_*), withdraws this game's directory
+entry and unmaps; UE keeps reading its own mapping of the section */
+void ue_bridge_stop(uint32_t stopping);
+int ue_bridge_active(void);
+uint64_t ue_bridge_session_id(void);
+/* NULL when inactive */
+volatile struct ue_bridge_header *ue_bridge_header(void);
+
+void ue_bridge_publish_tick(uint64_t tick);
+void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction);
+void ue_bridge_heartbeat(void);
+void ue_bridge_bump_load_epoch(void);
+void ue_bridge_bump_state_epoch(void);
+/* game_busy: 1 while the main loop is legitimately stalled (a map load), so
+the renderer doesn't take the silence for a hang */
+void ue_bridge_set_busy(int busy);
+
+#endif
