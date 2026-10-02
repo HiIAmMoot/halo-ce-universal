@@ -25,9 +25,11 @@ BUILD = ROOT / "build" / "ue_bridge_tests"
 # every source the test binary links; later tasks append theirs
 SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
+    BRIDGE / "ue_bridge_policy.c",
     BRIDGE / "tests" / "test_main.c",
     BRIDGE / "tests" / "test_format.c",
     BRIDGE / "tests" / "test_ring.c",
+    BRIDGE / "tests" / "test_policy.c",
 ]
 LIBRARIES: list[str] = []
 

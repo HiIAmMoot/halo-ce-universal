@@ -16,6 +16,7 @@ static const struct ueb_test *const suites[] =
 {
 	ueb_format_tests,
 	ueb_ring_tests,
+	ueb_policy_tests,
 	0
 };
 
