@@ -78,14 +78,18 @@ MUTANTS = [
            "return UE_BRIDGE_ACTION_PEER_HUNG;",
            "policy_editor_hang_is_hung_editor"),
     Mutant("2", "port/ue_bridge/ue_bridge_policy.c",
-           "if (peer->crashing && peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS)", "if (0)",
+           "if (peer->crashing && (peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS || peer->debugger_attached))", "if (0)",
            "policy_crashing_peer_is_crashing"),
     Mutant("2", "port/ue_bridge/ue_bridge_policy.c",
-           "if (peer->crashing && peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS)", "if (peer->crashing)",
+           "if (peer->crashing && (peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS || peer->debugger_attached))", "if (peer->crashing)",
            "policy_crashing_too_long_is_hung"),
     Mutant("2", "port/ue_bridge/ue_bridge_policy.c",
            "return !continue_on_peer_exit;", "return 1;",
            "policy_shutdown_follows_continue_mode"),
+    Mutant("2", "port/ue_bridge/ue_bridge_policy.c",
+           "if (peer->crashing && (peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS || peer->debugger_attached))",
+           "if (peer->crashing && peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS)",
+           "policy_debugger_suppresses_crashing_too_long"),
 ]
 
 

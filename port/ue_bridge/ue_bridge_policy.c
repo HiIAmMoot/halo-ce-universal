@@ -27,7 +27,7 @@ enum ue_bridge_action ue_bridge_policy_decide(const struct ue_bridge_peer_view *
 			return UE_BRIDGE_ACTION_PEER_CRASHED;
 		return UE_BRIDGE_ACTION_PEER_EXITED;
 	}
-	if (peer->crashing && peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS)
+	if (peer->crashing && (peer->crashing_for_ms <= UE_BRIDGE_CRASHING_LIMIT_MS || peer->debugger_attached))
 		return UE_BRIDGE_ACTION_PEER_CRASHING;
 	if (peer->crashing)
 		return hung_action(peer);

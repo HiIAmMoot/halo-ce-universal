@@ -98,6 +98,19 @@ static void policy_crashing_too_long_is_hung(void)
 	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(101), FREQUENCY) == UE_BRIDGE_ACTION_PEER_HUNG_EDITOR);
 }
 
+static void policy_debugger_suppresses_crashing_too_long(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	/* a breakpoint in the crash hook must not shut the pair down */
+	peer.crashing = 1;
+	peer.crashing_for_ms = UE_BRIDGE_CRASHING_LIMIT_MS + 1;
+	peer.debugger_attached = 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(101), FREQUENCY) == UE_BRIDGE_ACTION_PEER_CRASHING);
+	peer.is_editor = 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(101), FREQUENCY) == UE_BRIDGE_ACTION_PEER_CRASHING);
+}
+
 static void policy_stale_heartbeat_is_hung(void)
 {
 	struct ue_bridge_peer_view peer = alive_peer();
@@ -204,6 +217,7 @@ const struct ueb_test ueb_policy_tests[] =
 	{ "policy_exited_wins_over_a_stale_heartbeat", policy_exited_wins_over_a_stale_heartbeat },
 	{ "policy_crashing_peer_is_crashing", policy_crashing_peer_is_crashing },
 	{ "policy_crashing_too_long_is_hung", policy_crashing_too_long_is_hung },
+	{ "policy_debugger_suppresses_crashing_too_long", policy_debugger_suppresses_crashing_too_long },
 	{ "policy_stale_heartbeat_is_hung", policy_stale_heartbeat_is_hung },
 	{ "policy_stall_below_peer_timeout_is_not_a_hang", policy_stall_below_peer_timeout_is_not_a_hang },
 	{ "policy_debugger_suppresses_hang", policy_debugger_suppresses_hang },
