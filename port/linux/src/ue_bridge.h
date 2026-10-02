@@ -32,6 +32,13 @@ struct ue_bridge_os
 	/* the platform's path encoding to UTF-8 (the header's); NULL when paths
 	already are UTF-8 */
 	void (*path_to_utf8)(const char *path, char *utf8, uint32_t capacity);
+	/* optional (NULL: this is the only bridged game, as in the tests): one
+	machine-wide lock around every write of the directory entry. Several
+	bridged games can run on one machine (system link on one PC), so the
+	entry's seqlock needs a single writer at a time. The entry names the last
+	game that started; an earlier game's stop leaves it alone. */
+	void (*lock_directory)(void);
+	void (*unlock_directory)(void);
 };
 
 struct ue_bridge_settings

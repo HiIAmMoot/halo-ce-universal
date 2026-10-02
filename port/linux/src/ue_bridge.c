@@ -44,6 +44,18 @@ static void copy_string(volatile char *destination, size_t capacity, const char 
 	destination[index] = 0;
 }
 
+static void directory_lock(void)
+{
+	if (bridge.os->lock_directory)
+		bridge.os->lock_directory();
+}
+
+static void directory_unlock(void)
+{
+	if (bridge.os->unlock_directory)
+		bridge.os->unlock_directory();
+}
+
 /* the odd sequence to write the entry under; an entry a dead game left odd
 stays odd until this write ends it even */
 static uint32_t directory_begin_write(volatile struct ue_bridge_directory *directory)
@@ -75,16 +87,18 @@ static void publish_directory(volatile struct ue_bridge_directory *directory, ui
 
 static void withdraw_directory(volatile struct ue_bridge_directory *directory)
 {
-	uint32_t odd;
+	uint32_t sequence = directory_begin_write(directory);
 
-	/* a newer game has written itself in since: its entry stays */
-	if (directory->session_id != bridge.session_id)
-		return;
-	odd = directory_begin_write(directory);
-	directory->game_pid = 0;
-	directory->session_id = 0;
-	directory->section_name[0] = 0;
-	directory_end_write(directory, odd);
+	/* a newer game has written itself in since: its entry stays. Compared
+	inside the lock and the write section, or that game could write in
+	between and lose its entry to this one. */
+	if (directory->session_id == bridge.session_id)
+	{
+		directory->game_pid = 0;
+		directory->session_id = 0;
+		directory->section_name[0] = 0;
+	}
+	directory_end_write(directory, sequence);
 }
 
 int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_bridge_os *os)
@@ -148,7 +162,9 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 		return 0;
 	}
 	/* last: UE finds the section through this entry, so the header above must be complete first */
+	directory_lock();
 	publish_directory((volatile struct ue_bridge_directory *)bridge.directory_view, pid, section_name);
+	directory_unlock();
 	return 1;
 }
 
@@ -160,7 +176,9 @@ void ue_bridge_stop(uint32_t stopping)
 	if (!header)
 		return;
 	ueb_store_u32(&header->game_stopping, stopping);
+	directory_lock();
 	withdraw_directory((volatile struct ue_bridge_directory *)bridge.directory_view);
+	directory_unlock();
 	bridge.os->unmap_section(bridge.directory_view, bridge.directory_handle);
 	bridge.os->unmap_section(section_view, bridge.section_handle);
 	memset(&bridge, 0, sizeof(bridge));
@@ -214,6 +232,8 @@ void ue_bridge_heartbeat(void)
 
 	if (!header)
 		return;
+	/* ueb_store_u64 must stay: a plain 64-bit store tears on i686, and no test
+	can catch that on x86 at run time */
 	ueb_store_u64(&header->game_heartbeat_qpc, bridge.os->qpc());
 	ueb_store_u32(&header->game_debugger_attached, bridge.os->debugger_present() ? 1u : 0u);
 }

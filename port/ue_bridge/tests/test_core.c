@@ -12,6 +12,7 @@ against its unmap.
 #include "ue_bridge_ring.h"
 
 #include <string.h>
+#include <windows.h>
 
 #define FAKE_SECTIONS 4
 
@@ -29,78 +30,13 @@ static uint64_t fake_now;
 static uint64_t fake_random;
 static int fake_debugger;
 static char fake_last_section_name[UE_BRIDGE_NAME_CHARS];
-
-static void *fake_map(const char *name, uint32_t size, void **handle)
-{
-	int index;
-
-	if (fake_fail_name && strstr(name, fake_fail_name))
-		return 0;
-	if (size > sizeof(fake_sections[0].storage))
-		return 0;
-	if (strcmp(name, UE_BRIDGE_DIRECTORY_NAME) != 0)
-		strncpy(fake_last_section_name, name, sizeof(fake_last_section_name) - 1);
-	for (index = 0; index < FAKE_SECTIONS; index++)
-	{
-		if (fake_sections[index].used && strcmp(fake_sections[index].name, name) == 0)
-			break;
-	}
-	if (index == FAKE_SECTIONS)
-	{
-		for (index = 0; index < FAKE_SECTIONS && fake_sections[index].used; index++)
-			;
-		if (index == FAKE_SECTIONS)
-			return 0;
-		fake_sections[index].used = 1;
-		strncpy(fake_sections[index].name, name, sizeof(fake_sections[index].name) - 1);
-		memset(fake_sections[index].storage, 0, sizeof(fake_sections[index].storage));
-	}
-	fake_maps++;
-	*handle = &fake_sections[index];
-	return fake_sections[index].storage;
-}
-
-static void fake_unmap(void *view, void *handle)
-{
-	(void)view;
-	(void)handle;
-	fake_unmaps++;
-}
-
-static uint64_t fake_qpc(void) { return fake_now; }
-static uint64_t fake_frequency(void) { return 10000000ull; }
-static uint32_t fake_pid(void) { return 1234; }
-static uint64_t fake_random64(void) { return fake_random; }
-static int fake_debugger_present(void) { return fake_debugger; }
-static void fake_log(const char *message) { (void)message; }
-
-static const struct ue_bridge_os fake_os =
-{
-	fake_map, fake_unmap, fake_qpc, fake_frequency, fake_pid, fake_random64, fake_debugger_present, fake_log
-};
-
-static void fake_reset(void)
-{
-	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
-	memset(fake_sections, 0, sizeof(fake_sections));
-	fake_maps = 0;
-	fake_unmaps = 0;
-	fake_fail_name = 0;
-	fake_now = 1000;
-	fake_random = 0x1122334455667788ull;
-	fake_debugger = 0;
-	memset(fake_last_section_name, 0, sizeof(fake_last_section_name));
-}
-
-static struct ue_bridge_settings enabled_settings(void)
-{
-	struct ue_bridge_settings settings;
-
-	settings.enabled = 1;
-	settings.log_path = "C:/halo/debug.txt";
-	settings.max_objects = 8192;
-	return settings;
-}
+static int fake_recycle;
+static int fake_directory_maps;
+static int fake_header_complete_at_directory_map;
+static int fake_first_unmap_seen;
+static uint32_t fake_stopping_at_first_unmap;
+static uint64_t fake_session_at_first_unmap;
+static uint32_t fake_sequence_at_first_unmap;
 
 static volatile struct ue_bridge_directory *fake_directory(void)
 {
@@ -124,6 +60,174 @@ static volatile struct ue_bridge_header *fake_bridge_section(void)
 			return (volatile struct ue_bridge_header *)fake_sections[index].storage;
 	}
 	return 0;
+}
+
+/* what UE needs from the header once the directory points at it */
+static int header_is_complete(volatile struct ue_bridge_header *header)
+{
+	return header != 0
+		&& header->magic == UE_BRIDGE_MAGIC
+		&& header->version == UE_BRIDGE_VERSION
+		&& header->header_size == UE_BRIDGE_HEADER_SIZE
+		&& header->section_size == UE_BRIDGE_SECTION_SIZE
+		&& header->session_id != 0
+		&& header->qpc_frequency != 0
+		&& header->game_pid != 0
+		&& header->max_objects != 0
+		&& header->game_hang_timeout_ms != 0
+		&& header->tick_ring.slot_count != 0
+		&& header->frame_ring.slot_count != 0
+		&& header->game_log_path[0] != 0
+		&& header->game_heartbeat_qpc != 0;
+}
+
+static void *fake_map(const char *name, uint32_t size, void **handle)
+{
+	int index;
+
+	if (fake_fail_name && strstr(name, fake_fail_name))
+		return 0;
+	if (size > sizeof(fake_sections[0].storage))
+		return 0;
+	if (strcmp(name, UE_BRIDGE_DIRECTORY_NAME) != 0)
+		strncpy(fake_last_section_name, name, sizeof(fake_last_section_name) - 1);
+	else
+	{
+		fake_directory_maps++;
+		fake_header_complete_at_directory_map = fake_header_complete_at_directory_map && header_is_complete(fake_bridge_section());
+	}
+	for (index = 0; index < FAKE_SECTIONS; index++)
+	{
+		if (fake_sections[index].used && strcmp(fake_sections[index].name, name) == 0)
+			break;
+	}
+	if (index == FAKE_SECTIONS)
+	{
+		/* the stress tests start thousands of games, each with a section of its own: a stopped game's is dead */
+		if (fake_recycle && strcmp(name, UE_BRIDGE_DIRECTORY_NAME) != 0)
+		{
+			for (index = 0; index < FAKE_SECTIONS; index++)
+			{
+				if (strcmp(fake_sections[index].name, UE_BRIDGE_DIRECTORY_NAME) != 0)
+					fake_sections[index].used = 0;
+			}
+		}
+		for (index = 0; index < FAKE_SECTIONS && fake_sections[index].used; index++)
+			;
+		if (index == FAKE_SECTIONS)
+			return 0;
+		fake_sections[index].used = 1;
+		strncpy(fake_sections[index].name, name, sizeof(fake_sections[index].name) - 1);
+		memset(fake_sections[index].storage, 0, sizeof(fake_sections[index].storage));
+	}
+	fake_maps++;
+	*handle = &fake_sections[index];
+	return fake_sections[index].storage;
+}
+
+static void fake_unmap(void *view, void *handle)
+{
+	volatile struct ue_bridge_header *section = fake_bridge_section();
+	volatile struct ue_bridge_directory *directory = fake_directory();
+
+	(void)view;
+	(void)handle;
+	if (!fake_first_unmap_seen && section && directory)
+	{
+		fake_first_unmap_seen = 1;
+		fake_stopping_at_first_unmap = section->game_stopping;
+		fake_session_at_first_unmap = directory->session_id;
+		fake_sequence_at_first_unmap = directory->sequence;
+	}
+	fake_unmaps++;
+}
+
+static uint64_t fake_qpc(void) { return fake_now; }
+static uint64_t fake_frequency(void) { return 10000000ull; }
+static uint32_t fake_pid(void) { return 1234; }
+static uint64_t fake_random64(void) { return fake_random; }
+static int fake_debugger_present(void) { return fake_debugger; }
+static void fake_log(const char *message) { (void)message; }
+
+static const struct ue_bridge_os fake_os =
+{
+	fake_map, fake_unmap, fake_qpc, fake_frequency, fake_pid, fake_random64, fake_debugger_present, fake_log
+};
+
+/* the directory as the lock sees it: an entry written outside the lock shows
+as a change between the lock's two ends and the call that wrote it */
+static int fake_lock_calls;
+static int fake_unlock_calls;
+static int fake_lock_held;
+static int fake_lock_misuse;
+static uint64_t fake_session_at_lock;
+static uint64_t fake_session_at_unlock;
+static uint32_t fake_sequence_at_unlock;
+
+static void fake_lock(void)
+{
+	volatile struct ue_bridge_directory *directory = fake_directory();
+
+	if (fake_lock_held)
+		fake_lock_misuse = 1;
+	fake_lock_held = 1;
+	fake_lock_calls++;
+	fake_session_at_lock = directory ? directory->session_id : 0;
+}
+
+static void fake_unlock(void)
+{
+	volatile struct ue_bridge_directory *directory = fake_directory();
+
+	if (!fake_lock_held)
+		fake_lock_misuse = 1;
+	fake_lock_held = 0;
+	fake_unlock_calls++;
+	fake_session_at_unlock = directory ? directory->session_id : 0;
+	fake_sequence_at_unlock = directory ? directory->sequence : 1;
+}
+
+static const struct ue_bridge_os locking_os =
+{
+	fake_map, fake_unmap, fake_qpc, fake_frequency, fake_pid, fake_random64, fake_debugger_present, fake_log,
+	0, fake_lock, fake_unlock
+};
+
+static void fake_reset(void)
+{
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	memset(fake_sections, 0, sizeof(fake_sections));
+	fake_maps = 0;
+	fake_unmaps = 0;
+	fake_fail_name = 0;
+	fake_now = 1000;
+	fake_random = 0x1122334455667788ull;
+	fake_debugger = 0;
+	memset(fake_last_section_name, 0, sizeof(fake_last_section_name));
+	fake_recycle = 0;
+	fake_directory_maps = 0;
+	fake_header_complete_at_directory_map = 1;
+	fake_first_unmap_seen = 0;
+	fake_stopping_at_first_unmap = 0;
+	fake_session_at_first_unmap = 0;
+	fake_sequence_at_first_unmap = 1;
+	fake_lock_calls = 0;
+	fake_unlock_calls = 0;
+	fake_lock_held = 0;
+	fake_lock_misuse = 0;
+	fake_session_at_lock = 0;
+	fake_session_at_unlock = 0;
+	fake_sequence_at_unlock = 1;
+}
+
+static struct ue_bridge_settings enabled_settings(void)
+{
+	struct ue_bridge_settings settings;
+
+	settings.enabled = 1;
+	settings.log_path = "C:/halo/debug.txt";
+	settings.max_objects = 8192;
+	return settings;
 }
 
 static void core_disabled_maps_nothing(void)
@@ -438,6 +542,182 @@ static void core_second_start_while_active_is_a_no_op(void)
 	UEB_CHECK(fake_maps == 2);
 }
 
+static void core_header_is_complete_when_the_directory_is_mapped(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	UEB_CHECK(fake_directory_maps == 1);
+	UEB_CHECK(fake_header_complete_at_directory_map);
+}
+
+static void core_stop_writes_before_it_unmaps(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	ue_bridge_stop(UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(fake_first_unmap_seen);
+	UEB_CHECK(fake_stopping_at_first_unmap == UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(fake_session_at_first_unmap == 0);
+	UEB_CHECK((fake_sequence_at_first_unmap & 1u) == 0);
+}
+
+static void core_start_and_stop_each_take_the_directory_lock_once(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &locking_os));
+	UEB_CHECK(fake_lock_calls == 1);
+	UEB_CHECK(fake_unlock_calls == 1);
+	/* the entry was written inside the lock, not before it or after it */
+	UEB_CHECK(fake_session_at_lock == 0);
+	UEB_CHECK(fake_session_at_unlock == 0x1122334455667788ull);
+	UEB_CHECK((fake_sequence_at_unlock & 1u) == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	UEB_CHECK(fake_lock_calls == 2);
+	UEB_CHECK(fake_unlock_calls == 2);
+	UEB_CHECK(fake_session_at_lock == 0x1122334455667788ull);
+	UEB_CHECK(fake_session_at_unlock == 0);
+	UEB_CHECK((fake_sequence_at_unlock & 1u) == 0);
+	UEB_CHECK(!fake_lock_misuse);
+}
+
+/* ---------- two-thread stress tests */
+
+#define STRESS_MILLISECONDS 500u
+#define STRESS_ID_QPC(id) ((id) * 3u + 7u)
+
+static volatile LONG stress_stop;
+
+static DWORD WINAPI directory_writer(void *parameter)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	uint64_t round = 0;
+
+	(void)parameter;
+	while (!stress_stop)
+	{
+		fake_random = 0x1000 + round++;
+		ue_bridge_start(&settings, &fake_os);
+		ue_bridge_publish_tick(round);
+		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	}
+	return 0;
+}
+
+/* 1 when the entry read under its seqlock is either empty or names the
+section its own pid and session_id say; *accepted counts completed reads */
+static int directory_read_is_coherent(volatile struct ue_bridge_directory *directory, uint32_t *accepted)
+{
+	uint32_t before = ueb_load_u32(&directory->sequence);
+	uint32_t pid;
+	uint64_t session;
+	char name[UE_BRIDGE_NAME_CHARS];
+	char expected[UE_BRIDGE_NAME_CHARS];
+	uint32_t index;
+
+	if (before & 1u)
+		return 1;
+	pid = directory->game_pid;
+	session = directory->session_id;
+	for (index = 0; index < sizeof(name); index++)
+		name[index] = directory->section_name[index];
+	name[sizeof(name) - 1] = 0;
+	ueb_fence();
+	if (ueb_load_u32(&directory->sequence) != before)
+		return 1;
+	(*accepted)++;
+	if (pid == 0 && session == 0 && name[0] == 0)
+		return 1;
+	snprintf(expected, sizeof(expected), "Local\\HaloCEUE.Bridge.%lu.%016llx", (unsigned long)pid, (unsigned long long)session);
+	return strcmp(name, expected) == 0;
+}
+
+static void core_concurrent_reader_never_sees_a_mixed_directory_entry(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	volatile struct ue_bridge_directory *directory;
+	HANDLE writer;
+	DWORD start;
+	uint32_t accepted = 0;
+	int mixed = 0;
+
+	fake_reset();
+	/* once, so the directory exists before the reader looks at it */
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	directory = fake_directory();
+	UEB_CHECK(directory != 0);
+	fake_recycle = 1;
+	stress_stop = 0;
+	writer = CreateThread(0, 0, directory_writer, 0, 0, 0);
+	UEB_CHECK(writer != 0);
+	start = GetTickCount();
+	while (GetTickCount() - start < STRESS_MILLISECONDS)
+	{
+		if (!directory_read_is_coherent(directory, &accepted))
+			mixed = 1;
+	}
+	InterlockedExchange(&stress_stop, 1);
+	WaitForSingleObject(writer, INFINITE);
+	CloseHandle(writer);
+	UEB_CHECK(accepted > 0);
+	UEB_CHECK(!mixed);
+}
+
+static DWORD WINAPI tick_writer(void *parameter)
+{
+	uint64_t id = 1;
+
+	(void)parameter;
+	while (!stress_stop)
+	{
+		fake_now = STRESS_ID_QPC(id);
+		ue_bridge_publish_tick(id);
+		id++;
+	}
+	return 0;
+}
+
+static void core_concurrent_reader_never_sees_a_tick_without_its_payload(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	volatile struct ue_bridge_header *header;
+	HANDLE writer;
+	DWORD start;
+	uint32_t reads = 0;
+	int mismatched = 0;
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	header = ue_bridge_header();
+	stress_stop = 0;
+	writer = CreateThread(0, 0, tick_writer, 0, 0, 0);
+	UEB_CHECK(writer != 0);
+	start = GetTickCount();
+	while (GetTickCount() - start < STRESS_MILLISECONDS)
+	{
+		struct ue_bridge_slot tick;
+		enum ue_bridge_read_result result = ue_bridge_ring_read_newest((const volatile uint8_t *)header, &header->tick_ring, &tick, sizeof(tick), 0);
+
+		if (result == UE_BRIDGE_READ_NEWEST || result == UE_BRIDGE_READ_PREVIOUS)
+		{
+			reads++;
+			if (tick.publish_qpc != STRESS_ID_QPC(tick.id))
+				mismatched = 1;
+		}
+	}
+	InterlockedExchange(&stress_stop, 1);
+	WaitForSingleObject(writer, INFINITE);
+	CloseHandle(writer);
+	UEB_CHECK(reads > 0);
+	UEB_CHECK(!mismatched);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -461,5 +741,10 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_directory_failure_unmaps_section", core_directory_failure_unmaps_section },
 	{ "core_restart_after_stop", core_restart_after_stop },
 	{ "core_second_start_while_active_is_a_no_op", core_second_start_while_active_is_a_no_op },
+	{ "core_header_is_complete_when_the_directory_is_mapped", core_header_is_complete_when_the_directory_is_mapped },
+	{ "core_stop_writes_before_it_unmaps", core_stop_writes_before_it_unmaps },
+	{ "core_start_and_stop_each_take_the_directory_lock_once", core_start_and_stop_each_take_the_directory_lock_once },
+	{ "core_concurrent_reader_never_sees_a_mixed_directory_entry", core_concurrent_reader_never_sees_a_mixed_directory_entry },
+	{ "core_concurrent_reader_never_sees_a_tick_without_its_payload", core_concurrent_reader_never_sees_a_tick_without_its_payload },
 	{ 0, 0 }
 };
