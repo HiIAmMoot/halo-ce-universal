@@ -6,9 +6,10 @@ window sends (sdl_platform.c), so the game leaves through its normal exit and
 its exit handlers.
 */
 
-#include <SDL3/SDL.h>
-
 #include "ue_bridge_platform.h"
+
+#ifndef HALO_ANDROID
+#include <SDL3/SDL.h>
 
 void ue_bridge_request_quit(void)
 {
@@ -18,3 +19,11 @@ void ue_bridge_request_quit(void)
 	event.type = SDL_EVENT_QUIT;
 	SDL_PushEvent(&event);
 }
+#else
+/* the Android guest's SDL (port/android/guest/runtime/guest_sdl.c) has no
+SDL_PushEvent, and the bridge never starts there (the null platform), so
+nothing calls this */
+void ue_bridge_request_quit(void)
+{
+}
+#endif

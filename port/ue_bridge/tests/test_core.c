@@ -441,6 +441,20 @@ static void core_busy_flag_round_trips(void)
 	UEB_CHECK(ue_bridge_header()->game_busy == 0);
 }
 
+static void core_publish_stopping_sets_flag_only_when_active(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	ue_bridge_publish_stopping(UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(ue_bridge_header() == 0);
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	UEB_CHECK(ue_bridge_header()->game_stopping == UE_BRIDGE_STOP_NONE);
+	ue_bridge_publish_stopping(UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(ue_bridge_header()->game_stopping == UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(ue_bridge_active());
+}
+
 static void core_heartbeat_tracks_qpc_and_debugger(void)
 {
 	struct ue_bridge_settings settings = enabled_settings();
@@ -734,6 +748,7 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_publish_tick_and_frame", core_publish_tick_and_frame },
 	{ "core_epochs_bump", core_epochs_bump },
 	{ "core_busy_flag_round_trips", core_busy_flag_round_trips },
+	{ "core_publish_stopping_sets_flag_only_when_active", core_publish_stopping_sets_flag_only_when_active },
 	{ "core_heartbeat_tracks_qpc_and_debugger", core_heartbeat_tracks_qpc_and_debugger },
 	{ "core_stop_clears_own_directory_entry_and_unmaps", core_stop_clears_own_directory_entry_and_unmaps },
 	{ "core_stop_keeps_a_newer_games_directory_entry", core_stop_keeps_a_newer_games_directory_entry },

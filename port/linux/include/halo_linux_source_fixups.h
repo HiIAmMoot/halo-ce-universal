@@ -42,6 +42,7 @@ void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_state_loaded(void);
+void ue_bridge_game_halted(void);
 
 /* the width of the screen the game draws, 480 lines tall: the device's or
 the display's shape, or 640 (port/linux/src/d3d8_gl.c) */

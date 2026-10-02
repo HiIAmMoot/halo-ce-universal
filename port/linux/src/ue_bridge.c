@@ -168,6 +168,14 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 	return 1;
 }
 
+void ue_bridge_publish_stopping(uint32_t stopping)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (header)
+		ueb_store_u32(&header->game_stopping, stopping);
+}
+
 void ue_bridge_stop(uint32_t stopping)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
@@ -175,7 +183,7 @@ void ue_bridge_stop(uint32_t stopping)
 
 	if (!header)
 		return;
-	ueb_store_u32(&header->game_stopping, stopping);
+	ue_bridge_publish_stopping(stopping);
 	directory_lock();
 	withdraw_directory((volatile struct ue_bridge_directory *)bridge.directory_view);
 	directory_unlock();

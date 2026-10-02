@@ -37,6 +37,9 @@ void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_state_loaded(void);
+/* the game halted on a fatal error (halt_and_catch_fire) and still presents
+frames: stops the heartbeat and publishes a crash */
+void ue_bridge_game_halted(void);
 /* stops the bridge and the watcher (the exit handler calls it) */
 void ue_bridge_game_shutdown(void);
 

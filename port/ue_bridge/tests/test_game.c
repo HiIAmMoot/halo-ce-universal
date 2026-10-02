@@ -19,6 +19,7 @@ void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_state_loaded(void);
 void ue_bridge_game_shutdown(void);
+void ue_bridge_game_halted(void);
 
 /* ---------- the settings and the platform layer the adapter calls */
 
@@ -280,6 +281,47 @@ static void game_shutdown_stops_watcher_and_bridge(void)
 	UEB_CHECK(watcher_stops == 1);
 }
 
+static void game_halted_stops_heartbeat_and_publishes_crash(void)
+{
+	volatile struct ue_bridge_header *header;
+
+	game_reset();
+	game_now = 300;
+	ue_bridge_game_pump();
+	ue_bridge_game_loading(1);
+	header = section_header();
+	UEB_CHECK(header->game_busy == 1);
+	ue_bridge_game_halted();
+	UEB_CHECK(header->game_busy == 0);
+	UEB_CHECK(header->game_stopping == UE_BRIDGE_STOP_CRASH);
+	UEB_CHECK(header->game_heartbeat_qpc == 300);
+	game_now = 800;
+	ue_bridge_game_pump();
+	ue_bridge_game_frame_begin(2, 0.5f);
+	UEB_CHECK(header->game_heartbeat_qpc == 300);
+}
+
+static void game_halted_before_start_does_nothing(void)
+{
+	game_reset();
+	ue_bridge_game_halted();
+	UEB_CHECK(platform_os_requests == 0);
+	UEB_CHECK(game_maps == 0);
+}
+
+static void game_shutdown_after_halt_beats_again_on_restart(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_halted();
+	ue_bridge_game_shutdown();
+	game_now = 900;
+	ue_bridge_game_pump();
+	game_now = 1000;
+	ue_bridge_game_pump();
+	UEB_CHECK(section_header()->game_heartbeat_qpc == 1000);
+}
+
 const struct ueb_test ueb_game_tests[] =
 {
 	{ "game_disabled_starts_nothing", game_disabled_starts_nothing },
@@ -294,5 +336,8 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_loading_sets_and_clears_busy", game_loading_sets_and_clears_busy },
 	{ "game_state_loaded_before_start_does_nothing", game_state_loaded_before_start_does_nothing },
 	{ "game_shutdown_stops_watcher_and_bridge", game_shutdown_stops_watcher_and_bridge },
+	{ "game_halted_stops_heartbeat_and_publishes_crash", game_halted_stops_heartbeat_and_publishes_crash },
+	{ "game_halted_before_start_does_nothing", game_halted_before_start_does_nothing },
+	{ "game_shutdown_after_halt_beats_again_on_restart", game_shutdown_after_halt_beats_again_on_restart },
 	{ 0, 0 }
 };

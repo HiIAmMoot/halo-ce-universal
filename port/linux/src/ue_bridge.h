@@ -67,5 +67,8 @@ void ue_bridge_bump_state_epoch(void);
 /* game_busy: 1 while the main loop is legitimately stalled (a map load), so
 the renderer doesn't take the silence for a hang */
 void ue_bridge_set_busy(int busy);
+/* game_stopping (a UE_BRIDGE_STOP_*) while the bridge stays mapped: the game
+is dying or halted but its process lives on, so ue_bridge_stop isn't called */
+void ue_bridge_publish_stopping(uint32_t stopping);
 
 #endif

@@ -22,6 +22,9 @@ const char *platform_data_root(void);
 
 static int start_attempted;
 static int started;
+/* a halted game keeps presenting frames, and so keeps pumping; its heartbeat
+must go stale so the renderer sees it is dead */
+static int halted;
 static int exit_handler_registered;
 static char log_path[1024];
 
@@ -77,6 +80,7 @@ void ue_bridge_game_shutdown(void)
 	if (started)
 	{
 		started = 0;
+		halted = 0;
 		ue_bridge_platform_stop_watcher();
 		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 	}
@@ -87,7 +91,7 @@ void ue_bridge_game_shutdown(void)
 void ue_bridge_game_pump(void)
 {
 	ensure_started();
-	if (started)
+	if (started && !halted)
 		ue_bridge_heartbeat();
 }
 
@@ -111,7 +115,8 @@ void ue_bridge_game_frame_begin(long frame, float interpolation_fraction)
 	ensure_started();
 	if (started)
 	{
-		ue_bridge_heartbeat();
+		if (!halted)
+			ue_bridge_heartbeat();
 		ue_bridge_publish_frame((uint64_t)frame, interpolation_fraction);
 	}
 }
@@ -121,6 +126,17 @@ void ue_bridge_game_map_loaded(void)
 	ensure_started();
 	if (started)
 		ue_bridge_bump_load_epoch();
+}
+
+/* halt_and_catch_fire (main.c): the busy flag would otherwise excuse the
+silence for ever after a failed load */
+void ue_bridge_game_halted(void)
+{
+	if (!started || halted)
+		return;
+	halted = 1;
+	ue_bridge_set_busy(0);
+	ue_bridge_publish_stopping(UE_BRIDGE_STOP_CRASH);
 }
 
 /* a checkpoint revert or a saved game: game_state.c's after-load procs */

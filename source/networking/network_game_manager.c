@@ -697,6 +697,7 @@ boolean network_game_create_game_objects(
 			break;
 	}
 
+	ue_bridge_game_loading(TRUE);
 	game_precache_new_map(options.map_name, TRUE);
 	main_menu_unload();
 
@@ -736,6 +737,7 @@ boolean network_game_create_game_objects(
 	{
 		error(0, "game_load() failed.");
 	}
+	ue_bridge_game_loading(FALSE);
 
 	return game->local_data.game_objects_loaded;
 }

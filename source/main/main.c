@@ -2846,6 +2846,9 @@ void halt_and_catch_fire(
 	struct rasterizer_frame_begin_parameters frame_parameters;
 	struct rasterizer_window_begin_parameters window_parameters;
 
+	/* the halted loop keeps presenting; the renderer must see a stale
+	heartbeat, dump the game and end it */
+	ue_bridge_game_halted();
 	if (!global_screenshot_count.halt_recursion_lock)
 	{
 		scenario = global_scenario_try_and_get();
