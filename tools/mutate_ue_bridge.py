@@ -194,13 +194,13 @@ MUTANTS = [
            "if (ue_bridge_policy_shuts_down(action, watch_config.continue_on_peer_exit))", "if (1)",
            "pytest:test_continue_mode_keeps_game_running"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
-           "GetTickCount() - start < UE_BRIDGE_DUMP_WAIT_MS", "1",
+           "GetTickCount() - start < UE_BRIDGE_DUMP_WAIT_MS", "(GetTickCount() - start < UE_BRIDGE_DUMP_WAIT_MS || 1)",
            "pytest:test_crash_wait_is_capped_when_ue_ignores_it"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
-           "previous_filter = SetUnhandledExceptionFilter(bridge_crash_filter);", ";",
+           "previous_filter = SetUnhandledExceptionFilter(bridge_crash_filter);", "(void)bridge_crash_filter;",
            "pytest:test_crash_self_dumps_when_no_ue"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
-           "write_self_dump(exception, header);", ";",
+           "write_self_dump(dump_exception, dump_header, dump_crashing_thread);", ";",
            "pytest:test_crash_self_dumps_when_no_ue"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "view->debugger_attached = ueb_load_u32(&header->ue_debugger_attached) != 0;", "view->debugger_attached = 0;",
@@ -218,7 +218,7 @@ MUTANTS = [
            "view->busy = ueb_load_u32(&header->ue_busy) != 0;", "view->busy = 0;",
            "pytest:test_no_hang_action_while_ue_busy"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
-           "write_header_snapshot(directory, header);", ";",
+           "write_header_snapshot(directory, header);", "(void)write_header_snapshot;",
            "pytest:test_game_report_carries_the_header_and_ues_crash_folder"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "result = WAIT_TIMEOUT;",
@@ -235,10 +235,75 @@ MUTANTS = [
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "DWORD length = GetFullPathNameA(path, sizeof(full), full, NULL);", "DWORD length = (strcpy(full, path), (DWORD)strlen(path));",
            "pytest:test_published_log_path_is_made_absolute"),
+    Mutant("5", "port/ue_bridge/ue_bridge_policy.c",
+           "return now_ms - clock->since_ms;", "return now_ms > clock->since_ms ? now_ms - clock->since_ms : 0;",
+           "policy_crash_clock_is_wrap_safe"),
+    Mutant("5", "port/ue_bridge/ue_bridge_policy.c",
+           "clock->since_ms = now_ms;", "clock->since_ms = now_ms | 1u;",
+           "policy_crash_clock_first_sighting_at_an_even_time_is_zero"),
+    Mutant("5", "port/ue_bridge/ue_bridge_policy.c",
+           "clock->active = 0;", ";",
+           "policy_crash_clock_resets_when_crashing_stops"),
+    Mutant("5", "port/ue_bridge/ue_bridge_policy.c",
+           "clock->active = 1;", ";",
+           "policy_crash_clock_elapsed_time_grows"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "result = previous_filter ? previous_filter(exception) : EXCEPTION_CONTINUE_SEARCH;", "result = EXCEPTION_CONTINUE_SEARCH; (void)previous_filter;",
+           "pytest:test_crash_self_dumps_when_no_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "TerminateProcess(GetCurrentProcess(), code);", ";",
+           "pytest:test_crash_self_dumps_when_no_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "SetThreadStackGuarantee(&guarantee);", "dump_thread = NULL; (void)guarantee;",
+           "pytest:test_stack_overflow_still_writes_the_self_dump"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "return;",
+           "pytest:test_two_games_are_never_inside_the_directory_lock_together"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "ReleaseMutex(directory_mutex);", ";",
+           "pytest:test_a_second_game_starts_without_waiting_for_a_live_first_game"),
 ]
 
 
-def killed(mutant: Mutant) -> bool:
+PYTEST_ENV = {**os.environ,
+              # a plugin installed in the user's environment (web3's) crashes pytest on start
+              "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+
+KILLED, SURVIVED, INVALID = "killed", "survived", "invalid"
+
+
+def run_pytest(test: str) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run([sys.executable, "-m", "pytest", "tools/test_ue_bridge.py", "-q", "-x", "-k", test],
+                              cwd=ue_bridge_tests.ROOT, capture_output=True, text=True, env=PYTEST_ENV, timeout=300)
+    except subprocess.TimeoutExpired as expired:
+        # neither a pass nor a failure: reported as an invalid run
+        return subprocess.CompletedProcess(expired.cmd, -1, "", "timed out")
+
+
+def verify_clean_tree(mutants: list[Mutant]) -> None:
+    """every pytest-named test must pass on the unmutated tree, or a failure under a mutant proves nothing"""
+    for test in sorted({m.killed_by[len("pytest:"):] for m in mutants if m.killed_by.startswith("pytest:")}):
+        result = run_pytest(test)
+        if result.returncode != 0 or "passed" not in result.stdout:
+            raise SystemExit(f"{test} does not pass on the clean tree (exit {result.returncode}); not mutating:\n{result.stdout[-2000:]}")
+
+
+def judge(mutant: Mutant) -> str:
+    """killed only by a real test failure: exit 1 with 'failed' in the output. A collection or setup
+    error, 'no tests ran' (exit 5) and a timeout say nothing about the test."""
+    if mutant.killed_by.startswith("pytest:"):
+        result = run_pytest(mutant.killed_by[len("pytest:"):])
+        return KILLED if result.returncode == 1 and " failed" in result.stdout else (SURVIVED if result.returncode == 0 else INVALID)
+    try:
+        exe = ue_bridge_tests.build()
+    except subprocess.CalledProcessError:
+        return KILLED  # a mutant that doesn't compile is killed by the build
+    result = subprocess.run([str(exe), mutant.killed_by], capture_output=True)
+    return KILLED if result.returncode == 1 else (SURVIVED if result.returncode == 0 else INVALID)
+
+
+def outcome(mutant: Mutant) -> str:
     path = ue_bridge_tests.ROOT / mutant.path
     # bytes, not text: text mode would rewrite line endings, so restoring would not be byte for byte
     data = path.read_bytes()
@@ -247,27 +312,29 @@ def killed(mutant: Mutant) -> bool:
         raise RuntimeError(f"{mutant.path}: {mutant.original!r} must occur exactly once")
     try:
         path.write_bytes(data.replace(original, mutant.mutated.encode("utf-8")))
-        if mutant.killed_by.startswith("pytest:"):
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", "tools/test_ue_bridge.py", "-q", "-x", "-k", mutant.killed_by[len("pytest:"):]],
-                cwd=ue_bridge_tests.ROOT, capture_output=True, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
-            return result.returncode != 0
-        try:
-            exe = ue_bridge_tests.build()
-        except subprocess.CalledProcessError:
-            return True  # a mutant that doesn't compile is killed by the build
-        return subprocess.run([str(exe), mutant.killed_by], capture_output=True).returncode == 1
+        return judge(mutant)
     finally:
         path.write_bytes(data)
 
 
 def main() -> int:
     task = sys.argv[1] if len(sys.argv) > 1 else None
-    survivors = [m for m in MUTANTS if (task is None or m.task == task) and not killed(m)]
+    selected = [m for m in MUTANTS if task is None or m.task == task]
+    verify_clean_tree(selected)
+    survivors = []
+    invalid = []
+    for mutant in selected:
+        result = outcome(mutant)
+        if result == SURVIVED:
+            survivors.append(mutant)
+        elif result == INVALID:
+            invalid.append(mutant)
     for m in survivors:
         print(f"SURVIVED task {m.task}: {m.path}: {m.original!r} -> {m.mutated!r} ({m.killed_by} still passes)")
-    print(f"{len(survivors)} survivor(s)")
-    return 1 if survivors else 0
+    for m in invalid:
+        print(f"INVALID task {m.task}: {m.path}: {m.original!r} -> {m.mutated!r} ({m.killed_by} neither passed nor failed)")
+    print(f"{len(survivors)} survivor(s), {len(invalid)} invalid run(s)")
+    return 1 if survivors or invalid else 0
 
 
 if __name__ == "__main__":

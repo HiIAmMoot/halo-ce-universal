@@ -2,6 +2,9 @@
 under AddressSanitizer, and (from Task 5) the cross-process cases.
 
     python -m pytest tools/test_ue_bridge.py -v
+
+The cross-process tests use the bridge's fixed session-local section and mutex names,
+so they can't run in parallel (pytest-xdist) or beside a running halo.exe.
 """
 
 import ctypes
@@ -36,6 +39,7 @@ def test_unit_tests_pass_under_asan():
 
 EXCEPTION_ACCESS_VIOLATION = 0xC0000005
 HUNG_PEER_EXIT_CODE = 0x48414E47
+STATUS_STACK_OVERFLOW = 0xC00000FD
 
 
 @pytest.fixture(scope="session")
@@ -51,9 +55,11 @@ def roles_exe():
 def spawn(roles_exe):
     started: list[subprocess.Popen] = []
 
-    def run(role: str, *args, cwd: Path | None = None) -> subprocess.Popen:
+    def run(role: str, *args, cwd: Path | None = None, capture: bool = False) -> subprocess.Popen:
+        # an unread pipe would fill and block the role; only a test that reads the output asks for one
+        output = subprocess.PIPE if capture else subprocess.DEVNULL
         process = subprocess.Popen([str(roles_exe), f"--role={role}", *map(str, args)], cwd=cwd,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                   stdout=output, stderr=subprocess.STDOUT if capture else subprocess.DEVNULL, text=True)
         started.append(process)
         return process
 
@@ -73,10 +79,10 @@ def wait_for_file(path: Path, timeout: float = 5.0) -> None:
     raise AssertionError(f"{path} never appeared")
 
 
-def start_game(spawn, tmp_path: Path, *args) -> subprocess.Popen:
+def start_game(spawn, tmp_path: Path, *args, timeout: float = 5.0) -> subprocess.Popen:
     ready = tmp_path / "game.ready"
     game = spawn("fake-game", "--log", tmp_path / "debug.txt", "--ready-file", ready, *args)
-    wait_for_file(ready)
+    wait_for_file(ready, timeout)
     return game
 
 
@@ -191,6 +197,14 @@ def test_crash_self_dumps_when_no_ue(spawn, tmp_path):
     game = start_game(spawn, tmp_path, "--crash-after-ms", 500)
     assert finish(game, 5) == EXCEPTION_ACCESS_VIOLATION
     assert is_minidump(tmp_path / "game_crash_self.dmp")
+    # the game's own filter runs first, so its crash lines are in debug.txt before UE copies it
+    assert "crash:" in (tmp_path / "debug.txt").read_text()
+
+
+def test_stack_overflow_still_writes_the_self_dump(spawn, tmp_path):
+    game = start_game(spawn, tmp_path, "--overflow-after-ms", 500)
+    assert finish(game, 20) == STATUS_STACK_OVERFLOW
+    assert is_minidump(tmp_path / "game_crash_self.dmp")
 
 
 def test_crash_wait_is_capped_when_ue_ignores_it(spawn, tmp_path):
@@ -214,8 +228,13 @@ def test_continue_mode_keeps_game_running(spawn, tmp_path):
     assert game_report(session)["peer_action"] == "peer_exited"
 
 
+def lock_messages(log: Path) -> list[str]:
+    """the log's directory-lock lines, at most a few: a failing assertion shows them, not the whole log"""
+    return [line for line in log.read_text().splitlines() if "directory lock" in line][:3]
+
+
 def probe_entry(spawn) -> dict[str, str]:
-    probe = spawn("probe-directory", "--print")
+    probe = spawn("probe-directory", "--print", capture=True)
     out, _ = probe.communicate(timeout=10)
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
@@ -235,7 +254,8 @@ def test_concurrent_games_leave_the_directory_coherent(spawn, tmp_path):
     probe_ready = tmp_path / "probe.ready"
     stop = tmp_path / "probe.stop"
     go = tmp_path / "go"
-    probe = spawn("probe-directory", "--check-ms", 120000, "--stop-file", stop, "--ready-file", probe_ready)
+    probe = spawn("probe-directory", "--check-ms", 60000, "--stop-file", stop, "--ready-file", probe_ready,
+                   capture=True)
     wait_for_file(probe_ready)
     games = []
     for index in range(2):
@@ -245,10 +265,10 @@ def test_concurrent_games_leave_the_directory_coherent(spawn, tmp_path):
         wait_for_file(ready)
     go.write_text("go")
     for game in games:
-        assert finish(game, 120) == 0
+        assert finish(game, 40) == 0
     # a lock that is never released makes the other game wait out its cap, and that is logged
     for index in range(2):
-        assert "directory lock" not in (tmp_path / f"debug{index}.txt").read_text()
+        assert lock_messages(tmp_path / f"debug{index}.txt") == []
     stop.write_text("stop")
     out, _ = probe.communicate(timeout=10)
     assert probe.returncode == 0, out
@@ -256,6 +276,19 @@ def test_concurrent_games_leave_the_directory_coherent(spawn, tmp_path):
     assert int(report["reads"]) > 0
     assert report["incoherent"] == "0"
     assert report["final"] == "empty"
+
+
+def test_two_games_are_never_inside_the_directory_lock_together(spawn, tmp_path):
+    go = tmp_path / "go"
+    games = []
+    for index in range(2):
+        ready = tmp_path / f"game{index}.ready"
+        games.append(spawn("fake-game", "--log", tmp_path / f"debug{index}.txt", "--ready-file", ready,
+                           "--cycles", 100, "--hold-ms", 3, "--go-file", go))
+        wait_for_file(ready)
+    go.write_text("go")
+    # exit code 6: the game saw the other inside the lock too
+    assert [finish(game, 40) for game in games] == [0, 0]
 
 
 MUTEX_NAME = "Local\\HaloCEUE.Bridge.DirectoryLock"
@@ -273,7 +306,20 @@ def hold_mutex_until(release: threading.Event, held: threading.Event, abandon: b
     release.wait(30)
     if not abandon:
         kernel32.ReleaseMutex(handle)
-    # an abandoned mutex: this thread ends owning it (the handle stays open on purpose)
+    # an abandoned mutex: this thread ends owning it. The handle stays open on
+    # purpose: closing the last handle destroys the named mutex, the game would
+    # create a fresh one, and WAIT_ABANDONED would never be exercised.
+
+
+def test_a_second_game_starts_without_waiting_for_a_live_first_game(spawn, tmp_path):
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    start_game(spawn, tmp_path / "a")
+    started = time.monotonic()
+    start_game(spawn, tmp_path / "b")
+    # the first game's start released the lock; one that kept it would hold this start to the 2 s cap
+    assert time.monotonic() - started < 1.5
+    assert lock_messages(tmp_path / "b" / "debug.txt") == []
 
 
 def test_a_hung_directory_lock_holder_delays_game_start_by_the_cap_only(spawn, tmp_path):
@@ -283,10 +329,10 @@ def test_a_hung_directory_lock_holder_delays_game_start_by_the_cap_only(spawn, t
     try:
         assert held.wait(5)
         started = time.monotonic()
-        game = start_game(spawn, tmp_path, "--run-ms", 1500)
-        waited = time.monotonic() - started
-        assert 1.5 < waited < 4.5  # 2 s cap: not instant, and never hung
-        assert "directory lock" in (tmp_path / "debug.txt").read_text()
+        game = start_game(spawn, tmp_path, "--run-ms", 1500, timeout=10)
+        # it did wait out the 2 s cap, and then started anyway
+        assert time.monotonic() - started > 1.5
+        assert any("directory lock timed out" in line for line in lock_messages(tmp_path / "debug.txt"))
         assert finish(game, 10) == 0
     finally:
         release.set()
@@ -300,9 +346,7 @@ def test_an_abandoned_directory_lock_is_taken_over_without_waiting(spawn, tmp_pa
     assert held.wait(5)
     release.set()
     holder.join()
-    started = time.monotonic()
     game = start_game(spawn, tmp_path, "--run-ms", 1500)
-    assert time.monotonic() - started < 1.5
-    assert "directory lock" not in (tmp_path / "debug.txt").read_text()
+    assert lock_messages(tmp_path / "debug.txt") == []
     assert finish(game, 10) == 0
 

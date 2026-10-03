@@ -49,6 +49,22 @@ int ue_bridge_policy_shuts_down(enum ue_bridge_action action, int continue_on_pe
 	return !continue_on_peer_exit;
 }
 
+uint32_t ue_bridge_crashing_for_ms(struct ue_bridge_crash_clock *clock, int crashing, uint32_t now_ms)
+{
+	if (!crashing)
+	{
+		clock->active = 0;
+		return 0;
+	}
+	if (!clock->active)
+	{
+		clock->active = 1;
+		clock->since_ms = now_ms;
+		return 0;
+	}
+	return now_ms - clock->since_ms;
+}
+
 const char *ue_bridge_action_name(enum ue_bridge_action action)
 {
 	switch (action)

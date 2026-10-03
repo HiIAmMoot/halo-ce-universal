@@ -207,6 +207,45 @@ static void policy_action_names(void)
 	UEB_CHECK(strcmp(ue_bridge_action_name((enum ue_bridge_action)99), "unknown") == 0);
 }
 
+static void policy_crash_clock_first_sighting_at_an_even_time_is_zero(void)
+{
+	struct ue_bridge_crash_clock clock;
+
+	memset(&clock, 0, sizeof(clock));
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 1000u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 1000u) == 0);
+}
+
+static void policy_crash_clock_elapsed_time_grows(void)
+{
+	struct ue_bridge_crash_clock clock;
+
+	memset(&clock, 0, sizeof(clock));
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 5000u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 5250u) == 250u);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 8000u) == 3000u);
+}
+
+static void policy_crash_clock_resets_when_crashing_stops(void)
+{
+	struct ue_bridge_crash_clock clock;
+
+	memset(&clock, 0, sizeof(clock));
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 5000u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 0, 6000u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 7000u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 7100u) == 100u);
+}
+
+static void policy_crash_clock_is_wrap_safe(void)
+{
+	struct ue_bridge_crash_clock clock;
+
+	memset(&clock, 0, sizeof(clock));
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 0xFFFFFF00u) == 0);
+	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 0x00000100u) == 0x200u);
+}
+
 const struct ueb_test ueb_policy_tests[] =
 {
 	{ "policy_alive_and_fresh_is_none", policy_alive_and_fresh_is_none },
@@ -229,5 +268,9 @@ const struct ueb_test ueb_policy_tests[] =
 	{ "policy_shutdown_follows_continue_mode", policy_shutdown_follows_continue_mode },
 	{ "policy_exit_code_classification", policy_exit_code_classification },
 	{ "policy_action_names", policy_action_names },
+	{ "policy_crash_clock_first_sighting_at_an_even_time_is_zero", policy_crash_clock_first_sighting_at_an_even_time_is_zero },
+	{ "policy_crash_clock_elapsed_time_grows", policy_crash_clock_elapsed_time_grows },
+	{ "policy_crash_clock_resets_when_crashing_stops", policy_crash_clock_resets_when_crashing_stops },
+	{ "policy_crash_clock_is_wrap_safe", policy_crash_clock_is_wrap_safe },
 	{ 0, 0 }
 };

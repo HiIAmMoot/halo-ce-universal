@@ -57,6 +57,20 @@ enum ue_bridge_action ue_bridge_policy_decide(const struct ue_bridge_peer_view *
 /* 1 when the survivor shuts itself down after acting on action */
 int ue_bridge_policy_shuts_down(enum ue_bridge_action action, int continue_on_peer_exit);
 
+/* How long a watcher has seen its peer crashing (ue_bridge_peer_view.crashing_for_ms).
+Zero-initialised to start. Takes one reading of the clock per call: a caller
+that reads it twice, once to stamp and once to subtract, can see the later
+reading come out behind the stamp. Wrap-safe, for a 32-bit millisecond tick. */
+struct ue_bridge_crash_clock
+{
+	int active;
+	uint32_t since_ms;
+};
+
+/* 0 while the peer is not crashing (and resets the clock), and on the first
+sighting; then the milliseconds since it */
+uint32_t ue_bridge_crashing_for_ms(struct ue_bridge_crash_clock *clock, int crashing, uint32_t now_ms);
+
 /* 1 for an NTSTATUS error code (0xC0000000 and above): an unhandled exception */
 int ue_bridge_exit_code_is_crash(uint32_t exit_code);
 

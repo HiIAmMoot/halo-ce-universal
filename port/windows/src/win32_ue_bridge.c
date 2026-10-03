@@ -177,6 +177,12 @@ static void header_string(const volatile char *field, char *text, size_t capacit
 	text[index] = 0;
 }
 
+/* UE publishes ue_attached after its session folder, so the folder is only read once it is set */
+static int ue_session_published(volatile struct ue_bridge_header *header)
+{
+	return ueb_load_u32(&header->ue_attached) != 0 && header->ue_session_dir[0] != 0;
+}
+
 /* where the game's files go: UE's session folder, or the folder of debug.txt when no UE attached */
 static void report_directory(volatile struct ue_bridge_header *header, char *directory, size_t capacity)
 {
@@ -186,7 +192,9 @@ static void report_directory(volatile struct ue_bridge_header *header, char *dir
 	const char *end;
 	size_t length;
 
-	header_string(header->ue_session_dir, directory, capacity);
+	directory[0] = 0;
+	if (ue_session_published(header))
+		header_string(header->ue_session_dir, directory, capacity);
 	if (directory[0])
 		return;
 	header_string(header->game_log_path, log_path, sizeof(log_path));
@@ -246,10 +254,20 @@ static void write_header_snapshot(const char *directory, volatile struct ue_brid
 	CloseHandle(file);
 }
 
-static uint64_t newest_id(volatile struct ue_bridge_header *header, volatile struct ue_bridge_ring_desc *ring)
+/* UE can write the header, so the ring's geometry comes from the format's
+constants and only its write count is read live (ue_bridge_ring_read_newest) */
+static uint64_t newest_id(volatile struct ue_bridge_header *header, volatile struct ue_bridge_ring_desc *live,
+	uint32_t offset, uint32_t slot_count)
 {
 	struct ue_bridge_slot slot;
-	enum ue_bridge_read_result result = ue_bridge_ring_read_newest((const volatile uint8_t *)header, ring, &slot, sizeof(slot), NULL);
+	struct ue_bridge_ring_desc ring;
+	enum ue_bridge_read_result result;
+
+	ring.offset = offset;
+	ring.slot_size = UE_BRIDGE_SLOT_SIZE;
+	ring.slot_count = slot_count;
+	ring.published = ueb_load_u32(&live->published);
+	result = ue_bridge_ring_read_newest((const volatile uint8_t *)header, &ring, &slot, sizeof(slot), NULL);
 
 	return result == UE_BRIDGE_READ_NEWEST || result == UE_BRIDGE_READ_PREVIOUS ? slot.id : 0;
 }
@@ -265,7 +283,7 @@ static void write_game_report(enum ue_bridge_action action, const struct ue_brid
 	/* UE's crash reporter writes under <project>/Saved/Crashes; the session
 	folder is <project>/Saved/HaloBridge/Sessions/<session> */
 	crashes[0] = 0;
-	if (header->ue_session_dir[0])
+	if (ue_session_published(header))
 		snprintf(crashes, sizeof(crashes), "%s\\..\\..\\..\\Crashes", directory);
 	snprintf(text, sizeof(text),
 		"side=game\n"
@@ -283,8 +301,8 @@ static void write_game_report(enum ue_bridge_action action, const struct ue_brid
 		ue_bridge_action_name(action),
 		(unsigned long)peer->exit_code,
 		(unsigned long)peer->stopping,
-		(unsigned long long)newest_id(header, &header->tick_ring),
-		(unsigned long long)newest_id(header, &header->frame_ring),
+		(unsigned long long)newest_id(header, &header->tick_ring, UE_BRIDGE_HEADER_SIZE, UE_BRIDGE_TICK_SLOTS),
+		(unsigned long long)newest_id(header, &header->frame_ring, UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * UE_BRIDGE_TICK_SLOTS, UE_BRIDGE_FRAME_SLOTS),
 		(unsigned long)header->load_epoch,
 		(unsigned long)header->state_epoch,
 		crashes,
@@ -298,13 +316,24 @@ static void write_game_report(enum ue_bridge_action action, const struct ue_brid
 typedef BOOL (WINAPI *minidump_write_function)(HANDLE process, DWORD pid, HANDLE file, MINIDUMP_TYPE type,
 	PMINIDUMP_EXCEPTION_INFORMATION exception, PMINIDUMP_USER_STREAM_INFORMATION user, PMINIDUMP_CALLBACK_INFORMATION callback);
 
+#define DUMP_THREAD_WAIT_MS 10000
+#define CRASH_STACK_GUARANTEE_BYTES 65536
+
 static minidump_write_function minidump_write;
 static LPTOP_LEVEL_EXCEPTION_FILTER previous_filter;
 static volatile LONG crash_hook_installed;
 /* the renderer's process while it is attached; the crash hook reads it from the crashing thread */
 static void *volatile watched_peer;
+/* the thread inside the crash filter, 0 when none */
+static volatile LONG crash_owner;
+static HANDLE dump_thread;
+static HANDLE dump_requested;
+static HANDLE dump_finished;
+static EXCEPTION_POINTERS *volatile dump_exception;
+static volatile struct ue_bridge_header *volatile dump_header;
+static volatile DWORD dump_crashing_thread;
 
-static void write_self_dump(EXCEPTION_POINTERS *exception, volatile struct ue_bridge_header *header)
+static void write_self_dump(EXCEPTION_POINTERS *exception, volatile struct ue_bridge_header *header, DWORD crashing_thread)
 {
 	char directory[UE_BRIDGE_PATH_BYTES];
 	wchar_t path[MAX_PATH * 2];
@@ -319,7 +348,7 @@ static void write_self_dump(EXCEPTION_POINTERS *exception, volatile struct ue_br
 	file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE)
 		return;
-	information.ThreadId = GetCurrentThreadId();
+	information.ThreadId = crashing_thread;
 	information.ExceptionPointers = exception;
 	information.ClientPointers = FALSE;
 	minidump_write(GetCurrentProcess(), GetCurrentProcessId(), file,
@@ -327,28 +356,75 @@ static void write_self_dump(EXCEPTION_POINTERS *exception, volatile struct ue_br
 	CloseHandle(file);
 }
 
+/* Writes the dump for the crash filter. A stack overflow leaves the crashing
+thread with almost no stack, too little for MiniDumpWriteDump, so the dump is
+written from this thread, which the filter signals and waits on. */
+static DWORD WINAPI dump_thread_main(void *unused)
+{
+	(void)unused;
+	for (;;)
+	{
+		if (WaitForSingleObject(dump_requested, INFINITE) != WAIT_OBJECT_0)
+			return 0;
+		write_self_dump(dump_exception, dump_header, dump_crashing_thread);
+		SetEvent(dump_finished);
+	}
+}
+
 static int process_alive(HANDLE process)
 {
 	return process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
 }
 
+/* ends the process with the exception's code: left to Windows Error Reporting,
+the process could sit on its dialog, and the renderer would wait on it */
+static void terminate_self(DWORD code)
+{
+	TerminateProcess(GetCurrentProcess(), code);
+}
+
 static LONG WINAPI bridge_crash_filter(EXCEPTION_POINTERS *exception)
 {
-	/* the game's own filter first, so debug.txt has its crash lines before UE copies it */
-	LONG result = previous_filter ? previous_filter(exception) : EXCEPTION_CONTINUE_SEARCH;
-	volatile struct ue_bridge_header *header = ue_bridge_header();
-	HANDLE peer = (HANDLE)watched_peer;
+	DWORD code = exception->ExceptionRecord->ExceptionCode;
+	DWORD self = GetCurrentThreadId();
+	DWORD owner = (DWORD)InterlockedCompareExchange(&crash_owner, (LONG)self, 0);
+	LONG result;
+	volatile struct ue_bridge_header *header;
+	HANDLE peer;
 	DWORD start;
 
+	/* A fault inside this filter (the game's own filter, the dump) enters it
+	again on the same thread, and would loop through the same fault: end the
+	process. Another thread crashing meanwhile must not race the first one's
+	dump: it parks, since the first ends the process. */
+	if (owner == self)
+		terminate_self(code);
+	if (owner)
+		Sleep(INFINITE);
+	/* the game's own filter first, so debug.txt has its crash lines before UE copies it */
+	result = previous_filter ? previous_filter(exception) : EXCEPTION_CONTINUE_SEARCH;
+	header = ue_bridge_header();
+	peer = (HANDLE)watched_peer;
 	if (!header)
 		return result;
-	header->crash.exception_code = exception->ExceptionRecord->ExceptionCode;
+	header->crash.exception_code = code;
 	header->crash.exception_address = (uint32_t)(uintptr_t)exception->ExceptionRecord->ExceptionAddress;
-	header->crash.thread_id = GetCurrentThreadId();
+	header->crash.thread_id = self;
 	ueb_store_u32(&header->game_stopping, UE_BRIDGE_STOP_CRASH);
 	/* always, and first: only this dump carries the exception record and the
 	faulting 32-bit context (UE's 64-bit dump of this process can't) */
-	write_self_dump(exception, header);
+	if (dump_thread)
+	{
+		dump_exception = exception;
+		dump_header = header;
+		dump_crashing_thread = self;
+		SetEvent(dump_requested);
+		WaitForSingleObject(dump_finished, DUMP_THREAD_WAIT_MS);
+	}
+	else
+	{
+		write_self_dump(exception, header, self);
+	}
 	ueb_store_u32(&header->game_crashing, 1);
 	if (ueb_load_u32(&header->ue_attached) && process_alive(peer))
 	{
@@ -357,22 +433,28 @@ static LONG WINAPI bridge_crash_filter(EXCEPTION_POINTERS *exception)
 			Sleep(10);
 	}
 	ueb_store_u32(&header->game_crashing, 0);
-	/* end now with the exception's code: left to Windows Error Reporting, the
-	process could sit on its dialog, and the renderer would wait on it */
-	TerminateProcess(GetCurrentProcess(), exception->ExceptionRecord->ExceptionCode);
+	terminate_self(code);
 	return result;
 }
 
 void ue_bridge_platform_install_crash_hook(void)
 {
 	HMODULE dbghelp;
+	ULONG guarantee = CRASH_STACK_GUARANTEE_BYTES;
 
 	if (InterlockedExchange(&crash_hook_installed, 1))
 		return;
 	/* loaded now: a crashing process can't be trusted to load a library */
-	dbghelp = LoadLibraryA("dbghelp.dll");
+	dbghelp = LoadLibraryExA("dbghelp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (dbghelp)
 		minidump_write = (minidump_write_function)(void *)GetProcAddress(dbghelp, "MiniDumpWriteDump");
+	dump_requested = CreateEventA(NULL, FALSE, FALSE, NULL);
+	dump_finished = CreateEventA(NULL, FALSE, FALSE, NULL);
+	if (dump_requested && dump_finished)
+		dump_thread = CreateThread(NULL, 0, dump_thread_main, NULL, 0, NULL);
+	/* the filter and the signal to the dump thread run on what is left of the
+	faulting thread's stack after an overflow */
+	SetThreadStackGuarantee(&guarantee);
 	previous_filter = SetUnhandledExceptionFilter(bridge_crash_filter);
 }
 
@@ -427,46 +509,61 @@ static DWORD WINAPI watcher_main(void *unused)
 {
 	DWORD peer_pid = 0;
 	HANDLE peer = NULL;
+	uint64_t session = 0;
+	int was_attached = 0;
+	DWORD open_failed_pid = 0;
 	int acted = 0;
-	DWORD crashing_since = 0;
+	struct ue_bridge_crash_clock crash_clock;
 
 	(void)unused;
+	memset(&crash_clock, 0, sizeof(crash_clock));
 	while (WaitForSingleObject(watcher_stop, WATCH_INTERVAL_MS) == WAIT_TIMEOUT)
 	{
 		volatile struct ue_bridge_header *header = ue_bridge_header();
 		struct ue_bridge_peer_view view;
 		enum ue_bridge_action action;
 		DWORD pid;
+		int attached;
 
 		if (!header)
 			continue;
-		pid = ueb_load_u32(&header->ue_pid);
-		if (pid && pid != peer_pid && ueb_load_u32(&header->ue_attached))
+		/* the bridge was restarted: this is another header, with no renderer yet */
+		if (header->session_id != session)
 		{
+			session = header->session_id;
 			watched_peer = NULL;
-			if (peer)
-				CloseHandle(peer);
+			peer = NULL;
+			peer_pid = 0;
+			was_attached = 0;
+			acted = 0;
+			memset(&crash_clock, 0, sizeof(crash_clock));
+		}
+		pid = ueb_load_u32(&header->ue_pid);
+		attached = ueb_load_u32(&header->ue_attached) != 0;
+		/* a renderer attaches again with ue_attached going 0 then 1, or with a new
+		PID; a PID alone would miss a new renderer that got the old one's PID. A
+		failed OpenProcess is retried on the next poll. */
+		if (attached && pid && (!peer || pid != peer_pid || !was_attached))
+		{
+			/* the superseded handle is not closed: the crash filter may be using it
+			from another thread, and a re-attach is rare, so it is left to process exit */
+			watched_peer = NULL;
 			peer = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, pid);
 			peer_pid = pid;
 			acted = 0;
-			crashing_since = 0;
+			memset(&crash_clock, 0, sizeof(crash_clock));
 			watched_peer = peer;
-			platform_log(peer ? "ue bridge: renderer %lu attached" : "ue bridge: cannot open renderer %lu", (unsigned long)pid);
+			if (peer)
+				platform_log("ue bridge: renderer %lu attached", (unsigned long)pid);
+			else if (open_failed_pid != pid)
+				platform_log("ue bridge: cannot open renderer %lu", (unsigned long)pid);
+			open_failed_pid = peer ? 0 : pid;
 		}
+		was_attached = attached;
 		if (!peer || acted)
 			continue;
 		read_peer_view(header, peer, &view);
-		if (view.crashing)
-		{
-			/* | 1: zero means "not crashing" */
-			if (!crashing_since)
-				crashing_since = GetTickCount() | 1u;
-			view.crashing_for_ms = GetTickCount() - crashing_since;
-		}
-		else
-		{
-			crashing_since = 0;
-		}
+		view.crashing_for_ms = ue_bridge_crashing_for_ms(&crash_clock, view.crashing, GetTickCount());
 		action = ue_bridge_policy_decide(&view, qpc(), header->qpc_frequency);
 		if (action == UE_BRIDGE_ACTION_NONE || action == UE_BRIDGE_ACTION_PEER_CRASHING)
 			continue;
@@ -477,9 +574,8 @@ static DWORD WINAPI watcher_main(void *unused)
 		else
 			platform_log("ue bridge: on_peer_exit = continue: waiting for a renderer to attach");
 	}
+	/* peer stays open: see above */
 	watched_peer = NULL;
-	if (peer)
-		CloseHandle(peer);
 	return 0;
 }
 

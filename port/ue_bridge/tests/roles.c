@@ -12,11 +12,14 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --run-ms N          exits normally after N ms (default 30000)
   --crash-after-ms N  raises an access violation after N ms
   --hang-after-ms N   stops heartbeating and publishing after N ms (stays alive)
+  --overflow-after-ms N  overflows the stack after N ms
   --continue          on_peer_exit = continue
   --disabled          ue_bridge.enabled = false
   --cycles N          starts and stops the bridge N times in a row (no watcher,
                       crash hook or heartbeat), then exits
   --go-file PATH      with --cycles: waits for this file after --ready-file
+  --hold-ms N         with --cycles: stays N ms inside every directory lock, and
+                      counts the times another game was inside it too (exit 6)
 
 fake-ue: a renderer that attaches through the directory.
   --session-dir PATH  created and published as ue_session_dir
@@ -124,9 +127,27 @@ static void write_ready_file(const char *path)
 	}
 }
 
+/* continuable (flags 0), so that a filter returning EXCEPTION_CONTINUE_EXECUTION resumes after it */
 static void raise_access_violation(void)
 {
 	RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, 0);
+}
+
+static int (*volatile recurse_target)(int);
+
+static int recurse(int depth)
+{
+	volatile char padding[512];
+
+	padding[0] = (char)depth;
+	return recurse_target(depth + 1) + padding[0];
+}
+
+/* the game's own unhandled-exception filter, which the bridge's hook must chain to */
+static LONG WINAPI game_filter(EXCEPTION_POINTERS *exception)
+{
+	platform_log("crash: %08lx", (unsigned long)exception->ExceptionRecord->ExceptionCode);
+	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 /* ---------- fake-game */
@@ -138,19 +159,61 @@ static void fake_game_request_quit(void)
 	InterlockedExchange(&quit_requested, 1);
 }
 
-static int fake_game_cycles(const struct ue_bridge_settings *settings, long cycles, const char *ready_file, const char *go_file)
+static const struct ue_bridge_os *real_os;
+static struct ue_bridge_os counting_os;
+static volatile LONG *inside_count;
+static long hold_ms;
+static long overlaps;
+
+/* every game's directory lock goes through one counter shared by the games: it
+reads above 1 only when two are inside the lock at once */
+static void counting_lock(void)
 {
+	real_os->lock_directory();
+	if (InterlockedIncrement(inside_count) != 1)
+		overlaps++;
+	Sleep((DWORD)hold_ms);
+}
+
+static void counting_unlock(void)
+{
+	InterlockedDecrement(inside_count);
+	real_os->unlock_directory();
+}
+
+static int fake_game_cycles(const struct ue_bridge_settings *settings, long cycles, long hold, const char *ready_file, const char *go_file)
+{
+	const struct ue_bridge_os *os = ue_bridge_platform_os();
 	long cycle;
 
+	if (hold > 0)
+	{
+		HANDLE counter = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(LONG), "Local\\HaloCEUE.Roles.InsideCount");
+
+		inside_count = counter ? (volatile LONG *)MapViewOfFile(counter, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LONG)) : NULL;
+		if (!inside_count)
+			return 5;
+		real_os = os;
+		counting_os = *os;
+		counting_os.lock_directory = counting_lock;
+		counting_os.unlock_directory = counting_unlock;
+		os = &counting_os;
+		hold_ms = hold;
+	}
 	write_ready_file(ready_file);
 	/* both games of a concurrency test must start cycling together */
 	while (go_file && GetFileAttributesA(go_file) == INVALID_FILE_ATTRIBUTES)
 		Sleep(1);
 	for (cycle = 0; cycle < cycles; cycle++)
 	{
-		if (!ue_bridge_start(settings, ue_bridge_platform_os()))
+		if (!ue_bridge_start(settings, os))
 			return 3;
 		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	}
+	if (overlaps)
+	{
+		platform_log("fake-game: %ld directory lock overlaps", overlaps);
+		return 6;
 	}
 	return 0;
 }
@@ -163,6 +226,7 @@ static int fake_game(int argc, char **argv)
 	long run_ms = option_number(argc, argv, "--run-ms", 30000);
 	long crash_after = option_number(argc, argv, "--crash-after-ms", -1);
 	long hang_after = option_number(argc, argv, "--hang-after-ms", -1);
+	long overflow_after = option_number(argc, argv, "--overflow-after-ms", -1);
 	long cycles = option_number(argc, argv, "--cycles", 0);
 	DWORD start = GetTickCount();
 	DWORD last_tick = start;
@@ -175,7 +239,8 @@ static int fake_game(int argc, char **argv)
 	settings.log_path = log;
 	settings.max_objects = 8192;
 	if (cycles > 0)
-		return fake_game_cycles(&settings, cycles, option_text(argc, argv, "--ready-file"), option_text(argc, argv, "--go-file"));
+		return fake_game_cycles(&settings, cycles, option_number(argc, argv, "--hold-ms", 0), option_text(argc, argv, "--ready-file"), option_text(argc, argv, "--go-file"));
+	SetUnhandledExceptionFilter(game_filter);
 	if (settings.enabled)
 	{
 		if (!ue_bridge_start(&settings, ue_bridge_platform_os()))
@@ -192,7 +257,17 @@ static int fake_game(int argc, char **argv)
 		long elapsed = (long)(GetTickCount() - start);
 
 		if (crash_after >= 0 && elapsed >= crash_after)
+		{
 			raise_access_violation();
+			/* the bridge's hook must end the process; execution only returns when it didn't */
+			return 7;
+		}
+		if (overflow_after >= 0 && elapsed >= overflow_after)
+		{
+			recurse_target = recurse;
+			recurse(0);
+			return 7;
+		}
 		if (hang_after < 0 || elapsed < hang_after)
 		{
 			ue_bridge_heartbeat();
