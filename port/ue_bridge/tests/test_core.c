@@ -383,11 +383,13 @@ static void core_log_path_that_just_fits_is_published_whole(void)
 	UEB_CHECK(strcmp((const char *)ue_bridge_header()->game_log_path, path) == 0);
 }
 
+static int silent_failure_buffer_first_byte;
+
 static void fake_silent_failure_path(const char *path, char *utf8, uint32_t capacity)
 {
 	(void)path;
-	(void)utf8;
 	(void)capacity;
+	silent_failure_buffer_first_byte = utf8[0];
 }
 
 /* Fills the stack where ue_bridge_start's buffer will sit with short non-empty strings: all 'z' would
@@ -409,8 +411,11 @@ static void core_log_path_from_a_silently_failing_conversion_is_empty(void)
 	fake_reset();
 	os = fake_os;
 	os.path_to_utf8 = fake_silent_failure_path;
+	silent_failure_buffer_first_byte = -1;
 	poison_the_stack();
 	UEB_CHECK(ue_bridge_start(&settings, &os));
+	/* what the conversion sees on entry, whatever the stack layout */
+	UEB_CHECK(silent_failure_buffer_first_byte == 0);
 	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }

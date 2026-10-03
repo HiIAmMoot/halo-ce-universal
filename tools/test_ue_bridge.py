@@ -210,6 +210,12 @@ def test_crash_self_dumps_when_no_ue(spawn, tmp_path):
     assert "crash:" in (tmp_path / "debug.txt").read_text()
 
 
+def test_a_crash_hook_that_outlived_the_bridge_does_not_park_a_later_crash(spawn, tmp_path):
+    game = spawn("fake-game", "--log", tmp_path / "debug.txt", "--crash-after-stop")
+    # exit 9: the second thread's fault found the crash ownership still taken and parked
+    assert finish(game, 15) == 0
+
+
 def test_stack_overflow_still_writes_the_self_dump(spawn, tmp_path):
     game = start_game(spawn, tmp_path, "--overflow-after-ms", 500)
     assert finish(game, 20) == STATUS_STACK_OVERFLOW

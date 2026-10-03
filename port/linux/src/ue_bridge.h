@@ -30,7 +30,8 @@ struct ue_bridge_os
 	int (*debugger_present)(void);
 	void (*log)(const char *message);
 	/* the platform's path encoding to UTF-8 (the header's); NULL when paths
-	already are UTF-8 */
+	already are UTF-8. A converted path that doesn't fit capacity yields an
+	empty string, never a truncated one (a cut can split a UTF-8 sequence). */
 	void (*path_to_utf8)(const char *path, char *utf8, uint32_t capacity);
 	/* optional (NULL: this is the only bridged game, as in the tests): one
 	machine-wide lock around every write of the directory entry. Several
@@ -49,8 +50,9 @@ struct ue_bridge_settings
 	uint32_t max_objects;
 };
 
-/* 1 when the bridge is active (already, or now). The bridge keeps the pointers
-it gets, so the os table must outlive it (until ue_bridge_stop returns). */
+/* 1 when the bridge is active (already, or now). The bridge keeps the os pointer, so
+the os table must outlive it (until ue_bridge_stop returns); settings and its
+log_path are copied. */
 int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_bridge_os *os);
 /* publishes stopping (a UE_BRIDGE_STOP_*), withdraws this game's directory
 entry and unmaps; UE keeps reading its own mapping of the section */

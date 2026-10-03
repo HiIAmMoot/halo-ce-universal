@@ -16,6 +16,9 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --exit-when PATH    exits normally once PATH exists
   --crash-when PATH   raises an access violation once PATH exists
   --hang-when PATH    stops heartbeating and publishing once PATH exists
+  --crash-after-stop  stops the bridge (the crash hook stays installed), raises on this
+                      thread and then on a second one, and exits 0 when both returned
+                      (9 when the second thread is parked)
   --continue          on_peer_exit = continue
   --disabled          ue_bridge.enabled = false
   --cycles N          starts and stops the bridge N times in a row (no watcher,
@@ -160,6 +163,26 @@ static LONG WINAPI game_filter(EXCEPTION_POINTERS *exception)
 
 /* ---------- fake-game */
 
+static DWORD WINAPI raise_on_this_thread(void *unused)
+{
+	(void)unused;
+	raise_access_violation();
+	return 0;
+}
+
+/* The hook outlives the bridge (a failed watcher start, at_exit). Both faults find no header, so
+the filter returns at once; the first must release the crash ownership, or the second thread parks. */
+static int crash_after_stop(void)
+{
+	HANDLE thread;
+
+	raise_access_violation();
+	thread = CreateThread(NULL, 0, raise_on_this_thread, NULL, 0, NULL);
+	if (!thread)
+		return 8;
+	return WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0 ? 0 : 9;
+}
+
 static volatile LONG quit_requested;
 
 static void fake_game_request_quit(void)
@@ -264,6 +287,11 @@ static int fake_game(int argc, char **argv)
 		watch.continue_on_peer_exit = option_flag(argc, argv, "--continue");
 		if (!ue_bridge_platform_start_watcher(&watch))
 			return 4;
+	}
+	if (option_flag(argc, argv, "--crash-after-stop"))
+	{
+		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+		return crash_after_stop();
 	}
 	write_ready_file(option_text(argc, argv, "--ready-file"));
 	while (!quit_requested && (long)(GetTickCount() - start) < run_ms)
