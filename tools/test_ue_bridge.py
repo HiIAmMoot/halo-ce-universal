@@ -192,6 +192,7 @@ def test_game_leaves_an_exiting_ue_alone_while_it_shuts_down(spawn, tmp_path):
     assert game_report(session)["peer_action"] == "peer_exited"
 
 
+@pytest.mark.slow
 def test_game_ends_an_exiting_ue_that_never_finishes_after_the_grace(spawn, tmp_path):
     game = start_game(spawn, tmp_path, "--run-ms", 90000)
     # the grace is the crashing limit (30 s): past it a silent exiting UE has hung

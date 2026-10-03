@@ -35,7 +35,9 @@ struct ue_bridge_peer_view
 	/* the UE_BRIDGE_STOP_* the peer published */
 	uint32_t stopping;
 	/* the peer is crashing: the game's crash hook is waiting for a dump
-	(game_crashing), or UE's crash reporter is running (ue_stopping = crash) */
+	(game_crashing). A published stop (ue_stopping, game_stopping) is not
+	needed here: ue_bridge_peer_winding_down counts it, and the policy takes a
+	published CRASH as crashing from stopping alone */
 	int crashing;
 	/* how long the watcher has seen the peer winding down (crashing or stopping); it measures this itself */
 	uint32_t crashing_for_ms;
