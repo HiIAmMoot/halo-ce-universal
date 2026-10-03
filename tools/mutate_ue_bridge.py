@@ -1,13 +1,18 @@
 """Mutation testing for the UE bridge: every mutant must make its named test
 fail. Run after a task's tests pass:
 
-    python tools/mutate_ue_bridge.py [task]
+    python tools/mutate_ue_bridge.py [task] [--path FILE ...]
+
+--path (repeatable, relative to the repository root) keeps only the mutants of
+those files; with a task it is an AND. Use it to avoid rewriting files another
+build is reading.
 
 Mutants are single-line replacements (the checkout's line endings vary).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -105,9 +110,14 @@ MUTANTS = [
            "if (directory->session_id == bridge.session_id)", "if (1)",
            "core_stop_keeps_a_newer_games_directory_entry"),
     Mutant("3", "port/linux/src/ue_bridge.c",
-           "for (; index + 1 < capacity && source[index]; index++)",
-           "for (; index < capacity && source[index]; index++)",
-           "core_long_log_path_is_truncated_and_terminated"),
+           "if (source && strlen(source) < capacity)", "if (source && strlen(source) <= capacity)",
+           "core_log_path_that_does_not_fit_is_published_empty"),
+    Mutant("3", "port/linux/src/ue_bridge.c",
+           "if (source && strlen(source) < capacity)", "if (source && strlen(source) + 1 < capacity)",
+           "core_log_path_that_just_fits_is_published_whole"),
+    Mutant("3", "port/linux/src/ue_bridge.c",
+           "utf8[0] = 0;", ";",
+           "core_log_path_from_a_silently_failing_conversion_is_empty"),
     Mutant("3", "port/linux/src/ue_bridge.c",
            "bridge.os->debugger_present() ? 1u : 0u", "0u",
            "core_heartbeat_tracks_qpc_and_debugger"),
@@ -136,8 +146,8 @@ MUTANTS = [
            "directory->session_id = bridge.session_id; uint32_t odd = directory_begin_write(directory);",
            "core_concurrent_reader_never_sees_a_mixed_directory_entry"),
     Mutant("3", "port/linux/src/ue_bridge.c",
-           "ueb_store_u32(&header->game_stopping, stopping);",
-           "bridge.os->unmap_section(section_view, bridge.section_handle); bridge.os->unmap_section(bridge.directory_view, bridge.directory_handle); ueb_store_u32(&header->game_stopping, stopping);",
+           "ue_bridge_publish_stopping(stopping);",
+           "bridge.os->unmap_section(section_view, bridge.section_handle); bridge.os->unmap_section(bridge.directory_view, bridge.directory_handle); ue_bridge_publish_stopping(stopping);",
            "core_stop_writes_before_it_unmaps"),
     Mutant("3", "port/linux/src/ue_bridge.c",
            "ue_bridge_ring_end_write(&header->tick_ring, slot);",
@@ -181,6 +191,10 @@ MUTANTS = [
     Mutant("4", "port/linux/src/ue_bridge_game.c",
            "halted = 0;", ";",
            "game_shutdown_after_halt_beats_again_on_restart"),
+    Mutant("4", "port/linux/src/ue_bridge_game.c",
+           "int stopping = halted ? UE_BRIDGE_STOP_CRASH : UE_BRIDGE_STOP_EXIT;",
+           "int stopping = UE_BRIDGE_STOP_EXIT;",
+           "game_shutdown_after_halt_keeps_the_published_crash"),
     Mutant("4", "port/linux/src/ue_bridge.c",
            "ueb_store_u32(&header->game_stopping, stopping);", "(void)stopping;",
            "core_publish_stopping_sets_flag_only_when_active"),
@@ -222,7 +236,7 @@ MUTANTS = [
            "pytest:test_game_report_carries_the_header_and_ues_crash_folder"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "result = WAIT_TIMEOUT;",
-           "pytest:test_concurrent_games_leave_the_directory_coherent"),
+           "pytest:test_two_games_are_never_inside_the_directory_lock_together"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "result = WaitForSingleObject(directory_mutex, INFINITE);",
            "pytest:test_a_hung_directory_lock_holder_delays_game_start_by_the_cap_only"),
@@ -231,7 +245,7 @@ MUTANTS = [
            "pytest:test_an_abandoned_directory_lock_is_taken_over_without_waiting"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "ReleaseMutex(directory_mutex);", ";",
-           "pytest:test_concurrent_games_leave_the_directory_coherent"),
+           "pytest:test_two_games_are_never_inside_the_directory_lock_together"),
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "DWORD length = GetFullPathNameA(path, sizeof(full), full, NULL);", "DWORD length = (strcpy(full, path), (DWORD)strlen(path));",
            "pytest:test_published_log_path_is_made_absolute"),
@@ -264,6 +278,12 @@ MUTANTS = [
            "pytest:test_a_second_game_starts_without_waiting_for_a_live_first_game"),
     Mutant("10", "port/ue_bridge/tests/roles.c",
            "if (file_exists(exit_when))", "if (file_exists(exit_when) && 0)",
+           "pytest:test_exit_when_file_appears"),
+    Mutant("10", "port/ue_bridge/tests/roles.c",
+           "hanging = 1;", "{ hanging = 1; ue_bridge_publish_frame(++frame, 0.5f); }",
+           "pytest:test_hang_when_file_appears"),
+    Mutant("10", "port/ue_bridge/tests/roles.c",
+           'ended = "exit file";', 'ended = "run time over";',
            "pytest:test_exit_when_file_appears"),
     Mutant("10", "port/ue_bridge/tests/roles.c",
            "if ((crash_after >= 0 && elapsed >= crash_after) || file_exists(crash_when))",
@@ -299,21 +319,32 @@ def verify_clean_tree(mutants: list[Mutant]) -> None:
             raise SystemExit(f"{test} does not pass on the clean tree (exit {result.returncode}); not mutating:\n{result.stdout[-2000:]}")
 
 
-def judge(mutant: Mutant) -> str:
-    """killed only by a real test failure: exit 1 with 'failed' in the output. A collection or setup
-    error, 'no tests ran' (exit 5) and a timeout say nothing about the test."""
+C_TEST_TIMEOUT_S = 120
+
+
+def judge(mutant: Mutant) -> tuple[str, str]:
+    """(verdict, reason). Killed only by a real test failure: exit 1 with 'failed' in the output. A
+    collection or setup error, 'no tests ran' (exit 5), a build failure, a crash and a timeout say
+    nothing about the test, so they are invalid."""
     if mutant.killed_by.startswith("pytest:"):
         result = run_pytest(mutant.killed_by[len("pytest:"):])
-        return KILLED if result.returncode == 1 and " failed" in result.stdout else (SURVIVED if result.returncode == 0 else INVALID)
+        if result.returncode == 1 and " failed" in result.stdout:
+            return KILLED, ""
+        return (SURVIVED, "") if result.returncode == 0 else (INVALID, f"pytest exit {result.returncode}")
     try:
         exe = ue_bridge_tests.build()
     except subprocess.CalledProcessError:
-        return KILLED  # a mutant that doesn't compile is killed by the build
-    result = subprocess.run([str(exe), mutant.killed_by], capture_output=True)
-    return KILLED if result.returncode == 1 else (SURVIVED if result.returncode == 0 else INVALID)
+        return INVALID, "does not compile"
+    try:
+        result = subprocess.run([str(exe), mutant.killed_by], capture_output=True, timeout=C_TEST_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return INVALID, f"test runner timed out after {C_TEST_TIMEOUT_S}s"
+    if result.returncode == 1:
+        return KILLED, ""
+    return (SURVIVED, "") if result.returncode == 0 else (INVALID, f"test runner exit {result.returncode}")
 
 
-def outcome(mutant: Mutant) -> str:
+def outcome(mutant: Mutant) -> tuple[str, str]:
     path = ue_bridge_tests.ROOT / mutant.path
     # bytes, not text: text mode would rewrite line endings, so restoring would not be byte for byte
     data = path.read_bytes()
@@ -328,21 +359,28 @@ def outcome(mutant: Mutant) -> str:
 
 
 def main() -> int:
-    task = sys.argv[1] if len(sys.argv) > 1 else None
-    selected = [m for m in MUTANTS if task is None or m.task == task]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task", nargs="?")
+    parser.add_argument("--path", action="append", default=[])
+    args = parser.parse_args()
+    paths = {p.replace("\\", "/") for p in args.path}
+    selected = [m for m in MUTANTS
+                if (args.task is None or m.task == args.task) and (not paths or m.path in paths)]
+    if not selected:
+        raise SystemExit("no mutant matches the task and path filters")
     verify_clean_tree(selected)
     survivors = []
     invalid = []
     for mutant in selected:
-        result = outcome(mutant)
+        result, reason = outcome(mutant)
         if result == SURVIVED:
             survivors.append(mutant)
         elif result == INVALID:
-            invalid.append(mutant)
+            invalid.append((mutant, reason))
     for m in survivors:
         print(f"SURVIVED task {m.task}: {m.path}: {m.original!r} -> {m.mutated!r} ({m.killed_by} still passes)")
-    for m in invalid:
-        print(f"INVALID task {m.task}: {m.path}: {m.original!r} -> {m.mutated!r} ({m.killed_by} neither passed nor failed)")
+    for m, reason in invalid:
+        print(f"INVALID task {m.task}: {m.path}: {m.original!r} -> {m.mutated!r} ({m.killed_by}: {reason})")
     print(f"{len(survivors)} survivor(s), {len(invalid)} invalid run(s)")
     return 1 if survivors or invalid else 0
 

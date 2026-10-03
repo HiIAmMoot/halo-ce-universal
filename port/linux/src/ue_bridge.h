@@ -49,7 +49,8 @@ struct ue_bridge_settings
 	uint32_t max_objects;
 };
 
-/* 1 when the bridge is active (already, or now) */
+/* 1 when the bridge is active (already, or now). The bridge keeps the pointers
+it gets, so the os table must outlive it (until ue_bridge_stop returns). */
 int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_bridge_os *os);
 /* publishes stopping (a UE_BRIDGE_STOP_*), withdraws this game's directory
 entry and unmaps; UE keeps reading its own mapping of the section */

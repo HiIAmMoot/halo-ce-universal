@@ -44,6 +44,16 @@ static void copy_string(volatile char *destination, size_t capacity, const char 
 	destination[index] = 0;
 }
 
+/* A path that doesn't fit is published empty, not cut: a cut could split a UTF-8
+sequence, and UE would read a path that is not the game's. */
+static void copy_path(volatile char *destination, size_t capacity, const char *source)
+{
+	if (source && strlen(source) < capacity)
+		copy_string(destination, capacity, source);
+	else
+		destination[0] = 0;
+}
+
 static void directory_lock(void)
 {
 	if (bridge.os->lock_directory)
@@ -144,12 +154,14 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 	{
 		char utf8[UE_BRIDGE_PATH_BYTES];
 
+		/* a conversion that fails without writing must leave an empty string, not stack garbage */
+		utf8[0] = 0;
 		os->path_to_utf8(settings->log_path, utf8, sizeof(utf8));
-		copy_string(header->game_log_path, sizeof(header->game_log_path), utf8);
+		copy_path(header->game_log_path, sizeof(header->game_log_path), utf8);
 	}
 	else
 	{
-		copy_string(header->game_log_path, sizeof(header->game_log_path), settings->log_path);
+		copy_path(header->game_log_path, sizeof(header->game_log_path), settings->log_path);
 	}
 	ue_bridge_heartbeat();
 

@@ -41,6 +41,15 @@ EXCEPTION_ACCESS_VIOLATION = 0xC0000005
 HUNG_PEER_EXIT_CODE = 0x48414E47
 STATUS_STACK_OVERFLOW = 0xC00000FD
 
+# byte offsets into the game's header section and the stop codes: copies of the layout in
+# port/ue_bridge/ue_bridge_format.h, whose static asserts pin them. Change both together.
+TICK_RING_PUBLISHED_OFFSET = 60  # tick_ring.published
+FRAME_RING_PUBLISHED_OFFSET = 76  # frame_ring.published
+GAME_HEARTBEAT_OFFSET = 600
+GAME_STOPPING_OFFSET = 624
+STOP_EXIT = 1
+FILE_MAP_READ = 4
+
 
 @pytest.fixture(scope="session")
 def roles_exe():
@@ -251,6 +260,8 @@ def test_published_log_path_is_made_absolute(spawn, tmp_path):
 
 
 def test_concurrent_games_leave_the_directory_coherent(spawn, tmp_path):
+    """a smoke test: it asserts final == empty and reads > 0 (and no lock timeouts in the logs). The
+    exclusion and the lock release are pinned by the deterministic tests below it."""
     probe_ready = tmp_path / "probe.ready"
     stop = tmp_path / "probe.stop"
     go = tmp_path / "go"
@@ -351,13 +362,6 @@ def test_an_abandoned_directory_lock_is_taken_over_without_waiting(spawn, tmp_pa
     assert finish(game, 10) == 0
 
 
-
-GAME_HEARTBEAT_OFFSET = 600
-GAME_STOPPING_OFFSET = 624
-STOP_EXIT = 1
-FILE_MAP_READ = 4
-
-
 class HeaderView:
     """the game's header section, held open: the section outlives the game while this handle does,
     so the stop the game published can be read after it has exited"""
@@ -370,9 +374,12 @@ class HeaderView:
         section = probe_entry(spawn)["section"]
         self.handle = kernel32.OpenFileMappingA(FILE_MAP_READ, False, section.encode())
         assert self.handle, "the game's section is not there"
-        self.view = kernel32.MapViewOfFile(self.handle, FILE_MAP_READ, 0, 0, 0x1000)
-        assert self.view
         self.kernel32 = kernel32
+        self.view = kernel32.MapViewOfFile(self.handle, FILE_MAP_READ, 0, 0, 0x1000)
+        if not self.view:
+            # the fixture only closes views that were built, and a failed constructor builds none
+            kernel32.CloseHandle(ctypes.c_void_p(self.handle))
+            raise AssertionError("the game's section cannot be mapped")
 
     def u64(self, offset: int) -> int:
         return ctypes.c_uint64.from_address(self.view + offset).value
@@ -408,6 +415,8 @@ def test_exit_when_file_appears_the_game_exits_and_publishes_the_stop(spawn, hea
     flag.write_text("1")
     assert finish(game, 5) == 0
     assert view.u32(GAME_STOPPING_OFFSET) == STOP_EXIT
+    # the role's own log line: a run that ended on the file must not read as "run time over"
+    assert "exit file" in (tmp_path / "debug.txt").read_text()
 
 
 def test_crash_when_file_appears_the_game_crashes(spawn, tmp_path):
@@ -427,9 +436,10 @@ def test_hang_when_file_appears_the_heartbeat_stops_and_the_game_stays_alive(spa
     first = view.u64(GAME_HEARTBEAT_OFFSET)
     time.sleep(0.5)
     assert view.u64(GAME_HEARTBEAT_OFFSET) > first
+    assert view.u32(FRAME_RING_PUBLISHED_OFFSET) > 0 and view.u32(TICK_RING_PUBLISHED_OFFSET) > 0
     flag.write_text("1")
     time.sleep(0.5)
-    stalled = view.u64(GAME_HEARTBEAT_OFFSET)
+    stalled = (view.u64(GAME_HEARTBEAT_OFFSET), view.u32(FRAME_RING_PUBLISHED_OFFSET), view.u32(TICK_RING_PUBLISHED_OFFSET))
     time.sleep(1.0)
-    assert view.u64(GAME_HEARTBEAT_OFFSET) == stalled
+    assert (view.u64(GAME_HEARTBEAT_OFFSET), view.u32(FRAME_RING_PUBLISHED_OFFSET), view.u32(TICK_RING_PUBLISHED_OFFSET)) == stalled
     assert game.poll() is None

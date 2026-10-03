@@ -165,6 +165,8 @@ the setting for one start of the game. It has priority over the file.
 | `input.mouse_aim_assist` | `false` | `HALO_MOUSE_AIM_ASSIST` | `true`: the magnetism of the controller also operates for the mouse. `false`: when the mouse moved after the right stick, the view is not slowed or dragged by a target. The autoaim of the bullets operates in both cases. |
 | `game.console_log` | `"important"` | `HALO_CONSOLE_LOG` | What the console shows on the screen. `"important"`: bans, players that the host drops for cheating, the reasons that the game refuses a command, and the asserts that stop the game. `"all"`: all the lines. `"none"`: only the asserts that stop the game. The output of a command always shows. `debug.txt` gets all the lines. |
 | `game.language` | `""` | `HALO_LANGUAGE` | The language of the menus: `ja`, `de`, `fr`, `es` or `it`. Empty: English. |
+| `ue_bridge.enabled` | `false` | `HALO_UE_BRIDGE` | `true`: the game publishes its state in shared memory for the HaloCEUE renderer. Windows only: elsewhere, the setting has no effect. |
+| `ue_bridge.on_peer_exit` | `"shutdown"` | `HALO_UE_BRIDGE_ON_PEER_EXIT` | When an attached HaloCEUE exits, crashes or hangs: `"shutdown"` quits the game too. `"continue"` keeps the game running until a HaloCEUE attaches again. Windows only: elsewhere, the setting has no effect. |
 | `paths.data` | `""` | `HALO_DATA_ROOT` | The data root. Refer to "Start the game". |
 | `paths.saves` | `""` | `HALO_SAVE_ROOT` | The save root. Refer to "Files and folders". |
 | `network.address` | `""` | `HALO_NET_ADDRESS` | The IPv4 address of this machine for system link. Refer to "Play on one computer". |

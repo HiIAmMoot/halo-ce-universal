@@ -79,10 +79,13 @@ void ue_bridge_game_shutdown(void)
 {
 	if (started)
 	{
+		/* a halted game that later exits (halt re-entered, quit event) must keep its CRASH */
+		int stopping = halted ? UE_BRIDGE_STOP_CRASH : UE_BRIDGE_STOP_EXIT;
+
 		started = 0;
 		halted = 0;
 		ue_bridge_platform_stop_watcher();
-		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+		ue_bridge_stop(stopping);
 	}
 	start_attempted = 0;
 }

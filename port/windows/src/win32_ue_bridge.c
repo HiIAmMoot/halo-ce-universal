@@ -406,7 +406,12 @@ static LONG WINAPI bridge_crash_filter(EXCEPTION_POINTERS *exception)
 	header = ue_bridge_header();
 	peer = (HANDLE)watched_peer;
 	if (!header)
+	{
+		/* Nothing to publish, and the previous filter may have let execution continue. The
+		ownership is released so a later crash on another thread is not parked for ever. */
+		InterlockedExchange(&crash_owner, 0);
 		return result;
+	}
 	header->crash.exception_code = code;
 	header->crash.exception_address = (uint32_t)(uintptr_t)exception->ExceptionRecord->ExceptionAddress;
 	header->crash.thread_id = self;

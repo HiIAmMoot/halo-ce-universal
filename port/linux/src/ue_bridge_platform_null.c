@@ -1,8 +1,9 @@
 /*
 UE_BRIDGE_PLATFORM_NULL.C
 
-No UE bridge: the HaloCEUE renderer is Windows only. Windows replaces this
-file with port/windows/src/win32_ue_bridge.c (port/windows/port.json).
+No UE bridge: the HaloCEUE renderer is Windows only. The Windows build leaves
+this file out (replaced_platform_sources in port/windows/port.json) and builds
+port/windows/src/win32_ue_bridge.c, which defines the same functions.
 */
 
 #include "ue_bridge_platform.h"

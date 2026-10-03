@@ -241,6 +241,7 @@ static int fake_game(int argc, char **argv)
 	const char *hang_when = option_text(argc, argv, "--hang-when");
 	/* latched: the hang outlives its trigger file being deleted */
 	int hanging = 0;
+	const char *ended = "run time over";
 	DWORD start = GetTickCount();
 	DWORD last_tick = start;
 	uint64_t tick = 0;
@@ -270,7 +271,10 @@ static int fake_game(int argc, char **argv)
 		long elapsed = (long)(GetTickCount() - start);
 
 		if (file_exists(exit_when))
+		{
+			ended = "exit file";
 			break;
+		}
 		if ((crash_after >= 0 && elapsed >= crash_after) || file_exists(crash_when))
 		{
 			raise_access_violation();
@@ -299,7 +303,7 @@ static int fake_game(int argc, char **argv)
 	}
 	ue_bridge_platform_stop_watcher();
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
-	platform_log("fake-game: exiting (%s)", quit_requested ? "quit requested" : "run time over");
+	platform_log("fake-game: exiting (%s)", quit_requested ? "quit requested" : ended);
 	return 0;
 }
 
@@ -520,7 +524,13 @@ static int probe_directory(int argc, char **argv)
 		if (header)
 			printf("game_log_path=%s\n", (const char *)(uintptr_t)header->game_log_path);
 		fflush(stdout);
+		if (header)
+			UnmapViewOfFile((const void *)header);
+		if (section)
+			CloseHandle(section);
 	}
+	if (directory)
+		UnmapViewOfFile((const void *)directory);
 	CloseHandle(mapping);
 	return 1;
 }

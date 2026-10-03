@@ -258,6 +258,7 @@ static void core_calls_before_start_are_harmless(void)
 	ue_bridge_heartbeat();
 	ue_bridge_bump_load_epoch();
 	ue_bridge_bump_state_epoch();
+	ue_bridge_set_busy(1);
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 	UEB_CHECK(fake_maps == 0);
 	UEB_CHECK(fake_unmaps == 0);
@@ -354,17 +355,64 @@ static void core_zero_random_session_becomes_one(void)
 	UEB_CHECK(fake_directory()->session_id == 1);
 }
 
-static void core_long_log_path_is_truncated_and_terminated(void)
+/* a truncated path could end inside a UTF-8 sequence, and UE would read a path that is not the game's */
+static void core_log_path_that_does_not_fit_is_published_empty(void)
 {
 	struct ue_bridge_settings settings = enabled_settings();
-	char path[700];
+	/* one byte over the largest path that fits */
+	char path[UE_BRIDGE_PATH_BYTES + 1];
 
 	fake_reset();
 	memset(path, 'a', sizeof(path) - 1);
 	path[sizeof(path) - 1] = 0;
 	settings.log_path = path;
 	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
-	UEB_CHECK(strlen((const char *)ue_bridge_header()->game_log_path) == UE_BRIDGE_PATH_BYTES - 1);
+	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
+}
+
+static void core_log_path_that_just_fits_is_published_whole(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	char path[UE_BRIDGE_PATH_BYTES];
+
+	fake_reset();
+	memset(path, 'a', sizeof(path) - 1);
+	path[sizeof(path) - 1] = 0;
+	settings.log_path = path;
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	UEB_CHECK(strcmp((const char *)ue_bridge_header()->game_log_path, path) == 0);
+}
+
+static void fake_silent_failure_path(const char *path, char *utf8, uint32_t capacity)
+{
+	(void)path;
+	(void)utf8;
+	(void)capacity;
+}
+
+/* Fills the stack where ue_bridge_start's buffer will sit with short non-empty strings: all 'z' would
+read as a path too long to fit, which is also published empty, and hide a missing reset. */
+static void __attribute__((noinline)) poison_the_stack(void)
+{
+	volatile char garbage[2048];
+	size_t index;
+
+	for (index = 0; index < sizeof(garbage); index++)
+		garbage[index] = index % 8 == 7 ? 0 : 'z';
+}
+
+static void core_log_path_from_a_silently_failing_conversion_is_empty(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	static struct ue_bridge_os os;
+
+	fake_reset();
+	os = fake_os;
+	os.path_to_utf8 = fake_silent_failure_path;
+	poison_the_stack();
+	UEB_CHECK(ue_bridge_start(&settings, &os));
+	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
 static void fake_upper_case_path(const char *path, char *utf8, uint32_t capacity)
@@ -379,9 +427,11 @@ static void fake_upper_case_path(const char *path, char *utf8, uint32_t capacity
 static void core_log_path_goes_through_path_to_utf8(void)
 {
 	struct ue_bridge_settings settings = enabled_settings();
-	struct ue_bridge_os os = fake_os;
+	/* static: the core keeps the pointer, so it must not die with this frame if a check fails */
+	static struct ue_bridge_os os;
 
 	fake_reset();
+	os = fake_os;
 	os.path_to_utf8 = fake_upper_case_path;
 	UEB_CHECK(ue_bridge_start(&settings, &os));
 	UEB_CHECK(strcmp((const char *)ue_bridge_header()->game_log_path, "C:/HALO/DEBUG.TXT") == 0);
@@ -524,6 +574,7 @@ static void core_section_failure_starts_nothing(void)
 	fake_fail_name = "Bridge.1234";
 	UEB_CHECK(!ue_bridge_start(&settings, &fake_os));
 	UEB_CHECK(!ue_bridge_active());
+	UEB_CHECK(fake_maps == 0);
 	UEB_CHECK(fake_maps == fake_unmaps);
 }
 
@@ -762,7 +813,9 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_publishes_directory_entry", core_publishes_directory_entry },
 	{ "core_directory_left_odd_by_dead_game_is_repaired", core_directory_left_odd_by_dead_game_is_repaired },
 	{ "core_zero_random_session_becomes_one", core_zero_random_session_becomes_one },
-	{ "core_long_log_path_is_truncated_and_terminated", core_long_log_path_is_truncated_and_terminated },
+	{ "core_log_path_that_does_not_fit_is_published_empty", core_log_path_that_does_not_fit_is_published_empty },
+	{ "core_log_path_that_just_fits_is_published_whole", core_log_path_that_just_fits_is_published_whole },
+	{ "core_log_path_from_a_silently_failing_conversion_is_empty", core_log_path_from_a_silently_failing_conversion_is_empty },
 	{ "core_log_path_goes_through_path_to_utf8", core_log_path_goes_through_path_to_utf8 },
 	{ "core_null_log_path_is_empty", core_null_log_path_is_empty },
 	{ "core_publish_tick_and_frame", core_publish_tick_and_frame },

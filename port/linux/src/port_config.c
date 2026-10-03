@@ -126,6 +126,7 @@ static const struct config_setting config_settings[] =
 	{ "game.language", _config_string, "\"\"", "HALO_LANGUAGE", _environment_value, _platform_all,
 		"The language the game asks the Xbox for: \"ja\", \"de\", \"fr\", \"es\" or \"it\";\n"
 		"empty for English. The game data decides what is translated." },
+
 	{ "ue_bridge.enabled", _config_boolean, "false", "HALO_UE_BRIDGE", _environment_value, _platform_desktop,
 		"Publish the game for the HaloCEUE renderer (Windows): a shared-memory\n"
 		"bridge a running HaloCEUE attaches to. Off changes nothing." },

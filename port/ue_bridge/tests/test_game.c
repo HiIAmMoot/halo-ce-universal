@@ -309,6 +309,15 @@ static void game_halted_before_start_does_nothing(void)
 	UEB_CHECK(game_maps == 0);
 }
 
+static void game_shutdown_after_halt_keeps_the_published_crash(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_halted();
+	ue_bridge_game_shutdown();
+	UEB_CHECK(section_header()->game_stopping == UE_BRIDGE_STOP_CRASH);
+}
+
 static void game_shutdown_after_halt_beats_again_on_restart(void)
 {
 	game_reset();
@@ -338,6 +347,7 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_shutdown_stops_watcher_and_bridge", game_shutdown_stops_watcher_and_bridge },
 	{ "game_halted_stops_heartbeat_and_publishes_crash", game_halted_stops_heartbeat_and_publishes_crash },
 	{ "game_halted_before_start_does_nothing", game_halted_before_start_does_nothing },
+	{ "game_shutdown_after_halt_keeps_the_published_crash", game_shutdown_after_halt_keeps_the_published_crash },
 	{ "game_shutdown_after_halt_beats_again_on_restart", game_shutdown_after_halt_beats_again_on_restart },
 	{ 0, 0 }
 };
