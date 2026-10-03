@@ -262,6 +262,16 @@ MUTANTS = [
     Mutant("5", "port/windows/src/win32_ue_bridge.c",
            "ReleaseMutex(directory_mutex);", ";",
            "pytest:test_a_second_game_starts_without_waiting_for_a_live_first_game"),
+    Mutant("10", "port/ue_bridge/tests/roles.c",
+           "if (file_exists(exit_when))", "if (file_exists(exit_when) && 0)",
+           "pytest:test_exit_when_file_appears"),
+    Mutant("10", "port/ue_bridge/tests/roles.c",
+           "if ((crash_after >= 0 && elapsed >= crash_after) || file_exists(crash_when))",
+           "if ((crash_after >= 0 && elapsed >= crash_after) || (file_exists(crash_when) && 0))",
+           "pytest:test_crash_when_file_appears"),
+    Mutant("10", "port/ue_bridge/tests/roles.c",
+           "if (!hanging && (hang_after < 0 || elapsed < hang_after))", "if ((hanging || 1) && (hang_after < 0 || elapsed < hang_after))",
+           "pytest:test_hang_when_file_appears"),
 ]
 
 

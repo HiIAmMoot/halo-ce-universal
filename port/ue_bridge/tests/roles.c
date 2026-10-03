@@ -13,6 +13,9 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --crash-after-ms N  raises an access violation after N ms
   --hang-after-ms N   stops heartbeating and publishing after N ms (stays alive)
   --overflow-after-ms N  overflows the stack after N ms
+  --exit-when PATH    exits normally once PATH exists
+  --crash-when PATH   raises an access violation once PATH exists
+  --hang-when PATH    stops heartbeating and publishing once PATH exists
   --continue          on_peer_exit = continue
   --disabled          ue_bridge.enabled = false
   --cycles N          starts and stops the bridge N times in a row (no watcher,
@@ -111,6 +114,11 @@ static int option_flag(int argc, char **argv, const char *name)
 			return 1;
 	}
 	return 0;
+}
+
+static int file_exists(const char *path)
+{
+	return path && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
 static void write_ready_file(const char *path)
@@ -228,6 +236,11 @@ static int fake_game(int argc, char **argv)
 	long hang_after = option_number(argc, argv, "--hang-after-ms", -1);
 	long overflow_after = option_number(argc, argv, "--overflow-after-ms", -1);
 	long cycles = option_number(argc, argv, "--cycles", 0);
+	const char *exit_when = option_text(argc, argv, "--exit-when");
+	const char *crash_when = option_text(argc, argv, "--crash-when");
+	const char *hang_when = option_text(argc, argv, "--hang-when");
+	/* latched: the hang outlives its trigger file being deleted */
+	int hanging = 0;
 	DWORD start = GetTickCount();
 	DWORD last_tick = start;
 	uint64_t tick = 0;
@@ -256,7 +269,9 @@ static int fake_game(int argc, char **argv)
 	{
 		long elapsed = (long)(GetTickCount() - start);
 
-		if (crash_after >= 0 && elapsed >= crash_after)
+		if (file_exists(exit_when))
+			break;
+		if ((crash_after >= 0 && elapsed >= crash_after) || file_exists(crash_when))
 		{
 			raise_access_violation();
 			/* the bridge's hook must end the process; execution only returns when it didn't */
@@ -268,7 +283,9 @@ static int fake_game(int argc, char **argv)
 			recurse(0);
 			return 7;
 		}
-		if (hang_after < 0 || elapsed < hang_after)
+		if (file_exists(hang_when))
+			hanging = 1;
+		if (!hanging && (hang_after < 0 || elapsed < hang_after))
 		{
 			ue_bridge_heartbeat();
 			ue_bridge_publish_frame(++frame, 0.5f);

@@ -350,3 +350,86 @@ def test_an_abandoned_directory_lock_is_taken_over_without_waiting(spawn, tmp_pa
     assert lock_messages(tmp_path / "debug.txt") == []
     assert finish(game, 10) == 0
 
+
+
+GAME_HEARTBEAT_OFFSET = 600
+GAME_STOPPING_OFFSET = 624
+STOP_EXIT = 1
+FILE_MAP_READ = 4
+
+
+class HeaderView:
+    """the game's header section, held open: the section outlives the game while this handle does,
+    so the stop the game published can be read after it has exited"""
+
+    def __init__(self, spawn):
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenFileMappingA.restype = ctypes.c_void_p
+        kernel32.MapViewOfFile.restype = ctypes.c_void_p
+        kernel32.MapViewOfFile.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_size_t]
+        section = probe_entry(spawn)["section"]
+        self.handle = kernel32.OpenFileMappingA(FILE_MAP_READ, False, section.encode())
+        assert self.handle, "the game's section is not there"
+        self.view = kernel32.MapViewOfFile(self.handle, FILE_MAP_READ, 0, 0, 0x1000)
+        assert self.view
+        self.kernel32 = kernel32
+
+    def u64(self, offset: int) -> int:
+        return ctypes.c_uint64.from_address(self.view + offset).value
+
+    def u32(self, offset: int) -> int:
+        return ctypes.c_uint32.from_address(self.view + offset).value
+
+    def close(self) -> None:
+        self.kernel32.UnmapViewOfFile(ctypes.c_void_p(self.view))
+        self.kernel32.CloseHandle(ctypes.c_void_p(self.handle))
+
+
+@pytest.fixture
+def header_view(spawn):
+    views: list[HeaderView] = []
+
+    def open_view() -> HeaderView:
+        views.append(HeaderView(spawn))
+        return views[-1]
+
+    yield open_view
+    for view in views:
+        view.close()
+
+
+def test_exit_when_file_appears_the_game_exits_and_publishes_the_stop(spawn, header_view, tmp_path):
+    flag = tmp_path / "exit.flag"
+    game = start_game(spawn, tmp_path, "--run-ms", 60000, "--exit-when", flag)
+    view = header_view()
+    time.sleep(0.5)
+    assert game.poll() is None
+    assert view.u32(GAME_STOPPING_OFFSET) == 0
+    flag.write_text("1")
+    assert finish(game, 5) == 0
+    assert view.u32(GAME_STOPPING_OFFSET) == STOP_EXIT
+
+
+def test_crash_when_file_appears_the_game_crashes(spawn, tmp_path):
+    flag = tmp_path / "crash.flag"
+    game = start_game(spawn, tmp_path, "--run-ms", 60000, "--crash-when", flag)
+    time.sleep(0.5)
+    assert game.poll() is None
+    flag.write_text("1")
+    assert finish(game, 15) == EXCEPTION_ACCESS_VIOLATION
+    assert is_minidump(tmp_path / "game_crash_self.dmp")
+
+
+def test_hang_when_file_appears_the_heartbeat_stops_and_the_game_stays_alive(spawn, header_view, tmp_path):
+    flag = tmp_path / "hang.flag"
+    game = start_game(spawn, tmp_path, "--run-ms", 60000, "--hang-when", flag)
+    view = header_view()
+    first = view.u64(GAME_HEARTBEAT_OFFSET)
+    time.sleep(0.5)
+    assert view.u64(GAME_HEARTBEAT_OFFSET) > first
+    flag.write_text("1")
+    time.sleep(0.5)
+    stalled = view.u64(GAME_HEARTBEAT_OFFSET)
+    time.sleep(1.0)
+    assert view.u64(GAME_HEARTBEAT_OFFSET) == stalled
+    assert game.poll() is None
