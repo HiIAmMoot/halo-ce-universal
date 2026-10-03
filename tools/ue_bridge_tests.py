@@ -37,6 +37,17 @@ SOURCES = [
 ]
 LIBRARIES: list[str] = []
 
+# the role processes for the cross-process tests: the core and the real
+# Windows layer, no fakes
+ROLE_SOURCES = [
+    BRIDGE / "ue_bridge_ring.c",
+    BRIDGE / "ue_bridge_policy.c",
+    ROOT / "port" / "linux" / "src" / "ue_bridge.c",
+    ROOT / "port" / "windows" / "src" / "win32_ue_bridge.c",
+    BRIDGE / "tests" / "roles.c",
+]
+ROLE_LIBRARIES = ["bcrypt", "dbghelp"]
+
 FLAGS = [
     "--target=i686-pc-windows-msvc",
     "-std=gnu11",
@@ -70,21 +81,30 @@ def asan_runtime(cc: str) -> Path:
     return dll
 
 
-def build(asan: bool = False) -> Path:
-    """the test executable, built; raises CalledProcessError when it doesn't compile"""
+def _build(name: str, sources: list[Path], libraries: list[str], asan: bool) -> Path:
     cc = compiler(asan)
     out_dir = BUILD / ("asan" if asan else "plain")
     out_dir.mkdir(parents=True, exist_ok=True)
-    exe = out_dir / "ue_bridge_tests.exe"
+    exe = out_dir / f"{name}.exe"
     flags = FLAGS + (["-fsanitize=address"] if asan else [])
     subprocess.run(
-        [cc, *flags, "-fuse-ld=lld", *map(str, SOURCES), "-o", str(exe), *[f"-l{lib}" for lib in LIBRARIES]],
+        [cc, *flags, "-fuse-ld=lld", *map(str, sources), "-o", str(exe), *[f"-l{lib}" for lib in libraries]],
         check=True,
     )
     if asan:
         runtime = asan_runtime(cc)
         shutil.copyfile(runtime, out_dir / runtime.name)
     return exe
+
+
+def build(asan: bool = False) -> Path:
+    """the unit-test executable, built; raises CalledProcessError when it doesn't compile"""
+    return _build("ue_bridge_tests", SOURCES, LIBRARIES, asan)
+
+
+def build_roles(asan: bool = False) -> Path:
+    """ue_bridge_roles.exe, built"""
+    return _build("ue_bridge_roles", ROLE_SOURCES, ROLE_LIBRARIES, asan)
 
 
 def main() -> int:

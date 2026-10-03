@@ -187,6 +187,11 @@ void ue_bridge_stop(uint32_t stopping)
 	directory_lock();
 	withdraw_directory((volatile struct ue_bridge_directory *)bridge.directory_view);
 	directory_unlock();
+	/* the crash filter reads ue_bridge_header() from the crashing thread, and a
+	crash during the stop must not make it read a view that is being unmapped.
+	This narrows the window but cannot close it: a filter that already holds the
+	pointer can still touch the view after the unmap. */
+	__atomic_store_n(&bridge.section_view, NULL, __ATOMIC_SEQ_CST);
 	bridge.os->unmap_section(bridge.directory_view, bridge.directory_handle);
 	bridge.os->unmap_section(section_view, bridge.section_handle);
 	memset(&bridge, 0, sizeof(bridge));

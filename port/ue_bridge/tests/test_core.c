@@ -37,6 +37,8 @@ static int fake_first_unmap_seen;
 static uint32_t fake_stopping_at_first_unmap;
 static uint64_t fake_session_at_first_unmap;
 static uint32_t fake_sequence_at_first_unmap;
+static int fake_section_unmapped;
+static volatile struct ue_bridge_header *fake_header_api_at_section_unmap;
 
 static volatile struct ue_bridge_directory *fake_directory(void)
 {
@@ -130,8 +132,12 @@ static void fake_unmap(void *view, void *handle)
 	volatile struct ue_bridge_header *section = fake_bridge_section();
 	volatile struct ue_bridge_directory *directory = fake_directory();
 
-	(void)view;
 	(void)handle;
+	if (section && view == (void *)section)
+	{
+		fake_section_unmapped = 1;
+		fake_header_api_at_section_unmap = ue_bridge_header();
+	}
 	if (!fake_first_unmap_seen && section && directory)
 	{
 		fake_first_unmap_seen = 1;
@@ -211,6 +217,8 @@ static void fake_reset(void)
 	fake_stopping_at_first_unmap = 0;
 	fake_session_at_first_unmap = 0;
 	fake_sequence_at_first_unmap = 1;
+	fake_section_unmapped = 0;
+	fake_header_api_at_section_unmap = (volatile struct ue_bridge_header *)1;
 	fake_lock_calls = 0;
 	fake_unlock_calls = 0;
 	fake_lock_held = 0;
@@ -579,6 +587,18 @@ static void core_stop_writes_before_it_unmaps(void)
 	UEB_CHECK((fake_sequence_at_first_unmap & 1u) == 0);
 }
 
+static void core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	UEB_CHECK(ue_bridge_header() != 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	UEB_CHECK(fake_section_unmapped);
+	UEB_CHECK(fake_header_api_at_section_unmap == 0);
+}
+
 static void core_start_and_stop_each_take_the_directory_lock_once(void)
 {
 	struct ue_bridge_settings settings = enabled_settings();
@@ -758,6 +778,7 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_second_start_while_active_is_a_no_op", core_second_start_while_active_is_a_no_op },
 	{ "core_header_is_complete_when_the_directory_is_mapped", core_header_is_complete_when_the_directory_is_mapped },
 	{ "core_stop_writes_before_it_unmaps", core_stop_writes_before_it_unmaps },
+	{ "core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it", core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it },
 	{ "core_start_and_stop_each_take_the_directory_lock_once", core_start_and_stop_each_take_the_directory_lock_once },
 	{ "core_concurrent_reader_never_sees_a_mixed_directory_entry", core_concurrent_reader_never_sees_a_mixed_directory_entry },
 	{ "core_concurrent_reader_never_sees_a_tick_without_its_payload", core_concurrent_reader_never_sees_a_tick_without_its_payload },

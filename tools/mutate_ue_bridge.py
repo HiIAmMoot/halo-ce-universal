@@ -8,6 +8,7 @@ Mutants are single-line replacements (the checkout's line endings vary).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ class Mutant:
     path: str  # relative to the repository root
     original: str  # one line, occurring exactly once in the file
     mutated: str
-    killed_by: str  # a test-name filter for ue_bridge_tests.exe
+    killed_by: str  # a test-name filter for ue_bridge_tests.exe, or "pytest:<test name>" for a cross-process test
 
 
 MUTANTS = [
@@ -183,6 +184,57 @@ MUTANTS = [
     Mutant("4", "port/linux/src/ue_bridge.c",
            "ueb_store_u32(&header->game_stopping, stopping);", "(void)stopping;",
            "core_publish_stopping_sets_flag_only_when_active"),
+    Mutant("5", "port/linux/src/ue_bridge.c",
+           "__atomic_store_n(&bridge.section_view, NULL, __ATOMIC_SEQ_CST);", ";",
+           "core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "if (action == UE_BRIDGE_ACTION_PEER_HUNG)", "if (0)",
+           "pytest:test_game_kills_hung_standalone_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "if (ue_bridge_policy_shuts_down(action, watch_config.continue_on_peer_exit))", "if (1)",
+           "pytest:test_continue_mode_keeps_game_running"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "GetTickCount() - start < UE_BRIDGE_DUMP_WAIT_MS", "1",
+           "pytest:test_crash_wait_is_capped_when_ue_ignores_it"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "previous_filter = SetUnhandledExceptionFilter(bridge_crash_filter);", ";",
+           "pytest:test_crash_self_dumps_when_no_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "write_self_dump(exception, header);", ";",
+           "pytest:test_crash_self_dumps_when_no_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "view->debugger_attached = ueb_load_u32(&header->ue_debugger_attached) != 0;", "view->debugger_attached = 0;",
+           "pytest:test_no_hang_action_while_ue_debugger_flag_set"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "view->is_editor = ueb_load_u32(&header->ue_is_editor) != 0;", "view->is_editor = 0;",
+           "pytest:test_game_never_kills_hung_editor_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "view->hang_timeout_ms = ueb_load_u32(&header->ue_hang_timeout_ms);", "view->hang_timeout_ms = 0;",
+           "pytest:test_game_kills_hung_standalone_ue"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "view->crashing = view->stopping == UE_BRIDGE_STOP_CRASH;", "view->crashing = 0;",
+           "pytest:test_game_leaves_a_crashing_ue_alone"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "view->busy = ueb_load_u32(&header->ue_busy) != 0;", "view->busy = 0;",
+           "pytest:test_no_hang_action_while_ue_busy"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "write_header_snapshot(directory, header);", ";",
+           "pytest:test_game_report_carries_the_header_and_ues_crash_folder"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "result = WAIT_TIMEOUT;",
+           "pytest:test_concurrent_games_leave_the_directory_coherent"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);", "result = WaitForSingleObject(directory_mutex, INFINITE);",
+           "pytest:test_a_hung_directory_lock_holder_delays_game_start_by_the_cap_only"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "if (result == WAIT_OBJECT_0 || result == WAIT_ABANDONED)", "if (result == WAIT_OBJECT_0)",
+           "pytest:test_an_abandoned_directory_lock_is_taken_over_without_waiting"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "ReleaseMutex(directory_mutex);", ";",
+           "pytest:test_concurrent_games_leave_the_directory_coherent"),
+    Mutant("5", "port/windows/src/win32_ue_bridge.c",
+           "DWORD length = GetFullPathNameA(path, sizeof(full), full, NULL);", "DWORD length = (strcpy(full, path), (DWORD)strlen(path));",
+           "pytest:test_published_log_path_is_made_absolute"),
 ]
 
 
@@ -195,6 +247,11 @@ def killed(mutant: Mutant) -> bool:
         raise RuntimeError(f"{mutant.path}: {mutant.original!r} must occur exactly once")
     try:
         path.write_bytes(data.replace(original, mutant.mutated.encode("utf-8")))
+        if mutant.killed_by.startswith("pytest:"):
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", "tools/test_ue_bridge.py", "-q", "-x", "-k", mutant.killed_by[len("pytest:"):]],
+                cwd=ue_bridge_tests.ROOT, capture_output=True, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
+            return result.returncode != 0
         try:
             exe = ue_bridge_tests.build()
         except subprocess.CalledProcessError:
