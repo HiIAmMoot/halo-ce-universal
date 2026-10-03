@@ -381,6 +381,7 @@ static int fake_ue(int argc, char **argv)
 	long crash_after = option_number(argc, argv, "--crash-after-ms", -1);
 	long hang_after = option_number(argc, argv, "--hang-after-ms", -1);
 	long crash_linger = option_number(argc, argv, "--crash-linger-ms", 0);
+	long exit_linger = option_number(argc, argv, "--exit-linger-ms", 0);
 	int dump_on_crashing = option_flag(argc, argv, "--dump-on-crashing");
 	volatile struct ue_bridge_directory *directory;
 	volatile struct ue_bridge_header *header;
@@ -425,6 +426,8 @@ static int fake_ue(int argc, char **argv)
 		if (exit_after >= 0 && elapsed >= exit_after)
 		{
 			ueb_store_u32(&header->ue_stopping, UE_BRIDGE_STOP_EXIT);
+			/* a shutdown still writing its config: alive, silent, EXIT published */
+			Sleep((DWORD)exit_linger);
 			break;
 		}
 		if (crash_after >= 0 && elapsed >= crash_after)

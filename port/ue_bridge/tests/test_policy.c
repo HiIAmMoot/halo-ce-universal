@@ -111,6 +111,65 @@ static void policy_debugger_suppresses_crashing_too_long(void)
 	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(101), FREQUENCY) == UE_BRIDGE_ACTION_PEER_CRASHING);
 }
 
+static void policy_exiting_live_peer_is_left_alone_within_the_limit(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	/* a UE that published EXIT is still writing its config and caches: no heartbeats, not a hang */
+	peer.stopping = UE_BRIDGE_STOP_EXIT;
+	peer.crashing_for_ms = 0;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_NONE);
+	peer.crashing_for_ms = UE_BRIDGE_CRASHING_LIMIT_MS;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_NONE);
+}
+
+static void policy_exiting_live_peer_past_the_limit_is_hung(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	peer.stopping = UE_BRIDGE_STOP_EXIT;
+	peer.crashing_for_ms = UE_BRIDGE_CRASHING_LIMIT_MS + 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_PEER_HUNG);
+	peer.is_editor = 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_PEER_HUNG_EDITOR);
+}
+
+static void policy_debugger_suppresses_an_exiting_peer_hang(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	peer.stopping = UE_BRIDGE_STOP_EXIT;
+	peer.crashing_for_ms = UE_BRIDGE_CRASHING_LIMIT_MS + 1;
+	peer.debugger_attached = 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_NONE);
+}
+
+static void policy_exiting_peer_that_exited_is_judged_by_its_exit_code(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	peer.stopping = UE_BRIDGE_STOP_EXIT;
+	peer.crashing_for_ms = UE_BRIDGE_CRASHING_LIMIT_MS + 1;
+	peer.process_exited = 1;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_PEER_EXITED);
+	peer.exit_code = 0xC0000005u;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, SECONDS(1000), FREQUENCY) == UE_BRIDGE_ACTION_PEER_CRASHED);
+}
+
+static void policy_winding_down_is_crashing_or_stopping(void)
+{
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	UEB_CHECK(!ue_bridge_peer_winding_down(&peer));
+	peer.crashing = 1;
+	UEB_CHECK(ue_bridge_peer_winding_down(&peer));
+	peer.crashing = 0;
+	peer.stopping = UE_BRIDGE_STOP_EXIT;
+	UEB_CHECK(ue_bridge_peer_winding_down(&peer));
+	peer.stopping = UE_BRIDGE_STOP_CRASH;
+	UEB_CHECK(ue_bridge_peer_winding_down(&peer));
+}
+
 static void policy_stale_heartbeat_is_hung(void)
 {
 	struct ue_bridge_peer_view peer = alive_peer();
@@ -257,6 +316,11 @@ const struct ueb_test ueb_policy_tests[] =
 	{ "policy_crashing_peer_is_crashing", policy_crashing_peer_is_crashing },
 	{ "policy_crashing_too_long_is_hung", policy_crashing_too_long_is_hung },
 	{ "policy_debugger_suppresses_crashing_too_long", policy_debugger_suppresses_crashing_too_long },
+	{ "policy_exiting_live_peer_is_left_alone_within_the_limit", policy_exiting_live_peer_is_left_alone_within_the_limit },
+	{ "policy_exiting_live_peer_past_the_limit_is_hung", policy_exiting_live_peer_past_the_limit_is_hung },
+	{ "policy_debugger_suppresses_an_exiting_peer_hang", policy_debugger_suppresses_an_exiting_peer_hang },
+	{ "policy_exiting_peer_that_exited_is_judged_by_its_exit_code", policy_exiting_peer_that_exited_is_judged_by_its_exit_code },
+	{ "policy_winding_down_is_crashing_or_stopping", policy_winding_down_is_crashing_or_stopping },
 	{ "policy_stale_heartbeat_is_hung", policy_stale_heartbeat_is_hung },
 	{ "policy_stall_below_peer_timeout_is_not_a_hang", policy_stall_below_peer_timeout_is_not_a_hang },
 	{ "policy_debugger_suppresses_hang", policy_debugger_suppresses_hang },

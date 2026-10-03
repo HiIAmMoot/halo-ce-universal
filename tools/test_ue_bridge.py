@@ -183,6 +183,26 @@ def test_game_leaves_a_crashing_ue_alone(spawn, tmp_path):
     assert game_report(session)["peer_action"] == "peer_crashed"
 
 
+def test_game_leaves_an_exiting_ue_alone_while_it_shuts_down(spawn, tmp_path):
+    game = start_game(spawn, tmp_path)
+    # EXIT published at 0.5 s, then silent for 6 s: far beyond its 1.5 s timeout, but exiting
+    ue, session = start_ue(spawn, tmp_path, "--exit-after-ms", 500, "--exit-linger-ms", 6000, "--hang-timeout-ms", 1500)
+    assert finish(ue, 12) == 0
+    assert finish(game, 5) == 0
+    assert game_report(session)["peer_action"] == "peer_exited"
+
+
+def test_game_ends_an_exiting_ue_that_never_finishes_after_the_grace(spawn, tmp_path):
+    game = start_game(spawn, tmp_path, "--run-ms", 90000)
+    # the grace is the crashing limit (30 s): past it a silent exiting UE has hung
+    ue, session = start_ue(spawn, tmp_path, "--exit-after-ms", 500, "--exit-linger-ms", 60000, "--hang-timeout-ms", 1500)
+    started = time.monotonic()
+    assert finish(ue, 45) == HUNG_PEER_EXIT_CODE
+    assert time.monotonic() - started > 25.0
+    assert finish(game, 5) == 0
+    assert game_report(session)["peer_action"] == "peer_hung"
+
+
 def test_no_hang_action_while_ue_busy(spawn, tmp_path):
     game = start_game(spawn, tmp_path)
     ue, session = start_ue(spawn, tmp_path, "--busy-flag", "--hang-after-ms", 200, "--hang-timeout-ms", 1000,

@@ -37,7 +37,7 @@ struct ue_bridge_peer_view
 	/* the peer is crashing: the game's crash hook is waiting for a dump
 	(game_crashing), or UE's crash reporter is running (ue_stopping = crash) */
 	int crashing;
-	/* how long the watcher has seen crashing set; it measures this itself */
+	/* how long the watcher has seen the peer winding down (crashing or stopping); it measures this itself */
 	uint32_t crashing_for_ms;
 	/* 0 until the peer's first heartbeat */
 	uint64_t heartbeat_qpc;
@@ -49,7 +49,7 @@ struct ue_bridge_peer_view
 	int is_editor;
 };
 
-/* a crash hook or crash reporter still running after this long has hung itself */
+/* a crash hook, crash reporter or shutdown still running after this long has hung itself */
 #define UE_BRIDGE_CRASHING_LIMIT_MS (UE_BRIDGE_DUMP_WAIT_MS + 20000u)
 
 enum ue_bridge_action ue_bridge_policy_decide(const struct ue_bridge_peer_view *peer, uint64_t now_qpc, uint64_t qpc_frequency);
@@ -70,6 +70,13 @@ struct ue_bridge_crash_clock
 /* 0 while the peer is not crashing (and resets the clock), and on the first
 sighting; then the milliseconds since it */
 uint32_t ue_bridge_crashing_for_ms(struct ue_bridge_crash_clock *clock, int crashing, uint32_t now_ms);
+
+/* 1 while a peer is crashing or has published a stop (UE_BRIDGE_STOP_EXIT or
+CRASH): the watcher leaves such a live peer alone, up to UE_BRIDGE_CRASHING_LIMIT_MS
+of its own clock, and a caller feeds ue_bridge_crashing_for_ms with this. An
+exiting peer is still writing its config and caches: it has stopped heartbeating
+but has not hung. */
+int ue_bridge_peer_winding_down(const struct ue_bridge_peer_view *peer);
 
 /* 1 for an NTSTATUS error code (0xC0000000 and above): an unhandled exception */
 int ue_bridge_exit_code_is_crash(uint32_t exit_code);

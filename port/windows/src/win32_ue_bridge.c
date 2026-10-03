@@ -500,9 +500,9 @@ static void read_peer_view(volatile struct ue_bridge_header *header, HANDLE peer
 		view->exit_code = code;
 	}
 	view->stopping = ueb_load_u32(&header->ue_stopping);
-	/* UE published a crash: its crash reporter is running and its game thread
-	is gone; terminating it now would lose UE's own dump */
-	view->crashing = view->stopping == UE_BRIDGE_STOP_CRASH;
+	/* view->crashing stays 0: the policy takes a published CRASH (UE's crash
+	reporter is running, its game thread gone; terminating it now would lose
+	UE's own dump) and a published EXIT as winding down from stopping alone */
 	view->heartbeat_qpc = ueb_load_u64(&header->ue_heartbeat_qpc);
 	view->hang_timeout_ms = ueb_load_u32(&header->ue_hang_timeout_ms);
 	view->debugger_attached = ueb_load_u32(&header->ue_debugger_attached) != 0;
@@ -568,7 +568,8 @@ static DWORD WINAPI watcher_main(void *unused)
 		if (!peer || acted)
 			continue;
 		read_peer_view(header, peer, &view);
-		view.crashing_for_ms = ue_bridge_crashing_for_ms(&crash_clock, view.crashing, GetTickCount());
+		/* an exiting renderer gets the crashing grace too: it is alive but silent while it writes its config */
+		view.crashing_for_ms = ue_bridge_crashing_for_ms(&crash_clock, ue_bridge_peer_winding_down(&view), GetTickCount());
 		action = ue_bridge_policy_decide(&view, qpc(), header->qpc_frequency);
 		if (action == UE_BRIDGE_ACTION_NONE || action == UE_BRIDGE_ACTION_PEER_CRASHING)
 			continue;
