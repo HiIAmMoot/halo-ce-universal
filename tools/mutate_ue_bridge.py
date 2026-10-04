@@ -444,7 +444,11 @@ def verify_clean_tree(mutants: list[Mutant]) -> None:
     for test in sorted({m.killed_by[len("pytest:"):] for m in mutants if m.killed_by.startswith("pytest:")}):
         result = run_pytest(test)
         if result.returncode != 0 or "passed" not in result.stdout:
-            raise SystemExit(f"{test} does not pass on the clean tree (exit {result.returncode}); not mutating:\n{result.stdout[-2000:]}")
+            if result.returncode == TIMED_OUT:
+                rc = "timed out"
+            else:
+                rc = f"exit {result.returncode}"
+            raise SystemExit(f"{test} does not pass on the clean tree ({rc}); not mutating:\n{result.stdout[-2000:]}")
 
 
 C_TEST_TIMEOUT_S = 120
@@ -452,12 +456,18 @@ C_TEST_TIMEOUT_S = 120
 
 def judge(mutant: Mutant) -> tuple[str, str]:
     """the best verdict of the mutant's runs: killed if any run kills it, else invalid if any run
-    was, else survived"""
+    was invalid, else survived"""
     verdicts = [judge_once(mutant) for _ in range(mutant.runs)]
-    for wanted in (KILLED, INVALID):
-        for verdict in verdicts:
-            if verdict[0] == wanted:
-                return verdict
+    killed = [v for v in verdicts if v[0] == KILLED]
+    invalid = [v for v in verdicts if v[0] == INVALID]
+    if killed:
+        verdict, reason = killed[0]
+        if invalid:
+            reasons = ", ".join(v[1] for v in invalid)
+            return verdict, f"also {len(invalid)} of {len(verdicts)} runs invalid: {reasons}"
+        return verdict, reason
+    if invalid:
+        return invalid[0]
     return verdicts[0]
 
 
