@@ -257,6 +257,7 @@ void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz)
 
 	if (!header)
 		return;
+	/* two stores, not one atomic pair: UE re-evaluates both every tick, so a mixed read lasts one tick */
 	ueb_store_u32(&header->game_refresh_hz, refresh_hz);
 	ueb_store_u32(&header->game_frame_target_hz, target_hz);
 }

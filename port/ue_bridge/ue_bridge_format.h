@@ -7,9 +7,7 @@ docs/superpowers/specs/2026-10-02-phase0-bridge-design.md, sections 4 and 8.1.
 
 Both compilers check every offset below at compile time, so a change that
 lays a field out differently on either side fails to build. Any change to
-this file that moves or resizes an existing field bumps UE_BRIDGE_VERSION; a
-field added after the last one does not (a reader built before it ignores it, and
-a game built before it leaves it zero).
+this file bumps UE_BRIDGE_VERSION.
 
 The game creates two named sections:
 - the directory (UE_BRIDGE_DIRECTORY_NAME, fixed): which game is current, and
@@ -31,7 +29,7 @@ The game creates two named sections:
 #endif
 
 #define UE_BRIDGE_MAGIC 0x45554248u
-#define UE_BRIDGE_VERSION 1u
+#define UE_BRIDGE_VERSION 2u
 
 #define UE_BRIDGE_DIRECTORY_NAME "Local\\HaloCEUE.Bridge.Directory"
 #define UE_BRIDGE_DIRECTORY_SIZE 0x1000u

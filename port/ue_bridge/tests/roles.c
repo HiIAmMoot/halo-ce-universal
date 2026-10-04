@@ -22,7 +22,8 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --refresh-hz N      published as the display's refresh rate (default 0: unknown)
   --frame-target-hz N published as the frame-rate target (default 0: uncapped)
   --target-file PATH  while PATH exists, its number is republished as the target
-                      whenever it changes
+                      whenever it changes (not while hanging); the numbers are
+                      clamped to >= 0
   --continue          on_peer_exit = continue
   --disabled          ue_bridge.enabled = false
   --cycles N          starts and stops the bridge N times in a row (no watcher,
@@ -140,6 +141,11 @@ static int option_flag(int argc, char **argv, const char *name)
 	return 0;
 }
 
+static long non_negative(long value)
+{
+	return value < 0 ? 0 : value;
+}
+
 static long read_number_file(const char *path, long fallback)
 {
 	FILE *file = path ? fopen(path, "r") : 0;
@@ -150,7 +156,7 @@ static long read_number_file(const char *path, long fallback)
 	if (fscanf(file, "%ld", &value) != 1)
 		value = fallback;
 	fclose(file);
-	return value;
+	return non_negative(value);
 }
 
 static int file_exists(const char *path)
@@ -297,8 +303,8 @@ static int fake_game(int argc, char **argv)
 	const char *crash_when = option_text(argc, argv, "--crash-when");
 	const char *hang_when = option_text(argc, argv, "--hang-when");
 	const char *target_file = option_text(argc, argv, "--target-file");
-	long refresh_hz = option_number(argc, argv, "--refresh-hz", 0);
-	long target_hz = option_number(argc, argv, "--frame-target-hz", 0);
+	long refresh_hz = non_negative(option_number(argc, argv, "--refresh-hz", 0));
+	long target_hz = non_negative(option_number(argc, argv, "--frame-target-hz", 0));
 	/* latched: the hang outlives its trigger file being deleted */
 	int hanging = 0;
 	const char *ended = "run time over";
@@ -353,21 +359,21 @@ static int fake_game(int argc, char **argv)
 			recurse(0);
 			return 7;
 		}
-		if (file_exists(target_file))
-		{
-			long wanted = read_number_file(target_file, target_hz);
-
-			if (wanted != target_hz)
-			{
-				target_hz = wanted;
-				ue_bridge_publish_frame_rate((uint32_t)refresh_hz, (uint32_t)target_hz);
-			}
-		}
 		if (file_exists(hang_when))
 			hanging = 1;
 		if (!hanging && (hang_after < 0 || elapsed < hang_after))
 		{
 			ue_bridge_heartbeat();
+			if (file_exists(target_file))
+			{
+				long wanted = read_number_file(target_file, target_hz);
+
+				if (wanted != target_hz)
+				{
+					target_hz = wanted;
+					ue_bridge_publish_frame_rate((uint32_t)refresh_hz, (uint32_t)target_hz);
+				}
+			}
 			ue_bridge_publish_frame(++frame, 0.5f);
 			if (GetTickCount() - last_tick >= 33)
 			{

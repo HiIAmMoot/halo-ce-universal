@@ -40,6 +40,11 @@ static void format_header_layout(void)
 	UEB_CHECK(sizeof(struct ue_bridge_header) <= UE_BRIDGE_HEADER_SIZE);
 }
 
+static void format_version_is_2(void)
+{
+	UEB_CHECK(UE_BRIDGE_VERSION == 2u);
+}
+
 static void format_slot_layout(void)
 {
 	UEB_CHECK(sizeof(struct ue_bridge_slot) == 24);
@@ -53,6 +58,7 @@ const struct ueb_test ueb_format_tests[] =
 {
 	{ "format_directory_layout", format_directory_layout },
 	{ "format_header_layout", format_header_layout },
+	{ "format_version_is_2", format_version_is_2 },
 	{ "format_slot_layout", format_slot_layout },
 	{ 0, 0 }
 };

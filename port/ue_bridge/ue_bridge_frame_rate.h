@@ -35,20 +35,19 @@ static inline float ue_bridge_frame_limit_rate(int vsync, long max_fps, float re
 	return (float)max_fps;
 }
 
-static inline uint32_t ue_bridge_refresh_hz_published(float refresh_hz)
-{
-	return (uint32_t)(ue_bridge_refresh_or_default(refresh_hz) + 0.5f);
-}
-
 /* the frames a second the game aims for: 0 when nothing holds it back. Without
 interpolation the game draws once per 30 Hz tick whatever the limiter allows,
-so a limit below 30 is the only thing that can lower it. */
+so a limit below 30 is the only thing that can lower it. That 30 follows the
+defaults: the console globals rasterizer_refresh_rate and framerate_throttle are
+not followed. With vsync the game runs at the display's real rate, so an unknown
+one is no target at all (0), never the 60 the limiter assumes for max_fps 0:
+a guessed 60 would cap UE below the game. */
 static inline uint32_t ue_bridge_frame_target_hz(int vsync, long max_fps, int interpolation, float refresh_hz)
 {
 	uint32_t target;
 
 	if (vsync)
-		target = ue_bridge_refresh_hz_published(refresh_hz);
+		target = refresh_hz > 0.0f ? (uint32_t)(refresh_hz + 0.5f) : 0;
 	else
 		target = (uint32_t)(ue_bridge_frame_limit_rate(0, max_fps, refresh_hz) + 0.5f);
 	if (!interpolation && (target == 0 || target > UE_BRIDGE_ORIGINAL_FRAME_RATE))

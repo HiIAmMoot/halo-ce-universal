@@ -66,11 +66,19 @@ static void frame_rate_target_without_interpolation_keeps_a_lower_limit(void)
 	UEB_CHECK(ue_bridge_frame_target_hz(1, 0, 0, 24.0f) == 24u);
 }
 
-static void frame_rate_refresh_is_rounded_and_defaults_to_60(void)
+static void frame_rate_target_with_vsync_rounds_the_refresh_rate(void)
 {
-	UEB_CHECK(ue_bridge_refresh_hz_published(59.94f) == 60u);
-	UEB_CHECK(ue_bridge_refresh_hz_published(143.9f) == 144u);
-	UEB_CHECK(ue_bridge_refresh_hz_published(0.0f) == 60u);
+	UEB_CHECK(ue_bridge_frame_target_hz(1, 0, 1, 59.94f) == 60u);
+	UEB_CHECK(ue_bridge_frame_target_hz(1, 0, 1, 143.9f) == 144u);
+}
+
+/* vsync paces the game at the display's real rate, which is unknown here: a
+guessed 60 would cap UE below the game */
+static void frame_rate_target_with_vsync_and_an_unknown_refresh_rate_is_uncapped(void)
+{
+	UEB_CHECK(ue_bridge_frame_target_hz(1, 0, 1, 0.0f) == 0u);
+	UEB_CHECK(ue_bridge_frame_target_hz(1, 90, 1, -1.0f) == 0u);
+	UEB_CHECK(ue_bridge_frame_target_hz(1, 0, 0, 0.0f) == 30u);
 }
 
 const struct ueb_test ueb_frame_rate_tests[] =
@@ -84,6 +92,7 @@ const struct ueb_test ueb_frame_rate_tests[] =
 	{ "frame_rate_target_without_vsync_or_limit_is_zero", frame_rate_target_without_vsync_or_limit_is_zero },
 	{ "frame_rate_target_without_interpolation_is_the_original_30", frame_rate_target_without_interpolation_is_the_original_30 },
 	{ "frame_rate_target_without_interpolation_keeps_a_lower_limit", frame_rate_target_without_interpolation_keeps_a_lower_limit },
-	{ "frame_rate_refresh_is_rounded_and_defaults_to_60", frame_rate_refresh_is_rounded_and_defaults_to_60 },
+	{ "frame_rate_target_with_vsync_rounds_the_refresh_rate", frame_rate_target_with_vsync_rounds_the_refresh_rate },
+	{ "frame_rate_target_with_vsync_and_an_unknown_refresh_rate_is_uncapped", frame_rate_target_with_vsync_and_an_unknown_refresh_rate_is_uncapped },
 	{ 0, 0 }
 };
