@@ -32,6 +32,7 @@ SOURCES = [
     BRIDGE / "tests" / "test_ring.c",
     BRIDGE / "tests" / "test_policy.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge_game.c",
+    ROOT / "port" / "linux" / "src" / "ue_bridge_log.c",
     BRIDGE / "tests" / "test_core.c",
     BRIDGE / "tests" / "test_game.c",
 ]
@@ -44,6 +45,7 @@ ROLE_SOURCES = [
     BRIDGE / "ue_bridge_policy.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     ROOT / "port" / "windows" / "src" / "win32_ue_bridge.c",
+    ROOT / "port" / "linux" / "src" / "ue_bridge_log.c",
     BRIDGE / "tests" / "roles.c",
 ]
 ROLE_LIBRARIES = ["bcrypt", "dbghelp"]

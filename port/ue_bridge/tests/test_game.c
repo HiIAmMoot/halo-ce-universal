@@ -27,6 +27,9 @@ static int setting_enabled;
 static const char *setting_on_peer_exit;
 /* every line logged since the last reset */
 static char log_lines[2048];
+/* what reached errors.c's write_to_error_file, the game's debug.txt, and whether it asked for the date */
+static char debug_lines[2048];
+static int debug_dated = 1;
 
 int config_boolean(const char *name)
 {
@@ -51,6 +54,13 @@ void platform_log(const char *format, ...)
 		strcat(log_lines, line);
 		strcat(log_lines, "\n");
 	}
+}
+
+void write_to_error_file(char *string, unsigned char date)
+{
+	if (strlen(debug_lines) + strlen(string) < sizeof(debug_lines))
+		strcat(debug_lines, string);
+	debug_dated = debug_dated && date;
 }
 
 const char *platform_data_root(void)
@@ -119,6 +129,8 @@ static void game_reset(void)
 	setting_enabled = 1;
 	setting_on_peer_exit = "shutdown";
 	memset(log_lines, 0, sizeof(log_lines));
+	memset(debug_lines, 0, sizeof(debug_lines));
+	debug_dated = 1;
 	memset(game_section, 0, sizeof(game_section));
 	memset(game_directory, 0, sizeof(game_directory));
 	game_maps = 0;
@@ -191,6 +203,23 @@ static void game_unknown_on_peer_exit_logs_and_shuts_down(void)
 	ue_bridge_game_frame_begin(1, 0.5f);
 	UEB_CHECK(last_watch.continue_on_peer_exit == 0);
 	UEB_CHECK(strstr(log_lines, "\"sometimes\" is neither") != 0);
+}
+
+/* the real platform_log is stderr, invisible for a windowed game: the lines must also reach debug.txt */
+static void game_log_lines_reach_the_debug_file(void)
+{
+	char const *line;
+
+	game_reset();
+	setting_on_peer_exit = "sometimes";
+	ue_bridge_game_frame_begin(1, 0.5f);
+	line = strstr(debug_lines, "ue bridge: ue_bridge.on_peer_exit \"sometimes\"");
+	UEB_CHECK(line != 0);
+	UEB_CHECK(strstr(debug_lines, "ue bridge: on, session ") != 0);
+	/* the game's debug.txt lines end in CRLF and carry its timestamp */
+	UEB_CHECK(strstr(debug_lines, "using \"shutdown\"\r\n") != 0);
+	UEB_CHECK(debug_dated == 1);
+	UEB_CHECK(strstr(log_lines, "ue bridge: on, session ") != 0);
 }
 
 static void game_no_platform_stays_off(void)
@@ -338,6 +367,7 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_starts_only_once", game_starts_only_once },
 	{ "game_continue_setting_reaches_watcher", game_continue_setting_reaches_watcher },
 	{ "game_unknown_on_peer_exit_logs_and_shuts_down", game_unknown_on_peer_exit_logs_and_shuts_down },
+	{ "game_log_lines_reach_the_debug_file", game_log_lines_reach_the_debug_file },
 	{ "game_no_platform_stays_off", game_no_platform_stays_off },
 	{ "game_watcher_failure_stops_bridge", game_watcher_failure_stops_bridge },
 	{ "game_hooks_publish", game_hooks_publish },

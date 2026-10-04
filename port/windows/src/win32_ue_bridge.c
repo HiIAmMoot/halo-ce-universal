@@ -18,9 +18,6 @@ port/linux/src/ue_bridge_platform_null.c (port/windows/port.json).
 #include "../../ue_bridge/ue_bridge_policy.h"
 #include "../../ue_bridge/ue_bridge_ring.h"
 
-/* platform.h's (this file sees the Windows SDK, the platform layer the Xbox SDK's names) */
-void platform_log(const char *format, ...);
-
 #define HUNG_PEER_EXIT_CODE 0x48414E47u
 #define WATCH_INTERVAL_MS 250
 #define DIRECTORY_LOCK_NAME "Local\\HaloCEUE.Bridge.DirectoryLock"
@@ -88,7 +85,7 @@ static int debugger_present(void)
 
 static void os_log(const char *message)
 {
-	platform_log("%s", message);
+	ue_bridge_log("%s", message);
 }
 
 /* the port's paths are in the ANSI code page (CreateFileA and friends), and
@@ -123,7 +120,7 @@ static void lock_directory(void)
 		directory_mutex = CreateMutexA(NULL, FALSE, DIRECTORY_LOCK_NAME);
 	if (!directory_mutex)
 	{
-		platform_log("ue bridge: cannot create the directory lock: going on without it");
+		ue_bridge_log("ue bridge: cannot create the directory lock: going on without it");
 		return;
 	}
 	result = WaitForSingleObject(directory_mutex, DIRECTORY_LOCK_WAIT_MS);
@@ -134,7 +131,7 @@ static void lock_directory(void)
 		directory_lock_owned = 1;
 		return;
 	}
-	platform_log("ue bridge: directory lock %s: going on without it", result == WAIT_TIMEOUT ? "timed out" : "failed");
+	ue_bridge_log("ue bridge: directory lock %s: going on without it", result == WAIT_TIMEOUT ? "timed out" : "failed");
 }
 
 static void unlock_directory(void)
@@ -485,7 +482,7 @@ static void act_on_peer(enum ue_bridge_action action, const struct ue_bridge_pee
 		note = "the renderer is an editor: left running";
 	}
 	write_game_report(action, view, header, note);
-	platform_log("ue bridge: renderer %s %s", ue_bridge_action_name(action), note);
+	ue_bridge_log("ue bridge: renderer %s %s", ue_bridge_action_name(action), note);
 }
 
 static void read_peer_view(volatile struct ue_bridge_header *header, HANDLE peer, struct ue_bridge_peer_view *view)
@@ -559,9 +556,9 @@ static DWORD WINAPI watcher_main(void *unused)
 			memset(&crash_clock, 0, sizeof(crash_clock));
 			watched_peer = peer;
 			if (peer)
-				platform_log("ue bridge: renderer %lu attached", (unsigned long)pid);
+				ue_bridge_log("ue bridge: renderer %lu attached", (unsigned long)pid);
 			else if (open_failed_pid != pid)
-				platform_log("ue bridge: cannot open renderer %lu", (unsigned long)pid);
+				ue_bridge_log("ue bridge: cannot open renderer %lu", (unsigned long)pid);
 			open_failed_pid = peer ? 0 : pid;
 		}
 		was_attached = attached;
@@ -578,7 +575,7 @@ static DWORD WINAPI watcher_main(void *unused)
 		if (ue_bridge_policy_shuts_down(action, watch_config.continue_on_peer_exit))
 			watch_config.request_quit();
 		else
-			platform_log("ue bridge: on_peer_exit = continue: waiting for a renderer to attach");
+			ue_bridge_log("ue bridge: on_peer_exit = continue: waiting for a renderer to attach");
 	}
 	/* peer stays open: see above */
 	watched_peer = NULL;

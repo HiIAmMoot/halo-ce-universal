@@ -17,7 +17,6 @@ functions (render_interpolation.c) and by the game state's after-load procs
 #include <string.h>
 
 /* platform.h's; declared here so the tests can link this file without the platform layer */
-void platform_log(const char *format, ...);
 const char *platform_data_root(void);
 
 static int start_attempted;
@@ -56,13 +55,13 @@ static void ensure_started(void)
 	watch.request_quit = ue_bridge_request_quit;
 	watch.continue_on_peer_exit = strcmp(on_peer_exit, "continue") == 0;
 	if (!watch.continue_on_peer_exit && strcmp(on_peer_exit, "shutdown") != 0)
-		platform_log("ue bridge: ue_bridge.on_peer_exit \"%s\" is neither \"shutdown\" nor \"continue\"; using \"shutdown\"", on_peer_exit);
+		ue_bridge_log("ue bridge: ue_bridge.on_peer_exit \"%s\" is neither \"shutdown\" nor \"continue\"; using \"shutdown\"", on_peer_exit);
 	if (!ue_bridge_start(&settings, os))
 		return;
 	ue_bridge_platform_install_crash_hook();
 	if (!ue_bridge_platform_start_watcher(&watch))
 	{
-		platform_log("ue bridge: cannot start the watcher thread; the bridge is off");
+		ue_bridge_log("ue bridge: cannot start the watcher thread; the bridge is off");
 		ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 		return;
 	}
@@ -72,7 +71,7 @@ static void ensure_started(void)
 		exit_handler_registered = 1;
 		atexit(at_exit);
 	}
-	platform_log("ue bridge: on, session %016llx", (unsigned long long)ue_bridge_session_id());
+	ue_bridge_log("ue bridge: on, session %016llx", (unsigned long long)ue_bridge_session_id());
 }
 
 void ue_bridge_game_shutdown(void)

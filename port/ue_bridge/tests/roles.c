@@ -69,6 +69,7 @@ probe-directory: exits 0 when no bridge directory exists, 1 when one does.
 
 static FILE *role_log;
 
+/* the real game's platform_log is stderr: it never reaches debug.txt, so here it doesn't reach the log file either */
 void platform_log(const char *format, ...)
 {
 	va_list arguments;
@@ -78,14 +79,30 @@ void platform_log(const char *format, ...)
 	va_end(arguments);
 	fputc('\n', stdout);
 	fflush(stdout);
+}
+
+/* errors.c's, the game's debug.txt: the role's log file */
+void write_to_error_file(char *string, unsigned char date)
+{
+	(void)date;
 	if (role_log)
 	{
-		va_start(arguments, format);
-		vfprintf(role_log, format, arguments);
-		va_end(arguments);
-		fputc('\n', role_log);
+		fputs(string, role_log);
 		fflush(role_log);
 	}
+}
+
+/* a line the fake game itself writes to its debug.txt, as the game's error() does */
+static void game_debug_line(const char *format, ...)
+{
+	char line[256];
+	va_list arguments;
+
+	va_start(arguments, format);
+	vsnprintf(line, sizeof(line), format, arguments);
+	va_end(arguments);
+	write_to_error_file(line, 1);
+	write_to_error_file("\r\n", 1);
 }
 
 static const char *option_text(int argc, char **argv, const char *name)
@@ -157,7 +174,7 @@ static int recurse(int depth)
 /* the game's own unhandled-exception filter, which the bridge's hook must chain to */
 static LONG WINAPI game_filter(EXCEPTION_POINTERS *exception)
 {
-	platform_log("crash: %08lx", (unsigned long)exception->ExceptionRecord->ExceptionCode);
+	game_debug_line("crash: %08lx", (unsigned long)exception->ExceptionRecord->ExceptionCode);
 	return EXCEPTION_CONTINUE_EXECUTION;
 }
 
@@ -243,7 +260,7 @@ static int fake_game_cycles(const struct ue_bridge_settings *settings, long cycl
 	}
 	if (overlaps)
 	{
-		platform_log("fake-game: %ld directory lock overlaps", overlaps);
+		game_debug_line("fake-game: %ld directory lock overlaps", overlaps);
 		return 6;
 	}
 	return 0;
@@ -331,7 +348,7 @@ static int fake_game(int argc, char **argv)
 	}
 	ue_bridge_platform_stop_watcher();
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
-	platform_log("fake-game: exiting (%s)", quit_requested ? "quit requested" : ended);
+	game_debug_line("fake-game: exiting (%s)", quit_requested ? "quit requested" : ended);
 	return 0;
 }
 

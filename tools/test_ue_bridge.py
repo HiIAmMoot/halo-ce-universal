@@ -254,6 +254,24 @@ def test_crash_wait_is_capped_when_ue_ignores_it(spawn, tmp_path):
     assert finish(ue, 5) == 0
 
 
+def test_the_games_bridge_messages_reach_its_debug_file(spawn, tmp_path):
+    """the real game's platform_log is stderr, which a windowed game never shows: the watcher's lines
+    (and the roles' platform_log, which here is stdout only) must be in debug.txt"""
+    game = start_game(spawn, tmp_path, "--run-ms", 4000)
+    ue, _ = start_ue(spawn, tmp_path, "--exit-after-ms", 800)
+    assert finish(ue, 10) == 0
+    assert finish(game, 8) == 0
+    log = (tmp_path / "debug.txt").read_text()
+    assert f"ue bridge: renderer {ue.pid} attached" in log
+    assert "ue bridge: renderer peer_exited" in log
+
+
+def test_a_game_with_the_bridge_off_logs_no_bridge_line(spawn, tmp_path):
+    game = start_game(spawn, tmp_path, "--disabled", "--run-ms", 1000)
+    assert finish(game, 8) == 0
+    assert "ue bridge" not in (tmp_path / "debug.txt").read_text()
+
+
 def test_continue_mode_keeps_game_running(spawn, tmp_path):
     game = start_game(spawn, tmp_path, "--continue", "--run-ms", 5000)
     ue, session = start_ue(spawn, tmp_path, "--exit-after-ms", 800)

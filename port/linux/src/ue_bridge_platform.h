@@ -18,6 +18,14 @@ struct ue_bridge_watch_config
 	int continue_on_peer_exit;
 };
 
+/* ue_bridge_log.c: a line to stderr and to the game's debug.txt (no newline in
+format); not for the crash filter */
+void ue_bridge_log(const char *format, ...)
+#if defined(__GNUC__)
+	__attribute__((format(printf, 1, 2)))
+#endif
+	;
+
 /* NULL where the bridge isn't available */
 const struct ue_bridge_os *ue_bridge_platform_os(void);
 /* puts the bridge's unhandled-exception filter in front of the game's own */
