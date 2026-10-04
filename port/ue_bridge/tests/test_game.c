@@ -20,6 +20,7 @@ void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_state_loaded(void);
 void ue_bridge_game_shutdown(void);
 void ue_bridge_game_halted(void);
+void ue_bridge_game_frame_rate_poll(void);
 
 /* ---------- the settings and the platform layer the adapter calls */
 
@@ -61,6 +62,17 @@ void write_to_error_file(char *string, unsigned char date)
 	if (strlen(debug_lines) + strlen(string) < sizeof(debug_lines))
 		strcat(debug_lines, string);
 	debug_dated = debug_dated && date;
+}
+
+static float platform_refresh_hz;
+static uint32_t platform_target_hz;
+static int platform_frame_rate_reads;
+
+void platform_frame_rate(float *refresh_hz, uint32_t *target_hz)
+{
+	platform_frame_rate_reads++;
+	*refresh_hz = platform_refresh_hz;
+	*target_hz = platform_target_hz;
 }
 
 const char *platform_data_root(void)
@@ -135,6 +147,9 @@ static void game_reset(void)
 	memset(game_directory, 0, sizeof(game_directory));
 	game_maps = 0;
 	game_now = 100;
+	platform_refresh_hz = 144.0f;
+	platform_target_hz = 144;
+	platform_frame_rate_reads = 0;
 	platform_available = 1;
 	platform_os_requests = 0;
 	crash_hooks_installed = 0;
@@ -268,6 +283,67 @@ static void game_hooks_publish(void)
 	UEB_CHECK(header->state_epoch == 1);
 }
 
+static void game_start_publishes_the_frame_rate(void)
+{
+	game_reset();
+	platform_refresh_hz = 59.94f;
+	platform_target_hz = 60;
+	ue_bridge_game_pump();
+	UEB_CHECK(section_header()->game_refresh_hz == 60);
+	UEB_CHECK(section_header()->game_frame_target_hz == 60);
+	UEB_CHECK(strstr(log_lines, "frame rate target 60 Hz") != 0);
+}
+
+static void game_frame_rate_poll_republishes_on_a_change(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	UEB_CHECK(section_header()->game_frame_target_hz == 144);
+	platform_target_hz = 60;
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(section_header()->game_frame_target_hz == 60);
+	platform_target_hz = 0;
+	platform_refresh_hz = 75.0f;
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(section_header()->game_frame_target_hz == 0);
+	UEB_CHECK(section_header()->game_refresh_hz == 75);
+	platform_refresh_hz = 60.0f;
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(section_header()->game_refresh_hz == 60);
+}
+
+static void game_frame_rate_poll_logs_only_a_change(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	memset(log_lines, 0, sizeof(log_lines));
+	ue_bridge_game_frame_rate_poll();
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(log_lines[0] == 0);
+	platform_target_hz = 0;
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(strstr(log_lines, "uncapped") != 0);
+}
+
+static void game_frame_rate_poll_does_nothing_before_start_or_when_disabled(void)
+{
+	game_reset();
+	setting_enabled = 0;
+	ue_bridge_game_frame_rate_poll();
+	UEB_CHECK(platform_frame_rate_reads == 0);
+	UEB_CHECK(platform_os_requests == 0);
+}
+
+static void game_frame_rate_poll_after_a_restart_publishes_again(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_shutdown();
+	memset(game_section, 0, sizeof(game_section));
+	ue_bridge_game_pump();
+	UEB_CHECK(section_header()->game_frame_target_hz == 144);
+}
+
 static void game_pump_starts_and_heartbeats(void)
 {
 	game_reset();
@@ -371,6 +447,11 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_no_platform_stays_off", game_no_platform_stays_off },
 	{ "game_watcher_failure_stops_bridge", game_watcher_failure_stops_bridge },
 	{ "game_hooks_publish", game_hooks_publish },
+	{ "game_start_publishes_the_frame_rate", game_start_publishes_the_frame_rate },
+	{ "game_frame_rate_poll_republishes_on_a_change", game_frame_rate_poll_republishes_on_a_change },
+	{ "game_frame_rate_poll_logs_only_a_change", game_frame_rate_poll_logs_only_a_change },
+	{ "game_frame_rate_poll_does_nothing_before_start_or_when_disabled", game_frame_rate_poll_does_nothing_before_start_or_when_disabled },
+	{ "game_frame_rate_poll_after_a_restart_publishes_again", game_frame_rate_poll_after_a_restart_publishes_again },
 	{ "game_pump_starts_and_heartbeats", game_pump_starts_and_heartbeats },
 	{ "game_loading_sets_and_clears_busy", game_loading_sets_and_clears_busy },
 	{ "game_state_loaded_before_start_does_nothing", game_state_loaded_before_start_does_nothing },

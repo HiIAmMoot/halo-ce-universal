@@ -255,6 +255,7 @@ static void core_calls_before_start_are_harmless(void)
 	fake_reset();
 	ue_bridge_publish_tick(1);
 	ue_bridge_publish_frame(1, 0.5f);
+	ue_bridge_publish_frame_rate(60, 60);
 	ue_bridge_heartbeat();
 	ue_bridge_bump_load_epoch();
 	ue_bridge_bump_state_epoch();
@@ -475,6 +476,24 @@ static void core_publish_tick_and_frame(void)
 	UEB_CHECK(frame.slot.id == 7);
 	UEB_CHECK(frame.slot.publish_qpc == 6000);
 	UEB_CHECK(frame.interpolation_fraction == 0.25f);
+}
+
+static void core_publish_frame_rate_writes_both_fields_and_republishes(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	volatile struct ue_bridge_header *header;
+
+	fake_reset();
+	ue_bridge_publish_frame_rate(144, 60);
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	header = ue_bridge_header();
+	UEB_CHECK(header->game_refresh_hz == 0 && header->game_frame_target_hz == 0);
+	ue_bridge_publish_frame_rate(144, 60);
+	UEB_CHECK(header->game_refresh_hz == 144);
+	UEB_CHECK(header->game_frame_target_hz == 60);
+	ue_bridge_publish_frame_rate(60, 0);
+	UEB_CHECK(header->game_refresh_hz == 60);
+	UEB_CHECK(header->game_frame_target_hz == 0);
 }
 
 static void core_epochs_bump(void)
@@ -824,6 +843,7 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_log_path_goes_through_path_to_utf8", core_log_path_goes_through_path_to_utf8 },
 	{ "core_null_log_path_is_empty", core_null_log_path_is_empty },
 	{ "core_publish_tick_and_frame", core_publish_tick_and_frame },
+	{ "core_publish_frame_rate_writes_both_fields_and_republishes", core_publish_frame_rate_writes_both_fields_and_republishes },
 	{ "core_epochs_bump", core_epochs_bump },
 	{ "core_busy_flag_round_trips", core_busy_flag_round_trips },
 	{ "core_publish_stopping_sets_flag_only_when_active", core_publish_stopping_sets_flag_only_when_active },

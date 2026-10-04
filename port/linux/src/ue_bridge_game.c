@@ -26,6 +26,9 @@ must go stale so the renderer sees it is dead */
 static int halted;
 static int exit_handler_registered;
 static char log_path[1024];
+static int frame_rate_published;
+static uint32_t published_refresh_hz;
+static uint32_t published_target_hz;
 
 static void at_exit(void)
 {
@@ -66,6 +69,8 @@ static void ensure_started(void)
 		return;
 	}
 	started = 1;
+	frame_rate_published = 0;
+	ue_bridge_game_frame_rate_poll();
 	if (!exit_handler_registered)
 	{
 		exit_handler_registered = 1;
@@ -87,6 +92,27 @@ void ue_bridge_game_shutdown(void)
 		ue_bridge_stop(stopping);
 	}
 	start_attempted = 0;
+}
+
+void ue_bridge_game_frame_rate_poll(void)
+{
+	float refresh;
+	uint32_t refresh_hz, target_hz;
+
+	if (!started)
+		return;
+	platform_frame_rate(&refresh, &target_hz);
+	refresh_hz = (uint32_t)(refresh + 0.5f);
+	if (frame_rate_published && refresh_hz == published_refresh_hz && target_hz == published_target_hz)
+		return;
+	frame_rate_published = 1;
+	published_refresh_hz = refresh_hz;
+	published_target_hz = target_hz;
+	ue_bridge_publish_frame_rate(refresh_hz, target_hz);
+	if (target_hz)
+		ue_bridge_log("ue bridge: frame rate target %lu Hz, display %lu Hz", (unsigned long)target_hz, (unsigned long)refresh_hz);
+	else
+		ue_bridge_log("ue bridge: frame rate uncapped, display %lu Hz", (unsigned long)refresh_hz);
 }
 
 /* every main-loop pass (platform_pump_events): menus and pauses included */

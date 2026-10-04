@@ -22,7 +22,7 @@ static void format_directory_layout(void)
 
 static void format_header_layout(void)
 {
-	UEB_CHECK(sizeof(struct ue_bridge_header) == 1216);
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1224);
 	UEB_CHECK(offsetof(struct ue_bridge_header, session_id) == 16);
 	UEB_CHECK(offsetof(struct ue_bridge_header, qpc_frequency) == 24);
 	UEB_CHECK(offsetof(struct ue_bridge_header, tick_ring) == 48);
@@ -35,6 +35,8 @@ static void format_header_layout(void)
 	UEB_CHECK(offsetof(struct ue_bridge_header, ue_pid) == 656);
 	UEB_CHECK(offsetof(struct ue_bridge_header, ue_dump_done) == 684);
 	UEB_CHECK(offsetof(struct ue_bridge_header, ue_session_dir) == 696);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_refresh_hz) == 1216);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_frame_target_hz) == 1220);
 	UEB_CHECK(sizeof(struct ue_bridge_header) <= UE_BRIDGE_HEADER_SIZE);
 }
 

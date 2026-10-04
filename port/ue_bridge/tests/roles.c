@@ -19,6 +19,10 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --crash-after-stop  stops the bridge (the crash hook stays installed), raises on this
                       thread and then on a second one, and exits 0 when both returned
                       (9 when the second thread is parked)
+  --refresh-hz N      published as the display's refresh rate (default 0: unknown)
+  --frame-target-hz N published as the frame-rate target (default 0: uncapped)
+  --target-file PATH  while PATH exists, its number is republished as the target
+                      whenever it changes
   --continue          on_peer_exit = continue
   --disabled          ue_bridge.enabled = false
   --cycles N          starts and stops the bridge N times in a row (no watcher,
@@ -134,6 +138,19 @@ static int option_flag(int argc, char **argv, const char *name)
 			return 1;
 	}
 	return 0;
+}
+
+static long read_number_file(const char *path, long fallback)
+{
+	FILE *file = path ? fopen(path, "r") : 0;
+	long value = fallback;
+
+	if (!file)
+		return fallback;
+	if (fscanf(file, "%ld", &value) != 1)
+		value = fallback;
+	fclose(file);
+	return value;
 }
 
 static int file_exists(const char *path)
@@ -279,6 +296,9 @@ static int fake_game(int argc, char **argv)
 	const char *exit_when = option_text(argc, argv, "--exit-when");
 	const char *crash_when = option_text(argc, argv, "--crash-when");
 	const char *hang_when = option_text(argc, argv, "--hang-when");
+	const char *target_file = option_text(argc, argv, "--target-file");
+	long refresh_hz = option_number(argc, argv, "--refresh-hz", 0);
+	long target_hz = option_number(argc, argv, "--frame-target-hz", 0);
 	/* latched: the hang outlives its trigger file being deleted */
 	int hanging = 0;
 	const char *ended = "run time over";
@@ -304,6 +324,7 @@ static int fake_game(int argc, char **argv)
 		watch.continue_on_peer_exit = option_flag(argc, argv, "--continue");
 		if (!ue_bridge_platform_start_watcher(&watch))
 			return 4;
+		ue_bridge_publish_frame_rate((uint32_t)refresh_hz, (uint32_t)target_hz);
 	}
 	if (option_flag(argc, argv, "--crash-after-stop"))
 	{
@@ -331,6 +352,16 @@ static int fake_game(int argc, char **argv)
 			recurse_target = recurse;
 			recurse(0);
 			return 7;
+		}
+		if (file_exists(target_file))
+		{
+			long wanted = read_number_file(target_file, target_hz);
+
+			if (wanted != target_hz)
+			{
+				target_hz = wanted;
+				ue_bridge_publish_frame_rate((uint32_t)refresh_hz, (uint32_t)target_hz);
+			}
 		}
 		if (file_exists(hang_when))
 			hanging = 1;

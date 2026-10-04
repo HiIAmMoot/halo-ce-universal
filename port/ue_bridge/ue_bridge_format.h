@@ -7,7 +7,9 @@ docs/superpowers/specs/2026-10-02-phase0-bridge-design.md, sections 4 and 8.1.
 
 Both compilers check every offset below at compile time, so a change that
 lays a field out differently on either side fails to build. Any change to
-this file bumps UE_BRIDGE_VERSION.
+this file that moves or resizes an existing field bumps UE_BRIDGE_VERSION; a
+field added after the last one does not (a reader built before it ignores it, and
+a game built before it leaves it zero).
 
 The game creates two named sections:
 - the directory (UE_BRIDGE_DIRECTORY_NAME, fixed): which game is current, and
@@ -128,6 +130,15 @@ struct ue_bridge_header
 	uint32_t reserved1;
 	/* UTF-8, NUL-terminated: this session's folder */
 	char ue_session_dir[UE_BRIDGE_PATH_BYTES];
+
+	/* written by the game while it runs. Here at the end, among UE's fields,
+	because no reserved space was left in the game's: moving a field would have
+	shifted every offset after it. UE caps itself to the game's frame rate
+	(spec section 6.5). */
+	/* the display's refresh rate, rounded; 0: the display reports none */
+	uint32_t game_refresh_hz;
+	/* the frames a second the game's limiter aims for; 0: uncapped */
+	uint32_t game_frame_target_hz;
 };
 
 struct ue_bridge_slot
@@ -156,7 +167,7 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, section_name) == 24, "dir
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_ring_desc) == 16, "ring descriptor size");
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_crash_record) == 16, "crash record size");
 
-UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) == 1216, "header size");
+UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) == 1224, "header size");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, session_id) == 16, "header session_id");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, qpc_frequency) == 24, "header qpc_frequency");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_pid) == 32, "header game_pid");
@@ -183,6 +194,8 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_is_editor) == 680, "heade
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_dump_done) == 684, "header ue_dump_done");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_stopping) == 688, "header ue_stopping");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_session_dir) == 696, "header ue_session_dir");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_refresh_hz) == 1216, "header game_refresh_hz");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_frame_target_hz) == 1220, "header game_frame_target_hz");
 /* the 64-bit fields read without the seqlock must be naturally aligned to be read in one access */
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_heartbeat_qpc) % 8 == 0, "game heartbeat alignment");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_heartbeat_qpc) % 8 == 0, "UE heartbeat alignment");

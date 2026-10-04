@@ -251,6 +251,16 @@ void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction)
 	ue_bridge_ring_end_write(&header->frame_ring, &slot->slot);
 }
 
+void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (!header)
+		return;
+	ueb_store_u32(&header->game_refresh_hz, refresh_hz);
+	ueb_store_u32(&header->game_frame_target_hz, target_hz);
+}
+
 void ue_bridge_heartbeat(void)
 {
 	volatile struct ue_bridge_header *header = bridge_header();

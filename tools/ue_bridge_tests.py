@@ -31,6 +31,7 @@ SOURCES = [
     BRIDGE / "tests" / "test_format.c",
     BRIDGE / "tests" / "test_ring.c",
     BRIDGE / "tests" / "test_policy.c",
+    BRIDGE / "tests" / "test_frame_rate.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge_game.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge_log.c",
     BRIDGE / "tests" / "test_core.c",

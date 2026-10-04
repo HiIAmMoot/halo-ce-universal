@@ -64,6 +64,9 @@ volatile struct ue_bridge_header *ue_bridge_header(void);
 
 void ue_bridge_publish_tick(uint64_t tick);
 void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction);
+/* the display's refresh rate and the frame rate the game aims for (0:
+uncapped), as ue_bridge_frame_rate.h computes them; stored as given */
+void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz);
 void ue_bridge_heartbeat(void);
 void ue_bridge_bump_load_epoch(void);
 void ue_bridge_bump_state_epoch(void);

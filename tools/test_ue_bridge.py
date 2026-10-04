@@ -47,6 +47,8 @@ TICK_RING_PUBLISHED_OFFSET = 60  # tick_ring.published
 FRAME_RING_PUBLISHED_OFFSET = 76  # frame_ring.published
 GAME_HEARTBEAT_OFFSET = 600
 GAME_STOPPING_OFFSET = 624
+GAME_REFRESH_HZ_OFFSET = 1216
+GAME_FRAME_TARGET_HZ_OFFSET = 1220
 STOP_EXIT = 1
 FILE_MAP_READ = 4
 
@@ -462,6 +464,33 @@ def test_exit_when_file_appears_the_game_exits_and_publishes_the_stop(spawn, hea
     assert view.u32(GAME_STOPPING_OFFSET) == STOP_EXIT
     # the role's own log line: a run that ended on the file must not read as "run time over"
     assert "exit file" in (tmp_path / "debug.txt").read_text()
+
+
+def test_the_game_publishes_its_refresh_rate_and_frame_target(spawn, header_view, tmp_path):
+    game = start_game(spawn, tmp_path, "--run-ms", 60000, "--refresh-hz", 144, "--frame-target-hz", 60)
+    view = header_view()
+    assert view.u32(GAME_REFRESH_HZ_OFFSET) == 144
+    assert view.u32(GAME_FRAME_TARGET_HZ_OFFSET) == 60
+
+
+def test_a_game_that_publishes_no_target_leaves_both_fields_zero(spawn, header_view, tmp_path):
+    game = start_game(spawn, tmp_path, "--run-ms", 60000)
+    view = header_view()
+    assert view.u32(GAME_REFRESH_HZ_OFFSET) == 0
+    assert view.u32(GAME_FRAME_TARGET_HZ_OFFSET) == 0
+
+
+def test_a_changed_frame_target_is_republished(spawn, header_view, tmp_path):
+    flag = tmp_path / "target.txt"
+    game = start_game(spawn, tmp_path, "--run-ms", 60000, "--refresh-hz", 144, "--frame-target-hz", 144, "--target-file", flag)
+    view = header_view()
+    assert view.u32(GAME_FRAME_TARGET_HZ_OFFSET) == 144
+    flag.write_text("30")
+    deadline = time.time() + 5
+    while view.u32(GAME_FRAME_TARGET_HZ_OFFSET) != 30 and time.time() < deadline:
+        time.sleep(0.05)
+    assert view.u32(GAME_FRAME_TARGET_HZ_OFFSET) == 30
+    assert view.u32(GAME_REFRESH_HZ_OFFSET) == 144
 
 
 def test_crash_when_file_appears_the_game_crashes(spawn, tmp_path):

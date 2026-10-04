@@ -16,6 +16,7 @@ and the debug keyboard that the game's console reads.
 #include "p2p.h"
 #include "xiso.h"
 #include "ue_bridge_platform.h"
+#include "../../ue_bridge/ue_bridge_frame_rate.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -538,37 +539,65 @@ void platform_video_drawable_size(int *width, int *height)
 }
 
 #ifndef HALO_ANDROID
+/* the display's refresh rate, 0 when it reports none */
+static float display_refresh_hz(void)
+{
+	SDL_DisplayID display = SDL_GetDisplayForWindow(platform_window);
+	const SDL_DisplayMode *mode = display ? SDL_GetCurrentDisplayMode(display) : NULL;
+
+	return mode && mode->refresh_rate > 0.0f ? mode->refresh_rate : 0.0f;
+}
+
+/* The settings that pace the frames, read again only when Settings changes the
+config. platform_frame_rate publishes the target from these same values. */
+static void frame_pacing_settings(int *vsync, long *maximum)
+{
+	static int cached_vsync;
+	static long cached_maximum;
+	static unsigned long read_at = (unsigned long)-1;
+
+	if (read_at != config_changes())
+	{
+		read_at = config_changes();
+		cached_vsync = config_boolean("display.vsync");
+		cached_maximum = config_integer("display.max_fps");
+	}
+	*vsync = cached_vsync;
+	*maximum = cached_maximum;
+}
+
 /* with vsync off, the time between frames display.max_fps asks for (0:
 twice the display's refresh rate), or 0 for no limit. A GPU never left idle
 can hang (Intel's Raptor Lake graphics, whose reset then takes the desktop
 with it); the limit gives it a rest every frame. */
 static Uint64 frame_interval_ns(void)
 {
-	static int vsync;
-	static long maximum;
-	static unsigned long read_at = (unsigned long)-1;
+	int vsync;
+	long maximum;
 	float rate;
 
-	if (read_at != config_changes())
-	{
-		read_at = config_changes();
-		vsync = config_boolean("display.vsync");
-		maximum = config_integer("display.max_fps");
-	}
-	if (vsync || maximum < 0)
-		return 0;
-	rate = (float)maximum;
-	if (!maximum)
-	{
-		SDL_DisplayID display = SDL_GetDisplayForWindow(platform_window);
-		const SDL_DisplayMode *mode = display ? SDL_GetCurrentDisplayMode(display) : NULL;
-
-		rate = 2.0f * (mode && mode->refresh_rate > 0.0f ? mode->refresh_rate : 60.0f);
-	}
-	return (Uint64)(1e9f / rate);
+	frame_pacing_settings(&vsync, &maximum);
+	/* the display is asked only when the limit depends on it */
+	rate = ue_bridge_frame_limit_rate(vsync, maximum, maximum || vsync ? 0.0f : display_refresh_hz());
+	return rate > 0.0f ? (Uint64)(1e9f / rate) : 0;
 }
 
 #endif
+void platform_frame_rate(float *refresh_hz, uint32_t *target_hz)
+{
+#ifndef HALO_ANDROID
+	int vsync;
+	long maximum;
+
+	frame_pacing_settings(&vsync, &maximum);
+	*refresh_hz = platform_window ? display_refresh_hz() : 0.0f;
+	*target_hz = ue_bridge_frame_target_hz(vsync, maximum, halo_interpolation_enabled(), *refresh_hz);
+#else
+	*refresh_hz = 0.0f;
+	*target_hz = 0;
+#endif
+}
+
 void platform_video_swap(void)
 {
 #ifndef HALO_ANDROID
@@ -578,6 +607,7 @@ void platform_video_swap(void)
 #endif
 	SDL_GL_SwapWindow(platform_window);
 #ifndef HALO_ANDROID
+	ue_bridge_game_frame_rate_poll();
 	interval = frame_interval_ns();
 	if (!interval)
 		return;

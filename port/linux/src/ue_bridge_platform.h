@@ -34,6 +34,10 @@ void ue_bridge_platform_install_crash_hook(void);
 int ue_bridge_platform_start_watcher(const struct ue_bridge_watch_config *config);
 void ue_bridge_platform_stop_watcher(void);
 
+/* sdl_platform.c: the display's refresh rate (0 when it reports none) and the
+frames a second the frame limiter aims for (0: uncapped) */
+void platform_frame_rate(float *refresh_hz, uint32_t *target_hz);
+
 /* ue_bridge_quit.c */
 void ue_bridge_request_quit(void);
 
@@ -48,6 +52,9 @@ void ue_bridge_game_state_loaded(void);
 /* the game halted on a fatal error (halt_and_catch_fire) and still presents
 frames: stops the heartbeat and publishes a crash */
 void ue_bridge_game_halted(void);
+/* every present: publishes the frame rate when it changed (Settings can change
+vsync, max fps and the display while the game runs) */
+void ue_bridge_game_frame_rate_poll(void);
 /* stops the bridge and the watcher (the exit handler calls it) */
 void ue_bridge_game_shutdown(void);
 
