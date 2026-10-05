@@ -25,13 +25,19 @@ port/linux/src/ue_bridge_platform_null.c (port/windows/port.json).
 
 /* ---------- the core's operating system */
 
-static void *map_section(const char *name, uint32_t size, void **handle)
+static void *map_section_checked(const char *name, uint32_t size, void **handle, int must_be_new)
 {
 	HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, size, name);
 	void *view;
 
 	if (!mapping)
 		return NULL;
+	if (must_be_new && GetLastError() == ERROR_ALREADY_EXISTS)
+	{
+		ue_bridge_log("ue bridge: the bridge section %s already exists: another process made it", name);
+		CloseHandle(mapping);
+		return NULL;
+	}
 	view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size);
 	if (!view)
 	{
@@ -40,6 +46,16 @@ static void *map_section(const char *name, uint32_t size, void **handle)
 	}
 	*handle = mapping;
 	return view;
+}
+
+static void *map_section(const char *name, uint32_t size, void **handle)
+{
+	return map_section_checked(name, size, handle, 0);
+}
+
+static void *map_new_section(const char *name, uint32_t size, void **handle)
+{
+	return map_section_checked(name, size, handle, 1);
 }
 
 static void unmap_section(void *view, void *handle)
@@ -155,7 +171,8 @@ static const struct ue_bridge_os windows_os =
 	path_to_utf8,
 	/* never NULL here: NULL is for the single-game unit tests */
 	lock_directory,
-	unlock_directory
+	unlock_directory,
+	map_new_section
 };
 
 const struct ue_bridge_os *ue_bridge_platform_os(void)
@@ -485,7 +502,7 @@ static void act_on_peer(enum ue_bridge_action action, const struct ue_bridge_pee
 	ue_bridge_log("ue bridge: renderer %s %s", ue_bridge_action_name(action), note);
 }
 
-static void read_peer_view(volatile struct ue_bridge_header *header, HANDLE peer, struct ue_bridge_peer_view *view)
+static void read_peer_view(volatile struct ue_bridge_header *header, HANDLE peer, uint64_t heartbeat_qpc, struct ue_bridge_peer_view *view)
 {
 	memset(view, 0, sizeof(*view));
 	view->process_exited = WaitForSingleObject(peer, 0) == WAIT_OBJECT_0;
@@ -500,7 +517,7 @@ static void read_peer_view(volatile struct ue_bridge_header *header, HANDLE peer
 	/* view->crashing stays 0: the policy takes a published CRASH (UE's crash
 	reporter is running, its game thread gone; terminating it now would lose
 	UE's own dump) and a published EXIT as winding down from stopping alone */
-	view->heartbeat_qpc = ueb_load_u64(&header->ue_heartbeat_qpc);
+	view->heartbeat_qpc = heartbeat_qpc;
 	view->hang_timeout_ms = ueb_load_u32(&header->ue_hang_timeout_ms);
 	view->debugger_attached = ueb_load_u32(&header->ue_debugger_attached) != 0;
 	view->busy = ueb_load_u32(&header->ue_busy) != 0;
@@ -515,10 +532,17 @@ static DWORD WINAPI watcher_main(void *unused)
 	int was_attached = 0;
 	DWORD open_failed_pid = 0;
 	int acted = 0;
+	/* Between the renderer publishing its PID and the open, it could have died and
+	its PID been reused; only a heartbeat newer than the open proves the handle is
+	the renderer's. Until then a hang verdict, which ends the process, is withheld. */
+	uint64_t opened_qpc = 0;
+	int peer_proven = 0;
 	struct ue_bridge_crash_clock crash_clock;
+	struct ue_bridge_suspend_guard suspend_guard;
 
 	(void)unused;
 	memset(&crash_clock, 0, sizeof(crash_clock));
+	memset(&suspend_guard, 0, sizeof(suspend_guard));
 	while (WaitForSingleObject(watcher_stop, WATCH_INTERVAL_MS) == WAIT_TIMEOUT)
 	{
 		volatile struct ue_bridge_header *header = ue_bridge_header();
@@ -526,6 +550,8 @@ static DWORD WINAPI watcher_main(void *unused)
 		enum ue_bridge_action action;
 		DWORD pid;
 		int attached;
+		uint64_t now;
+		uint64_t heartbeat_qpc;
 
 		if (!header)
 			continue;
@@ -537,6 +563,7 @@ static DWORD WINAPI watcher_main(void *unused)
 			peer = NULL;
 			peer_pid = 0;
 			was_attached = 0;
+			peer_proven = 0;
 			acted = 0;
 			memset(&crash_clock, 0, sizeof(crash_clock));
 		}
@@ -552,6 +579,8 @@ static DWORD WINAPI watcher_main(void *unused)
 			watched_peer = NULL;
 			peer = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, pid);
 			peer_pid = pid;
+			opened_qpc = qpc();
+			peer_proven = 0;
 			acted = 0;
 			memset(&crash_clock, 0, sizeof(crash_clock));
 			watched_peer = peer;
@@ -562,13 +591,23 @@ static DWORD WINAPI watcher_main(void *unused)
 			open_failed_pid = peer ? 0 : pid;
 		}
 		was_attached = attached;
+		/* every pass, with or without a peer: the guard measures the gap between this thread's own passes */
+		now = qpc();
+		heartbeat_qpc = ueb_load_u64(&header->ue_heartbeat_qpc);
+		if (ue_bridge_suspend_guard_pass(&suspend_guard, now, header->qpc_frequency, &heartbeat_qpc))
+			memset(&crash_clock, 0, sizeof(crash_clock));
 		if (!peer || acted)
 			continue;
-		read_peer_view(header, peer, &view);
+		if (ueb_load_u64(&header->ue_heartbeat_qpc) > opened_qpc)
+			peer_proven = 1;
+		read_peer_view(header, peer, heartbeat_qpc, &view);
 		/* an exiting renderer gets the crashing grace too: it is alive but silent while it writes its config */
 		view.crashing_for_ms = ue_bridge_crashing_for_ms(&crash_clock, ue_bridge_peer_winding_down(&view), GetTickCount());
-		action = ue_bridge_policy_decide(&view, qpc(), header->qpc_frequency);
+		action = ue_bridge_policy_decide(&view, now, header->qpc_frequency);
 		if (action == UE_BRIDGE_ACTION_NONE || action == UE_BRIDGE_ACTION_PEER_CRASHING)
+			continue;
+		/* a dead handle is reported whatever it was: ending the game on it is safe */
+		if (!peer_proven && (action == UE_BRIDGE_ACTION_PEER_HUNG || action == UE_BRIDGE_ACTION_PEER_HUNG_EDITOR))
 			continue;
 		acted = 1;
 		act_on_peer(action, &view, peer, header);

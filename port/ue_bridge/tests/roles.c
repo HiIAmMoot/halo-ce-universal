@@ -13,6 +13,9 @@ fake-game: the real core and Windows layer (win32_ue_bridge.c), heartbeating
   --crash-after-ms N  raises an access violation after N ms
   --hang-after-ms N   stops heartbeating and publishing after N ms (stays alive)
   --overflow-after-ms N  overflows the stack after N ms
+  --heap-lock-crash-after-ms N  takes the process heap's lock, then raises an
+                      access violation, after N ms (heap corruption faults inside
+                      the heap with its lock held)
   --exit-when PATH    exits normally once PATH exists
   --crash-when PATH   raises an access violation once PATH exists
   --hang-when PATH    stops heartbeating and publishing once PATH exists
@@ -298,6 +301,7 @@ static int fake_game(int argc, char **argv)
 	long crash_after = option_number(argc, argv, "--crash-after-ms", -1);
 	long hang_after = option_number(argc, argv, "--hang-after-ms", -1);
 	long overflow_after = option_number(argc, argv, "--overflow-after-ms", -1);
+	long heap_lock_crash_after = option_number(argc, argv, "--heap-lock-crash-after-ms", -1);
 	long cycles = option_number(argc, argv, "--cycles", 0);
 	const char *exit_when = option_text(argc, argv, "--exit-when");
 	const char *crash_when = option_text(argc, argv, "--crash-when");
@@ -351,6 +355,12 @@ static int fake_game(int argc, char **argv)
 		{
 			raise_access_violation();
 			/* the bridge's hook must end the process; execution only returns when it didn't */
+			return 7;
+		}
+		if (heap_lock_crash_after >= 0 && elapsed >= heap_lock_crash_after)
+		{
+			HeapLock(GetProcessHeap());
+			raise_access_violation();
 			return 7;
 		}
 		if (overflow_after >= 0 && elapsed >= overflow_after)

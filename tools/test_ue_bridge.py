@@ -206,6 +206,18 @@ def test_game_ends_an_exiting_ue_that_never_finishes_after_the_grace(spawn, tmp_
     assert game_report(session)["peer_action"] == "peer_hung"
 
 
+def test_game_never_terminates_a_peer_that_has_not_beaten_since_it_was_opened(spawn, tmp_path):
+    """The PID could have been reused between the renderer's publish and the open, and an unrelated process
+    never heartbeats: only a heartbeat newer than the open proves the handle is the renderer's."""
+    game = start_game(spawn, tmp_path, "--run-ms", 8000)
+    ue, session = start_ue(spawn, tmp_path, "--hang-after-ms", 0, "--hang-timeout-ms", 1500, "--run-ms", 5000)
+    time.sleep(3.5)
+    assert ue.poll() is None
+    assert not (session / "game_report.txt").exists()
+    assert finish(ue, 5) == 0
+    assert finish(game, 8) == 0
+
+
 def test_no_hang_action_while_ue_busy(spawn, tmp_path):
     game = start_game(spawn, tmp_path)
     ue, session = start_ue(spawn, tmp_path, "--busy-flag", "--hang-after-ms", 200, "--hang-timeout-ms", 1000,
@@ -214,6 +226,41 @@ def test_no_hang_action_while_ue_busy(spawn, tmp_path):
     assert game.poll() is None
     assert finish(ue, 5) == 0
     assert finish(game, 5) == 0
+
+
+PROCESS_SUSPEND_RESUME = 0x0800
+
+
+def _process_call(function: str, pid: int, must_succeed: bool = True) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel32.OpenProcess(PROCESS_SUSPEND_RESUME, False, pid)
+    assert handle, f"cannot open process {pid}"
+    try:
+        status = getattr(ctypes.WinDLL("ntdll"), function)(ctypes.c_void_p(handle))
+        # a resume can find the process already ended: the assertions after it say what happened
+        assert status == 0 or not must_succeed, f"{function} failed: {status:#x}"
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def test_a_resume_after_a_suspension_does_not_end_a_healthy_ue(spawn, tmp_path):
+    """QPC keeps counting through a sleep: on resume the renderer's last heartbeat is as old as the sleep. The
+    game comes back first and the renderer later, so the game judges a heartbeat that is stale only by the freeze."""
+    game = start_game(spawn, tmp_path, "--run-ms", 20000)
+    ue, session = start_ue(spawn, tmp_path, "--hang-timeout-ms", 1500, "--run-ms", 20000)
+    time.sleep(0.5)
+    _process_call("NtSuspendProcess", ue.pid)
+    _process_call("NtSuspendProcess", game.pid)
+    time.sleep(4.0)
+    _process_call("NtResumeProcess", game.pid, must_succeed=False)
+    time.sleep(0.4)
+    _process_call("NtResumeProcess", ue.pid, must_succeed=False)
+    # past the renderer's timeout, so a verdict from the stale heartbeat would have landed
+    time.sleep(2.5)
+    assert ue.poll() is None
+    assert game.poll() is None
+    assert not (session / "game_report.txt").exists()
 
 
 def test_game_report_carries_the_header_and_ues_crash_folder(spawn, tmp_path):
@@ -243,6 +290,15 @@ def test_stack_overflow_still_writes_the_self_dump(spawn, tmp_path):
     game = start_game(spawn, tmp_path, "--overflow-after-ms", 500)
     assert finish(game, 20) == STATUS_STACK_OVERFLOW
     assert is_minidump(tmp_path / "game_crash_self.dmp")
+
+
+def test_a_crash_with_the_process_heap_locked_still_ends_the_process(spawn, tmp_path):
+    """Heap corruption faults inside the heap with its lock held, and the dump thread blocks on that lock: the
+    crashing thread's own 10 s wait has to end the process, with no renderer attached to end it instead."""
+    game = start_game(spawn, tmp_path, "--heap-lock-crash-after-ms", 500)
+    started = time.monotonic()
+    assert finish(game, 20) == EXCEPTION_ACCESS_VIOLATION
+    assert time.monotonic() - started < 12.0
 
 
 def test_crash_wait_is_capped_when_ue_ignores_it(spawn, tmp_path):

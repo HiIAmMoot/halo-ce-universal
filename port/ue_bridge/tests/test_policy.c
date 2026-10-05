@@ -305,6 +305,122 @@ static void policy_crash_clock_is_wrap_safe(void)
 	UEB_CHECK(ue_bridge_crashing_for_ms(&clock, 1, 0x00000100u) == 0x200u);
 }
 
+/* ---------- suspension (sleep and resume) */
+
+/* one pass of a watcher at the given time, with the peer's heartbeat as it read it */
+static int suspend_pass(struct ue_bridge_suspend_guard *guard, uint64_t now_qpc, uint64_t *heartbeat_qpc)
+{
+	return ue_bridge_suspend_guard_pass(guard, now_qpc, FREQUENCY, heartbeat_qpc);
+}
+
+static void policy_suspend_the_first_pass_is_never_a_suspension(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(1);
+
+	memset(&guard, 0, sizeof(guard));
+	UEB_CHECK(suspend_pass(&guard, SECONDS(5000), &heartbeat) == 0);
+	UEB_CHECK(heartbeat == SECONDS(1));
+}
+
+static void policy_suspend_ordinary_passes_change_nothing(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(100);
+
+	memset(&guard, 0, sizeof(guard));
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100), &heartbeat) == 0);
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100) + FREQUENCY / 4, &heartbeat) == 0);
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100) + FREQUENCY / 2, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == SECONDS(100));
+}
+
+static void policy_suspend_a_gap_at_the_threshold_is_not_one_and_a_tick_over_is(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(1);
+	uint64_t threshold = FREQUENCY / 1000u * UE_BRIDGE_SUSPEND_GAP_MS;
+
+	memset(&guard, 0, sizeof(guard));
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100), &heartbeat) == 0);
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100) + threshold, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == SECONDS(1));
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100) + threshold + threshold + 1, &heartbeat) == 1);
+}
+
+static void policy_suspend_a_large_gap_rebases_the_peers_heartbeat_to_the_resume(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(100);
+	uint64_t resume = SECONDS(100 + 3600);
+	struct ue_bridge_peer_view peer = alive_peer();
+
+	memset(&guard, 0, sizeof(guard));
+	UEB_CHECK(suspend_pass(&guard, SECONDS(100), &heartbeat) == 0);
+	UEB_CHECK(suspend_pass(&guard, resume, &heartbeat) == 1);
+	UEB_CHECK(heartbeat == resume);
+	/* the peer judged by it has a whole timeout from the resume, and no longer */
+	peer.heartbeat_qpc = heartbeat;
+	UEB_CHECK(ue_bridge_policy_decide(&peer, resume + SECONDS(9), FREQUENCY) == UE_BRIDGE_ACTION_NONE);
+	UEB_CHECK(ue_bridge_policy_decide(&peer, resume + SECONDS(11), FREQUENCY) == UE_BRIDGE_ACTION_PEER_HUNG);
+}
+
+static void policy_suspend_the_rebase_holds_on_the_passes_after_the_resume(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(100);
+	uint64_t resume = SECONDS(5000);
+
+	memset(&guard, 0, sizeof(guard));
+	suspend_pass(&guard, SECONDS(100), &heartbeat);
+	UEB_CHECK(suspend_pass(&guard, resume, &heartbeat) == 1);
+	/* the peer still shows its old stamp: the next pass is no gap, but must not undo the rebase */
+	heartbeat = SECONDS(100);
+	UEB_CHECK(suspend_pass(&guard, resume + FREQUENCY / 4, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == resume);
+	/* a peer that beat after the resume keeps its own, newer stamp */
+	heartbeat = resume + FREQUENCY / 2;
+	UEB_CHECK(suspend_pass(&guard, resume + FREQUENCY / 2, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == resume + FREQUENCY / 2);
+}
+
+static void policy_suspend_a_peer_without_a_heartbeat_stays_without_one(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = 0;
+
+	memset(&guard, 0, sizeof(guard));
+	suspend_pass(&guard, SECONDS(100), &heartbeat);
+	UEB_CHECK(suspend_pass(&guard, SECONDS(9000), &heartbeat) == 1);
+	UEB_CHECK(heartbeat == 0);
+}
+
+static void policy_suspend_is_wrap_safe(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = 1;
+	uint64_t before_wrap = ~(uint64_t)0 - 10u;
+
+	memset(&guard, 0, sizeof(guard));
+	suspend_pass(&guard, before_wrap, &heartbeat);
+	/* 111 ticks later across the wrap: no gap */
+	UEB_CHECK(suspend_pass(&guard, 100u, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == 1);
+	/* and a big one across it */
+	UEB_CHECK(suspend_pass(&guard, 100u + SECONDS(60), &heartbeat) == 1);
+}
+
+static void policy_suspend_a_zero_frequency_never_reports_one(void)
+{
+	struct ue_bridge_suspend_guard guard;
+	uint64_t heartbeat = SECONDS(1);
+
+	memset(&guard, 0, sizeof(guard));
+	UEB_CHECK(ue_bridge_suspend_guard_pass(&guard, SECONDS(1), 0, &heartbeat) == 0);
+	UEB_CHECK(ue_bridge_suspend_guard_pass(&guard, SECONDS(9000), 0, &heartbeat) == 0);
+	UEB_CHECK(heartbeat == SECONDS(1));
+}
+
 const struct ueb_test ueb_policy_tests[] =
 {
 	{ "policy_alive_and_fresh_is_none", policy_alive_and_fresh_is_none },
@@ -336,5 +452,13 @@ const struct ueb_test ueb_policy_tests[] =
 	{ "policy_crash_clock_elapsed_time_grows", policy_crash_clock_elapsed_time_grows },
 	{ "policy_crash_clock_resets_when_crashing_stops", policy_crash_clock_resets_when_crashing_stops },
 	{ "policy_crash_clock_is_wrap_safe", policy_crash_clock_is_wrap_safe },
+	{ "policy_suspend_the_first_pass_is_never_a_suspension", policy_suspend_the_first_pass_is_never_a_suspension },
+	{ "policy_suspend_ordinary_passes_change_nothing", policy_suspend_ordinary_passes_change_nothing },
+	{ "policy_suspend_a_gap_at_the_threshold_is_not_one_and_a_tick_over_is", policy_suspend_a_gap_at_the_threshold_is_not_one_and_a_tick_over_is },
+	{ "policy_suspend_a_large_gap_rebases_the_peers_heartbeat_to_the_resume", policy_suspend_a_large_gap_rebases_the_peers_heartbeat_to_the_resume },
+	{ "policy_suspend_the_rebase_holds_on_the_passes_after_the_resume", policy_suspend_the_rebase_holds_on_the_passes_after_the_resume },
+	{ "policy_suspend_a_peer_without_a_heartbeat_stays_without_one", policy_suspend_a_peer_without_a_heartbeat_stays_without_one },
+	{ "policy_suspend_is_wrap_safe", policy_suspend_is_wrap_safe },
+	{ "policy_suspend_a_zero_frequency_never_reports_one", policy_suspend_a_zero_frequency_never_reports_one },
 	{ 0, 0 }
 };

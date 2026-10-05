@@ -73,6 +73,32 @@ struct ue_bridge_crash_clock
 sighting; then the milliseconds since it */
 uint32_t ue_bridge_crashing_for_ms(struct ue_bridge_crash_clock *clock, int crashing, uint32_t now_ms);
 
+/* A watcher pass later than this after its previous one means the machine
+slept (or the process was frozen): the intervals are 100-250 ms. */
+#define UE_BRIDGE_SUSPEND_GAP_MS 2000u
+
+/* A watcher's memory of its own previous pass. Zero-initialised to start; one
+per watcher thread. */
+struct ue_bridge_suspend_guard
+{
+	int seen;
+	uint64_t previous_qpc;
+	/* the pass that ended the last suspension; 0 when there was none */
+	uint64_t resume_qpc;
+};
+
+/* Called once per watcher pass, with that pass's QPC and the peer's heartbeat
+as it just read it. QPC keeps counting through a sleep, so after a resume the
+peer's last heartbeat is as old as the sleep, and a watcher that judged it
+would call a healthy peer hung before it ever got to beat again. A gap since the
+guard's previous pass of more than UE_BRIDGE_SUSPEND_GAP_MS is such a
+suspension: the pass returns 1, and from then on *heartbeat_qpc is raised to the
+resume time (never lowered, and a peer that has not beaten, 0, stays 0), so the
+peer has one full timeout from the resume. The raise holds on every later pass
+until the peer beats again. Wrap-safe; a zero qpc_frequency never reports one. */
+int ue_bridge_suspend_guard_pass(struct ue_bridge_suspend_guard *guard, uint64_t now_qpc, uint64_t qpc_frequency,
+	uint64_t *heartbeat_qpc);
+
 /* 1 while a peer is crashing or has published a stop (UE_BRIDGE_STOP_EXIT or
 CRASH): the watcher leaves such a live peer alone, up to UE_BRIDGE_CRASHING_LIMIT_MS
 of its own clock, and a caller feeds ue_bridge_crashing_for_ms with this. An

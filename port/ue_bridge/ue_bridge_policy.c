@@ -72,6 +72,24 @@ uint32_t ue_bridge_crashing_for_ms(struct ue_bridge_crash_clock *clock, int cras
 	return now_ms - clock->since_ms;
 }
 
+int ue_bridge_suspend_guard_pass(struct ue_bridge_suspend_guard *guard, uint64_t now_qpc, uint64_t qpc_frequency,
+	uint64_t *heartbeat_qpc)
+{
+	uint64_t per_ms = qpc_frequency / 1000u;
+	int suspended = 0;
+
+	if (guard->seen && per_ms && now_qpc - guard->previous_qpc > per_ms * UE_BRIDGE_SUSPEND_GAP_MS)
+	{
+		guard->resume_qpc = now_qpc;
+		suspended = 1;
+	}
+	guard->seen = 1;
+	guard->previous_qpc = now_qpc;
+	if (*heartbeat_qpc != 0 && *heartbeat_qpc < guard->resume_qpc)
+		*heartbeat_qpc = guard->resume_qpc;
+	return suspended;
+}
+
 const char *ue_bridge_action_name(enum ue_bridge_action action)
 {
 	switch (action)
