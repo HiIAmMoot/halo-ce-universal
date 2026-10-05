@@ -40,6 +40,11 @@ struct ue_bridge_os
 	game that started; an earlier game's stop leaves it alone. */
 	void (*lock_directory)(void);
 	void (*unlock_directory)(void);
+	/* optional (NULL: map_section): as map_section, but NULL when the section
+	already exists. The bridge section's name carries the game's PID and a random
+	session id, so one that exists was made by another process, and the game must
+	not publish into it. The directory is shared by design and keeps map_section. */
+	void *(*map_new_section)(const char *name, uint32_t size, void **handle);
 };
 
 struct ue_bridge_settings
@@ -55,7 +60,9 @@ the os table must outlive it (until ue_bridge_stop returns); settings and its
 log_path are copied. */
 int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_bridge_os *os);
 /* publishes stopping (a UE_BRIDGE_STOP_*), withdraws this game's directory
-entry and unmaps; UE keeps reading its own mapping of the section */
+entry and unmaps; UE keeps reading its own mapping of the section. A caller
+that runs a watcher thread (ue_bridge_platform_start_watcher) stops it first:
+the watcher reads the header on every pass and must not find it unmapped. */
 void ue_bridge_stop(uint32_t stopping);
 int ue_bridge_active(void);
 uint64_t ue_bridge_session_id(void);

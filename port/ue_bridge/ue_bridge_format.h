@@ -34,7 +34,9 @@ The game creates two named sections:
 #define UE_BRIDGE_DIRECTORY_NAME "Local\\HaloCEUE.Bridge.Directory"
 #define UE_BRIDGE_DIRECTORY_SIZE 0x1000u
 #define UE_BRIDGE_NAME_CHARS 96u
-/* UTF-8 paths: MAX_PATH UTF-16 units at up to two bytes each in this range */
+/* UTF-8 paths: MAX_PATH UTF-16 units at up to two bytes each below U+0800.
+Characters from U+0800 up (CJK among them) take three, so a path of those
+near MAX_PATH doesn't fit, and is then published empty (and logged) */
 #define UE_BRIDGE_PATH_BYTES 520u
 
 #define UE_BRIDGE_SECTION_SIZE 0x10000u
@@ -157,21 +159,45 @@ struct ue_bridge_frame_slot
 };
 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_directory) == 120, "directory size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, magic) == 0, "directory magic");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, version) == 4, "directory version");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, sequence) == 8, "directory sequence");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, game_pid) == 12, "directory game_pid");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, session_id) == 16, "directory session_id");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_directory, section_name) == 24, "directory section_name");
 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_ring_desc) == 16, "ring descriptor size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_ring_desc, offset) == 0, "ring descriptor offset");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_ring_desc, slot_size) == 4, "ring descriptor slot_size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_ring_desc, slot_count) == 8, "ring descriptor slot_count");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_ring_desc, published) == 12, "ring descriptor published");
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_crash_record) == 16, "crash record size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_crash_record, exception_code) == 0, "crash record exception_code");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_crash_record, exception_address) == 4, "crash record exception_address");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_crash_record, thread_id) == 8, "crash record thread_id");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_crash_record, reserved) == 12, "crash record reserved");
 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) == 1224, "header size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, magic) == 0, "header magic");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, version) == 4, "header version");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, header_size) == 8, "header header_size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, section_size) == 12, "header section_size");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, session_id) == 16, "header session_id");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, qpc_frequency) == 24, "header qpc_frequency");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_pid) == 32, "header game_pid");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, max_objects) == 36, "header max_objects");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_hang_timeout_ms) == 40, "header game_hang_timeout_ms");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, reserved0) == 44, "header reserved0");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, tick_ring) == 48, "header tick_ring");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, tick_ring.offset) == 48, "header tick_ring.offset");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, tick_ring.slot_size) == 52, "header tick_ring.slot_size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, tick_ring.slot_count) == 56, "header tick_ring.slot_count");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, tick_ring.published) == 60, "header tick_ring.published");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, frame_ring) == 64, "header frame_ring");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, frame_ring.offset) == 64, "header frame_ring.offset");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, frame_ring.slot_size) == 68, "header frame_ring.slot_size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, frame_ring.slot_count) == 72, "header frame_ring.slot_count");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, frame_ring.published) == 76, "header frame_ring.published");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_log_path) == 80, "header game_log_path");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_heartbeat_qpc) == 600, "header game_heartbeat_qpc");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, load_epoch) == 608, "header load_epoch");
@@ -181,6 +207,10 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_busy) == 620, "header g
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_stopping) == 624, "header game_stopping");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_crashing) == 628, "header game_crashing");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, crash) == 632, "header crash");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, crash.exception_code) == 632, "header crash.exception_code");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, crash.exception_address) == 636, "header crash.exception_address");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, crash.thread_id) == 640, "header crash.thread_id");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, crash.reserved) == 644, "header crash.reserved");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_heartbeat_qpc) == 648, "header ue_heartbeat_qpc");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_pid) == 656, "header ue_pid");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_attached) == 660, "header ue_attached");
@@ -191,6 +221,7 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_hang_timeout_ms) == 676, 
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_is_editor) == 680, "header ue_is_editor");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_dump_done) == 684, "header ue_dump_done");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_stopping) == 688, "header ue_stopping");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, reserved1) == 692, "header reserved1");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_session_dir) == 696, "header ue_session_dir");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_refresh_hz) == 1216, "header game_refresh_hz");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_frame_target_hz) == 1220, "header game_frame_target_hz");
@@ -200,9 +231,14 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, ue_heartbeat_qpc) % 8 == 0, 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) <= UE_BRIDGE_HEADER_SIZE, "header fits its region");
 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_slot) == 24, "slot size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_slot, sequence) == 0, "slot sequence");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_slot, reserved) == 4, "slot reserved");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_slot, id) == 8, "slot id");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_slot, publish_qpc) == 16, "slot publish_qpc");
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_frame_slot) == 32, "frame slot size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_frame_slot, slot) == 0, "frame slot slot");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_frame_slot, interpolation_fraction) == 24, "frame slot interpolation_fraction");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_frame_slot, reserved) == 28, "frame slot reserved");
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_frame_slot) <= UE_BRIDGE_SLOT_SIZE, "frame slot fits");
 UEB_STATIC_ASSERT(UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * (UE_BRIDGE_TICK_SLOTS + UE_BRIDGE_FRAME_SLOTS) <= UE_BRIDGE_SECTION_SIZE,
 	"rings fit the section");

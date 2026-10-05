@@ -127,10 +127,10 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 		bridge.session_id = 1;
 	snprintf(section_name, sizeof(section_name), "Local\\HaloCEUE.Bridge.%lu.%016llx",
 		(unsigned long)pid, (unsigned long long)bridge.session_id);
-	bridge.section_view = os->map_section(section_name, UE_BRIDGE_SECTION_SIZE, &bridge.section_handle);
+	bridge.section_view = (os->map_new_section ? os->map_new_section : os->map_section)(section_name, UE_BRIDGE_SECTION_SIZE, &bridge.section_handle);
 	if (!bridge.section_view)
 	{
-		bridge_log("ue bridge: cannot create the bridge section");
+		bridge_log("ue bridge: cannot create the bridge section; the bridge is off");
 		memset(&bridge, 0, sizeof(bridge));
 		return 0;
 	}
@@ -163,6 +163,9 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 	{
 		copy_path(header->game_log_path, sizeof(header->game_log_path), settings->log_path);
 	}
+	/* UE copies debug.txt from this path: say why it will find none */
+	if (settings->log_path && settings->log_path[0] && header->game_log_path[0] == 0)
+		bridge_log("ue bridge: the log path doesn't fit the header or doesn't convert to UTF-8; UE gets no debug.txt path");
 	ue_bridge_heartbeat();
 
 	bridge.directory_view = os->map_section(UE_BRIDGE_DIRECTORY_NAME, UE_BRIDGE_DIRECTORY_SIZE, &bridge.directory_handle);

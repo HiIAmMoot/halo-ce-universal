@@ -153,7 +153,17 @@ static uint64_t fake_frequency(void) { return 10000000ull; }
 static uint32_t fake_pid(void) { return 1234; }
 static uint64_t fake_random64(void) { return fake_random; }
 static int fake_debugger_present(void) { return fake_debugger; }
-static void fake_log(const char *message) { (void)message; }
+/* every line logged since fake_reset */
+static char fake_log_text[1024];
+
+static void fake_log(const char *message)
+{
+	if (strlen(fake_log_text) + strlen(message) + 2 <= sizeof(fake_log_text))
+	{
+		strcat(fake_log_text, message);
+		strcat(fake_log_text, "\n");
+	}
+}
 
 static const struct ue_bridge_os fake_os =
 {
@@ -219,6 +229,7 @@ static void fake_reset(void)
 	fake_sequence_at_first_unmap = 1;
 	fake_section_unmapped = 0;
 	fake_header_api_at_section_unmap = (volatile struct ue_bridge_header *)1;
+	fake_log_text[0] = 0;
 	fake_lock_calls = 0;
 	fake_unlock_calls = 0;
 	fake_lock_held = 0;
@@ -369,6 +380,7 @@ static void core_log_path_that_does_not_fit_is_published_empty(void)
 	settings.log_path = path;
 	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
 	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
+	UEB_CHECK(strstr(fake_log_text, "log path") != 0);
 }
 
 static void core_log_path_that_just_fits_is_published_whole(void)
@@ -382,6 +394,7 @@ static void core_log_path_that_just_fits_is_published_whole(void)
 	settings.log_path = path;
 	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
 	UEB_CHECK(strcmp((const char *)ue_bridge_header()->game_log_path, path) == 0);
+	UEB_CHECK(strstr(fake_log_text, "log path") == 0);
 }
 
 static int silent_failure_buffer_first_byte;
@@ -418,6 +431,7 @@ static void core_log_path_from_a_silently_failing_conversion_is_empty(void)
 	/* what the conversion sees on entry, whatever the stack layout */
 	UEB_CHECK(silent_failure_buffer_first_byte == 0);
 	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
+	UEB_CHECK(strstr(fake_log_text, "log path") != 0);
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
@@ -452,6 +466,8 @@ static void core_null_log_path_is_empty(void)
 	settings.log_path = 0;
 	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
 	UEB_CHECK(ue_bridge_header()->game_log_path[0] == 0);
+	/* no path was given, so none was dropped */
+	UEB_CHECK(strstr(fake_log_text, "log path") == 0);
 }
 
 static void core_publish_tick_and_frame(void)
@@ -600,6 +616,55 @@ static void core_section_failure_starts_nothing(void)
 	UEB_CHECK(!ue_bridge_active());
 	UEB_CHECK(fake_maps == 0);
 	UEB_CHECK(fake_maps == fake_unmaps);
+}
+
+/* a map_new_section that refuses a name that already exists, as the Windows layer's does */
+static void *fake_new_section(const char *name, uint32_t size, void **handle)
+{
+	int index;
+
+	for (index = 0; index < FAKE_SECTIONS; index++)
+	{
+		if (fake_sections[index].used && strcmp(fake_sections[index].name, name) == 0)
+			return 0;
+	}
+	return fake_map(name, size, handle);
+}
+
+/* the section's name carries the PID and the session id: one that exists was made by someone else */
+static void core_start_fails_when_the_section_already_exists(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	static struct ue_bridge_os os;
+	void *handle;
+	volatile uint32_t *squatter;
+
+	fake_reset();
+	os = fake_os;
+	os.map_new_section = fake_new_section;
+	squatter = (volatile uint32_t *)fake_map("Local\\HaloCEUE.Bridge.1234.1122334455667788", UE_BRIDGE_SECTION_SIZE, &handle);
+	UEB_CHECK(squatter != 0);
+	squatter[0] = 0xDEADBEEFu;
+	fake_maps = 0;
+	UEB_CHECK(!ue_bridge_start(&settings, &os));
+	UEB_CHECK(!ue_bridge_active());
+	UEB_CHECK(fake_directory() == 0);
+	UEB_CHECK(squatter[0] == 0xDEADBEEFu);
+	UEB_CHECK(fake_maps == 0);
+	UEB_CHECK(strstr(fake_log_text, "section") != 0);
+}
+
+static void core_start_succeeds_when_the_section_is_new(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	static struct ue_bridge_os os;
+
+	fake_reset();
+	os = fake_os;
+	os.map_new_section = fake_new_section;
+	UEB_CHECK(ue_bridge_start(&settings, &os));
+	UEB_CHECK(ue_bridge_header()->magic == UE_BRIDGE_MAGIC);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
 static void core_directory_failure_unmaps_section(void)
@@ -851,6 +916,8 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_stop_clears_own_directory_entry_and_unmaps", core_stop_clears_own_directory_entry_and_unmaps },
 	{ "core_stop_keeps_a_newer_games_directory_entry", core_stop_keeps_a_newer_games_directory_entry },
 	{ "core_section_failure_starts_nothing", core_section_failure_starts_nothing },
+	{ "core_start_fails_when_the_section_already_exists", core_start_fails_when_the_section_already_exists },
+	{ "core_start_succeeds_when_the_section_is_new", core_start_succeeds_when_the_section_is_new },
 	{ "core_directory_failure_unmaps_section", core_directory_failure_unmaps_section },
 	{ "core_restart_after_stop", core_restart_after_stop },
 	{ "core_second_start_while_active_is_a_no_op", core_second_start_while_active_is_a_no_op },

@@ -25,7 +25,11 @@ static void format_header_layout(void)
 	UEB_CHECK(sizeof(struct ue_bridge_header) == 1224);
 	UEB_CHECK(offsetof(struct ue_bridge_header, session_id) == 16);
 	UEB_CHECK(offsetof(struct ue_bridge_header, qpc_frequency) == 24);
+	UEB_CHECK(offsetof(struct ue_bridge_header, max_objects) == 36);
 	UEB_CHECK(offsetof(struct ue_bridge_header, tick_ring) == 48);
+	UEB_CHECK(offsetof(struct ue_bridge_header, tick_ring.published) == 60);
+	UEB_CHECK(offsetof(struct ue_bridge_header, frame_ring.published) == 76);
+	UEB_CHECK(offsetof(struct ue_bridge_header, crash.thread_id) == 640);
 	UEB_CHECK(offsetof(struct ue_bridge_header, frame_ring) == 64);
 	UEB_CHECK(offsetof(struct ue_bridge_header, game_log_path) == 80);
 	UEB_CHECK(offsetof(struct ue_bridge_header, game_heartbeat_qpc) == 600);
@@ -50,6 +54,7 @@ static void format_slot_layout(void)
 	UEB_CHECK(sizeof(struct ue_bridge_slot) == 24);
 	UEB_CHECK(offsetof(struct ue_bridge_slot, id) == 8);
 	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 32);
+	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, interpolation_fraction) == 24);
 	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) <= UE_BRIDGE_SLOT_SIZE);
 	UEB_CHECK(UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * (UE_BRIDGE_TICK_SLOTS + UE_BRIDGE_FRAME_SLOTS) <= UE_BRIDGE_SECTION_SIZE);
 }
