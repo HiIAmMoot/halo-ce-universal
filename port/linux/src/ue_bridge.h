@@ -118,6 +118,9 @@ enum ue_bridge_hold
 /* 1 when a renderer is attached, not stopping, and heartbeating within its
 own published hang timeout (or under a debugger) */
 int ue_bridge_reader_present(void);
+/* the watcher's word that the renderer's process has ended (or that a new one
+attached: 0); ends a hold at once and refuses a new one. Any thread. */
+void ue_bridge_note_peer_exited(int exited);
 /* holds for the current load_epoch when a reader is present; 1 when holding */
 int ue_bridge_hold_begin(void);
 /* WAITING while the hold lasts; once it ends, why (game_holding cleared),

@@ -582,6 +582,7 @@ static DWORD WINAPI watcher_main(void *unused)
 			peer_proven = 0;
 			acted = 0;
 			memset(&crash_clock, 0, sizeof(crash_clock));
+			ue_bridge_note_peer_exited(0);
 			watched_peer = peer;
 			if (peer)
 				ue_bridge_log("ue bridge: renderer %lu attached", (unsigned long)pid);
@@ -600,6 +601,7 @@ static DWORD WINAPI watcher_main(void *unused)
 		if (ueb_load_u64(&header->ue_heartbeat_qpc) > opened_qpc)
 			peer_proven = 1;
 		read_peer_view(header, peer, heartbeat_qpc, &view);
+		ue_bridge_note_peer_exited(view.process_exited);
 		/* an exiting renderer gets the crashing grace too: it is alive but silent while it writes its config */
 		view.crashing_for_ms = ue_bridge_crashing_for_ms(&crash_clock, ue_bridge_peer_winding_down(&view), GetTickCount());
 		action = ue_bridge_policy_decide(&view, now, header->qpc_frequency);

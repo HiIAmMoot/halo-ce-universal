@@ -482,6 +482,7 @@ static void render_player_frame(
 
 		window->render_camera.z_far = window->render_camera.z_near + 0.01f;
 	}
+	ue_bridge_game_window_camera(render.window_index, camera);
 
 	match_assert(
 		"c:\\halo\\SOURCE\\render\\render.c",

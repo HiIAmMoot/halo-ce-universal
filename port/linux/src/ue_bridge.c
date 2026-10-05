@@ -31,6 +31,8 @@ static struct
 	volatile struct ue_bridge_slot *tick_slot;
 	int holding;
 	uint64_t hold_started;
+	/* written by the watcher thread, read by the game's */
+	int peer_exited;
 } bridge;
 
 static volatile struct ue_bridge_header *bridge_header(void)
@@ -479,7 +481,12 @@ static uint32_t elapsed_ms(uint64_t since)
 		return 0u;
 	milliseconds = (now - since) * 1000u / frequency;
 	/* a heartbeat of 0 (never written) is days old: it must not wrap into a fresh one */
-	return milliseconds > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)milliseconds;
+	return milliseconds > UINT32_MAX ? UINT32_MAX : (uint32_t)milliseconds;
+}
+
+void ue_bridge_note_peer_exited(int exited)
+{
+	__atomic_store_n(&bridge.peer_exited, exited ? 1 : 0, __ATOMIC_SEQ_CST);
 }
 
 int ue_bridge_reader_present(void)
@@ -488,6 +495,10 @@ int ue_bridge_reader_present(void)
 	uint32_t timeout;
 
 	if (!header || !ueb_load_u32(&header->ue_attached) || ueb_load_u32(&header->ue_stopping) != UE_BRIDGE_STOP_NONE)
+		return 0;
+	/* a renderer killed or crashed hard publishes neither a stop nor a detach, and its
+	heartbeat only goes stale after its own hang timeout, which is the hold's cap */
+	if (__atomic_load_n(&bridge.peer_exited, __ATOMIC_SEQ_CST))
 		return 0;
 	if (ueb_load_u32(&header->ue_debugger_attached))
 		return 1;

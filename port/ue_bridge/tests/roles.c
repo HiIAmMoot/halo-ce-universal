@@ -840,9 +840,9 @@ static int role_read_world(void)
 				break;
 			at_rest += (record->flags & UE_BRIDGE_OBJECT_AT_REST) != 0;
 			hidden += (record->flags & UE_BRIDGE_OBJECT_HIDDEN) != 0;
-			if (index && (record->datum_index & 0xFFFFu) <= previous)
+			if (index && (record->datum_index & (UE_BRIDGE_DATUM_ABSOLUTE_LIMIT - 1u)) <= previous)
 				ascending = 0;
-			previous = record->datum_index & 0xFFFFu;
+			previous = record->datum_index & (UE_BRIDGE_DATUM_ABSOLUTE_LIMIT - 1u);
 			offset += record->size;
 		}
 		printf(", \"tick\": {\"id\": %llu, \"objects\": %lu, \"truncated\": %lu, \"ascending\": %lu, \"at_rest\": %lu, \"hidden\": %lu, "

@@ -40,7 +40,7 @@ void ue_bridge_world_publish_tick(uint64_t tick)
 		uint8_t region_count = 0;
 		uint16_t flags = 0;
 
-		if (definition == UE_BRIDGE_NO_DEFINITION || node_count < 0 || node_count > 0xFFFF)
+		if (definition == UE_BRIDGE_NO_DEFINITION || node_count < 0 || node_count > UINT16_MAX)
 			continue;
 		if (model_tag != NONE)
 			region_count = (uint8_t)MIN(model_definition_get(model_tag)->regions.count, (long)MAXIMUM_REGIONS_PER_OBJECT);

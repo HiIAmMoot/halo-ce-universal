@@ -1200,6 +1200,96 @@ static void hold_keeps_waiting_while_ue_is_in_a_debugger(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+/* the game's own geometry, whatever the header says: UE can write the header,
+and the descriptor steers where the game writes */
+static void tick_and_frame_writes_use_the_trusted_layout_not_the_header(void)
+{
+	volatile struct ue_bridge_header *header;
+	const struct ue_bridge_layout *layout;
+	struct ue_bridge_matrix node;
+	struct ue_bridge_tick_writer *writer;
+	const struct ue_bridge_tick_header *tick;
+	const struct ue_bridge_frame_slot *frame;
+	uint32_t index;
+	uint32_t published;
+
+	start_bridge();
+	header = fake_bridge_section();
+	layout = ue_bridge_trusted_layout();
+	memset(&node, 0, sizeof(node));
+	/* a write count that isn't 0 modulo either ring's slot count, so a corrupt count shows */
+	for (index = 0; index < 3; index++)
+	{
+		ue_bridge_publish_tick(index);
+		ue_bridge_publish_frame_camera(index, 0.0f, index, 0);
+	}
+	header->tick_ring.offset = layout->frame_ring.offset;
+	header->tick_ring.slot_size = 0x80;
+	header->tick_ring.slot_count = 2;
+	header->frame_ring.offset = layout->tick_ring.offset;
+	header->frame_ring.slot_size = 0x40;
+	header->frame_ring.slot_count = 2;
+	published = header->tick_ring.published;
+	writer = ue_bridge_tick_begin(77);
+	UEB_CHECK(writer != 0);
+	/* three records: 48 + 3 * 68 bytes, past the corrupt slot_size */
+	UEB_CHECK(ue_bridge_tick_writer_add(writer, 1, 0, 0, 0, 0, &node, 1));
+	UEB_CHECK(ue_bridge_tick_writer_add(writer, 2, 0, 0, 0, 0, &node, 1));
+	UEB_CHECK(ue_bridge_tick_writer_add(writer, 3, 0, 0, 0, 0, &node, 1));
+	ue_bridge_tick_end(0);
+	tick = (const struct ue_bridge_tick_header *)((const uint8_t *)header + layout->tick_ring.offset +
+		(published % layout->tick_ring.slot_count) * layout->tick_ring.slot_size);
+	UEB_CHECK(tick->slot.id == 77 && tick->object_count == 3 && !(tick->flags & UE_BRIDGE_TICK_TRUNCATED));
+	published = header->frame_ring.published;
+	ue_bridge_publish_frame_camera(88, 0.5f, 9, 0);
+	frame = (const struct ue_bridge_frame_slot *)((const uint8_t *)header + layout->frame_ring.offset +
+		(published % layout->frame_ring.slot_count) * layout->frame_ring.slot_size);
+	UEB_CHECK(frame->slot.id == 88 && frame->tick_id == 9);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_ends_exactly_at_the_cap(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	ue_bridge_hold_begin();
+	fake_now += (uint64_t)UE_BRIDGE_LOAD_HOLD_MS * 10000ull;
+	header->ue_heartbeat_qpc = fake_now;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_TIMED_OUT);
+	UEB_CHECK(held == UE_BRIDGE_LOAD_HOLD_MS);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+/* the watcher saw the renderer's process end: no ue_stopping needed, no staleness to wait out */
+static void hold_ends_at_once_when_the_renderer_process_exits(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	UEB_CHECK(ue_bridge_hold_begin());
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_WAITING);
+	ue_bridge_note_peer_exited(1);
+	UEB_CHECK(!ue_bridge_reader_present());
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_READER_GONE);
+	UEB_CHECK(header->game_holding == 0);
+	/* a hold needs a reader: this one's process is gone, whatever the header still says */
+	UEB_CHECK(!ue_bridge_hold_begin());
+	ue_bridge_note_peer_exited(0);
+	UEB_CHECK(ue_bridge_hold_begin());
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1248,5 +1338,8 @@ const struct ueb_test ueb_core_tests[] =
 	{ "hold_ends_at_the_cap", hold_ends_at_the_cap },
 	{ "hold_ends_when_ue_detaches", hold_ends_when_ue_detaches },
 	{ "hold_keeps_waiting_while_ue_is_in_a_debugger", hold_keeps_waiting_while_ue_is_in_a_debugger },
+	{ "tick_and_frame_writes_use_the_trusted_layout_not_the_header", tick_and_frame_writes_use_the_trusted_layout_not_the_header },
+	{ "hold_ends_exactly_at_the_cap", hold_ends_exactly_at_the_cap },
+	{ "hold_ends_at_once_when_the_renderer_process_exits", hold_ends_at_once_when_the_renderer_process_exits },
 	{ 0, 0 }
 };

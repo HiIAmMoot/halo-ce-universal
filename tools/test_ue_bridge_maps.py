@@ -201,3 +201,23 @@ def test_game_hold_ends_at_the_cap(roles_exe):
     finally:
         run.stop()
         renderer.kill()
+
+
+def test_game_hold_ends_when_the_renderer_process_dies(roles_exe):
+    if not map_available("a10"):
+        pytest.skip("a10.map is not in build/windows/maps")
+    renderer = start_fake_ue(roles_exe, -1)
+    run = run_game(MAPS["a10"], {"HALO_UE_BRIDGE_ON_PEER_EXIT": "continue"})
+    try:
+        wait_for_export(roles_exe, MAPS["a10"])
+        time.sleep(1.0)
+        # killed, not closed: it publishes no ue_stopping and leaves ue_attached set
+        renderer.kill()
+        renderer.wait(timeout=30)
+        time.sleep(3.0)
+        reason, held = hold_line(run.log)
+        # the watcher polls every 250 ms: far inside the 10 s cap
+        assert reason == "the renderer went away" and held < 6000, (reason, held)
+    finally:
+        run.stop()
+        renderer.kill()
