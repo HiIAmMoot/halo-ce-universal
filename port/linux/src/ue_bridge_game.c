@@ -88,6 +88,7 @@ void ue_bridge_game_shutdown(void)
 
 		started = 0;
 		halted = 0;
+		/* the watcher first: it reads the header on every pass, and ue_bridge_stop unmaps it */
 		ue_bridge_platform_stop_watcher();
 		ue_bridge_stop(stopping);
 	}
@@ -129,6 +130,16 @@ void ue_bridge_game_loading(int loading)
 	ensure_started();
 	if (started)
 		ue_bridge_set_busy(loading);
+}
+
+/* around a modal dialog (SDL_ShowSimpleMessageBox runs its own message loop
+inside platform_pump_events): the heartbeat stops while the player reads it,
+and the renderer would otherwise dump and terminate the game as hung */
+void ue_bridge_game_modal(int open)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_set_busy(open);
 }
 
 void ue_bridge_game_tick(long tick)

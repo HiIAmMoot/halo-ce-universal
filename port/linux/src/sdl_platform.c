@@ -893,7 +893,9 @@ static void platform_show_pending_message(void)
 	if (!pending)
 		return;
 #ifdef HALO_ANDROID
+	ue_bridge_game_modal(1);
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, NULL);
+	ue_bridge_game_modal(0);
 #else
 	{
 		/* (a box cannot show above a fullscreen game) */
@@ -901,7 +903,9 @@ static void platform_show_pending_message(void)
 
 		if (fullscreen)
 			SDL_SetWindowFullscreen(platform_window, false);
+		ue_bridge_game_modal(1);
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, platform_window);
+		ue_bridge_game_modal(0);
 		if (fullscreen)
 			SDL_SetWindowFullscreen(platform_window, true);
 	}

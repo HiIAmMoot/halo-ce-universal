@@ -14,6 +14,7 @@ platform layer and the core's operating system faked.
 
 void ue_bridge_game_pump(void);
 void ue_bridge_game_loading(int loading);
+void ue_bridge_game_modal(int open);
 void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
@@ -366,6 +367,27 @@ static void game_loading_sets_and_clears_busy(void)
 	UEB_CHECK(section_header()->game_busy == 0);
 }
 
+/* an open modal dialog stops the main loop as a load does: the renderer must see busy, not a hang */
+static void game_modal_dialog_sets_and_clears_busy(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_modal(1);
+	UEB_CHECK(section_header()->game_busy == 1);
+	ue_bridge_game_modal(0);
+	UEB_CHECK(section_header()->game_busy == 0);
+}
+
+static void game_modal_dialog_with_the_bridge_off_does_nothing(void)
+{
+	game_reset();
+	setting_enabled = 0;
+	ue_bridge_game_modal(1);
+	ue_bridge_game_modal(0);
+	UEB_CHECK(platform_os_requests == 0);
+	UEB_CHECK(game_maps == 0);
+}
+
 static void game_state_loaded_before_start_does_nothing(void)
 {
 	game_reset();
@@ -454,6 +476,8 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_frame_rate_poll_after_a_restart_publishes_again", game_frame_rate_poll_after_a_restart_publishes_again },
 	{ "game_pump_starts_and_heartbeats", game_pump_starts_and_heartbeats },
 	{ "game_loading_sets_and_clears_busy", game_loading_sets_and_clears_busy },
+	{ "game_modal_dialog_sets_and_clears_busy", game_modal_dialog_sets_and_clears_busy },
+	{ "game_modal_dialog_with_the_bridge_off_does_nothing", game_modal_dialog_with_the_bridge_off_does_nothing },
 	{ "game_state_loaded_before_start_does_nothing", game_state_loaded_before_start_does_nothing },
 	{ "game_shutdown_stops_watcher_and_bridge", game_shutdown_stops_watcher_and_bridge },
 	{ "game_halted_stops_heartbeat_and_publishes_crash", game_halted_stops_heartbeat_and_publishes_crash },

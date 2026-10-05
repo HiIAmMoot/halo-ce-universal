@@ -45,6 +45,8 @@ void ue_bridge_request_quit(void);
 halo_linux_source_fixups.h too) */
 void ue_bridge_game_pump(void);
 void ue_bridge_game_loading(int loading);
+/* around a modal message box: busy, as for a load, while it is open */
+void ue_bridge_game_modal(int open);
 void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
