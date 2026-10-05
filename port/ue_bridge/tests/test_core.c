@@ -997,6 +997,7 @@ static void load_publish_bsp_sets_ready_and_can_clear_completeness(void)
 	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
 	test_root(header)->bsps.offset = ue_bridge_load_reserve(writer, 5, sizeof(struct ue_bridge_bsp_entry));
 	test_root(header)->bsps.count = 5;
+	ue_bridge_load_set_bsp_table(test_root(header)->bsps.offset, 5);
 	entries = (volatile struct ue_bridge_bsp_entry *)((volatile uint8_t *)test_root(header) + test_root(header)->bsps.offset);
 	ue_bridge_load_end(1);
 	ue_bridge_load_publish_bsp(3, 1);
@@ -1007,6 +1008,34 @@ static void load_publish_bsp_sets_ready_and_can_clear_completeness(void)
 	UEB_CHECK(header->export_complete == 1);
 	ue_bridge_load_publish_bsp(4, 0);
 	UEB_CHECK(header->export_complete == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_bsp_table_is_the_games_own_not_the_roots(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_load_writer *writer;
+	volatile struct ue_bridge_bsp_entry *entries;
+	uint32_t offset;
+
+	start_bridge();
+	header = fake_bridge_section();
+	writer = ue_bridge_load_begin();
+	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
+	offset = ue_bridge_load_reserve(writer, 5, sizeof(struct ue_bridge_bsp_entry));
+	ue_bridge_load_set_bsp_table(offset, 5);
+	entries = (volatile struct ue_bridge_bsp_entry *)((volatile uint8_t *)test_root(header) + offset);
+	ue_bridge_load_end(1);
+	/* UE can write the region: a moved or grown table in the root must not move the game's writes */
+	test_root(header)->bsps.offset = 0x100000u;
+	test_root(header)->bsps.count = 1000;
+	UEB_CHECK(ue_bridge_load_bsp_slot(2) == (struct ue_bridge_bsp_entry *)(uintptr_t)&entries[2]);
+	UEB_CHECK(ue_bridge_load_bsp_slot(5) == 0);
+	ue_bridge_load_publish_bsp(1, 1);
+	UEB_CHECK(entries[1].ready == 1);
+	/* a table that doesn't lie inside the region is refused */
+	ue_bridge_load_set_bsp_table(header->load_region.size, 5);
+	UEB_CHECK(ue_bridge_load_bsp_slot(0) == 0);
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
@@ -1050,5 +1079,6 @@ const struct ueb_test ueb_core_tests[] =
 	{ "load_end_publishes_the_epoch_and_completeness", load_end_publishes_the_epoch_and_completeness },
 	{ "load_append_continues_after_the_export_of_this_epoch_only", load_append_continues_after_the_export_of_this_epoch_only },
 	{ "load_publish_bsp_sets_ready_and_can_clear_completeness", load_publish_bsp_sets_ready_and_can_clear_completeness },
+	{ "load_bsp_table_is_the_games_own_not_the_roots", load_bsp_table_is_the_games_own_not_the_roots },
 	{ 0, 0 }
 };

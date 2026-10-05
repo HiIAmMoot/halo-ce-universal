@@ -24,6 +24,9 @@ static struct
 	struct ue_bridge_load_writer load_writer;
 	int load_live;
 	uint32_t load_live_epoch;
+	/* the BSP table as the game laid it out: the root's copy sits in memory UE can write */
+	uint32_t bsp_offset;
+	uint32_t bsp_count;
 } bridge;
 
 static volatile struct ue_bridge_header *bridge_header(void)
@@ -343,6 +346,8 @@ struct ue_bridge_load_writer *ue_bridge_load_begin(void)
 	memset((void *)(uintptr_t)region, 0, sizeof(struct ue_bridge_load_root));
 	ue_bridge_load_writer_init(&bridge.load_writer, region, bridge.layout.load_region.size, 0);
 	bridge.load_live = 0;
+	bridge.bsp_offset = 0;
+	bridge.bsp_count = 0;
 	return &bridge.load_writer;
 }
 
@@ -376,6 +381,23 @@ struct ue_bridge_load_root *ue_bridge_load_root(void)
 	return header ? (struct ue_bridge_load_root *)(uintptr_t)((volatile uint8_t *)header + bridge.layout.load_region.offset) : NULL;
 }
 
+void ue_bridge_load_set_bsp_table(uint32_t offset, uint32_t count)
+{
+	bridge.bsp_offset = 0;
+	bridge.bsp_count = 0;
+	if (!bridge.section_view || !ue_bridge_table_valid(offset, count, sizeof(struct ue_bridge_bsp_entry), bridge.layout.load_region.size))
+		return;
+	bridge.bsp_offset = offset;
+	bridge.bsp_count = count;
+}
+
+struct ue_bridge_bsp_entry *ue_bridge_load_bsp_slot(uint32_t index)
+{
+	if (!bridge.section_view || index >= bridge.bsp_count)
+		return NULL;
+	return (struct ue_bridge_bsp_entry *)(uintptr_t)((volatile uint8_t *)bridge.section_view + bridge.layout.load_region.offset + bridge.bsp_offset) + index;
+}
+
 void ue_bridge_load_publish_bsp(short structure_bsp_index, int complete)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
@@ -383,7 +405,7 @@ void ue_bridge_load_publish_bsp(short structure_bsp_index, int complete)
 
 	if (!header || structure_bsp_index < 0)
 		return;
-	entry = ue_bridge_load_bsp_entry((volatile uint8_t *)ue_bridge_load_root(), (uint32_t)structure_bsp_index);
+	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
 	if (!entry)
 		return;
 	if (!complete)

@@ -326,7 +326,7 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	if (structure_bsp_index == NONE || structure_bsp_index != global_structure_bsp_index || structure_bsp_index < 0)
 		return 0;
 	/* no entry: the BSP table itself didn't fit, and the map export set the missing bit */
-	entry = ue_bridge_load_bsp_entry(writer->base, (uint32_t)structure_bsp_index);
+	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
 	if (!entry)
 		return 0;
 	/* global_structure_bsp has no extern; its getter asserts it is set, which
@@ -414,18 +414,24 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	source.cluster_count = (uint32_t)bsp->clusters.count;
 	entry->tag_index = global_scenario_get_structure_bsp_tag(structure_bsp_index);
 	result = ue_bridge_bsp_export(writer, &source, entry);
-	/* a BSP that didn't fit is still marked ready, with no batches, so UE
-	stops waiting for it; the missing bit says why, on the map export's path
-	and on a later switch's alike */
-	if (!result)
-		root->missing |= UE_BRIDGE_MISSING_BSPS;
-	ue_bridge_load_publish_bsp(structure_bsp_index, result);
+	if (result)
+		ue_bridge_load_publish_bsp(structure_bsp_index, 1);
 	ue_bridge_log("ue bridge: BSP %d: %lu batches from %lu clusters, %lu surfaces in no cluster, %lu in two; %s in %lu ms",
 		(int)structure_bsp_index, (unsigned long)entry->batches.count, (unsigned long)source.cluster_count,
 		(unsigned long)entry->unclustered_surfaces, (unsigned long)entry->duplicate_surfaces, result ? "exported" : "did not fit",
-			(unsigned long)(system_milliseconds() - started_ms));
+		(unsigned long)(system_milliseconds() - started_ms));
 
 done:
+	/* Every failure past the entry (the region is full, or an allocation failed)
+	lands here: the BSP is still marked ready, with no batches, so UE stops
+	waiting for it, and the missing bit says why, on the map export's path and
+	on a later switch's alike. An export must never publish itself complete
+	with a loaded BSP absent. */
+	if (!result)
+	{
+		root->missing |= UE_BRIDGE_MISSING_BSPS;
+		ue_bridge_load_publish_bsp(structure_bsp_index, 0);
+	}
 	if (cluster_surfaces)
 	{
 		for (cluster_index = 0; cluster_index < bsp->clusters.count; cluster_index++)
@@ -481,6 +487,7 @@ int ue_bridge_world_export_map(void)
 		memset(ue_bridge_load_pointer(writer, bsps_offset), 0, bsp_count * sizeof(struct ue_bridge_bsp_entry));
 		root->bsps.offset = bsps_offset;
 		root->bsps.count = bsp_count;
+		ue_bridge_load_set_bsp_table(bsps_offset, bsp_count);
 	}
 
 	/* definitions numbered in tag order; their models in order of first use */
@@ -585,7 +592,7 @@ void ue_bridge_world_export_bsp(short structure_bsp_index)
 	{
 		return;
 	}
-	entry = ue_bridge_load_bsp_entry(writer->base, (uint32_t)structure_bsp_index);
+	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
 	if (!entry || entry->ready)
 		return;
 	export_loaded_bsp(writer, structure_bsp_index);

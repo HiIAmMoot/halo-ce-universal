@@ -760,6 +760,8 @@ static int role_read_world(void)
 	{
 		const struct ue_bridge_bsp_entry *entry = (const struct ue_bridge_bsp_entry *)(region + root->bsps.offset) + bsp;
 		unsigned long triangles = 0, agree = 0;
+		/* FNV-1a over every batch's header, vertices and indices: equal exports are equal bytes */
+		uint32_t hash = 2166136261u;
 
 		for (index = 0; entry->ready && index < entry->batches.count; index++)
 		{
@@ -767,7 +769,16 @@ static int role_read_world(void)
 			const struct ue_bridge_bsp_vertex *v = (const struct ue_bridge_bsp_vertex *)(region + batch->vertices.offset);
 			const ue_bridge_bsp_index *i = (const ue_bridge_bsp_index *)(region + batch->indices.offset);
 			uint32_t k;
+			const uint8_t *bytes = (const uint8_t *)batch;
 
+			for (k = 0; k < sizeof(*batch); k++)
+				hash = (hash ^ bytes[k]) * 16777619u;
+			bytes = (const uint8_t *)v;
+			for (k = 0; k < batch->vertices.count * sizeof(struct ue_bridge_bsp_vertex); k++)
+				hash = (hash ^ bytes[k]) * 16777619u;
+			bytes = (const uint8_t *)i;
+			for (k = 0; k < batch->indices.count * sizeof(ue_bridge_bsp_index); k++)
+				hash = (hash ^ bytes[k]) * 16777619u;
 			for (k = 0; k + 2 < batch->indices.count; k += 3)
 			{
 				triangles++;
@@ -776,10 +787,10 @@ static int role_read_world(void)
 			}
 		}
 		printf("%s{\"index\": %lu, \"ready\": %lu, \"batches\": %lu, \"clusters\": %lu, \"unclustered\": %lu, \"duplicates\": %lu, "
-			"\"triangles\": %lu, \"normals_agree\": %.4f}",
+			"\"triangles\": %lu, \"normals_agree\": %.4f, \"hash\": %lu}",
 			bsp ? ", " : "", (unsigned long)bsp, (unsigned long)entry->ready, (unsigned long)entry->batches.count,
 			(unsigned long)entry->cluster_count, (unsigned long)entry->unclustered_surfaces, (unsigned long)entry->duplicate_surfaces,
-			triangles, triangles ? (double)agree / triangles : 0.0);
+			triangles, triangles ? (double)agree / triangles : 0.0, (unsigned long)hash);
 	}
 	printf("]}\n");
 	free(region);

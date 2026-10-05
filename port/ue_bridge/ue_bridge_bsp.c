@@ -52,6 +52,41 @@ static int32_t material_of(const struct ue_bridge_bsp_source *source, uint32_t s
 	return -1;
 }
 
+/* a surface of a cluster's run, keyed for the shader grouping */
+struct shader_key
+{
+	int32_t shader;
+	/* its place in the run: grouping must keep it, and the batches' order is by it */
+	uint32_t position;
+};
+
+struct shader_group
+{
+	/* into the sorted keys */
+	uint32_t start;
+	uint32_t count;
+	uint32_t first;
+};
+
+static int compare_shader_keys(const void *a, const void *b)
+{
+	const struct shader_key *left = (const struct shader_key *)a;
+	const struct shader_key *right = (const struct shader_key *)b;
+
+	if (left->shader != right->shader)
+		return left->shader < right->shader ? -1 : 1;
+	return left->position < right->position ? -1 : left->position > right->position;
+}
+
+/* groups ordered by their first surface's place in the run */
+static int compare_shader_groups(const void *a, const void *b)
+{
+	const struct shader_group *left = (const struct shader_group *)a;
+	const struct shader_group *right = (const struct shader_group *)b;
+
+	return left->first < right->first ? -1 : left->first > right->first;
+}
+
 struct bsp_scratch
 {
 	/* per surface: its cluster, -1 for none, UNLISTED while unassigned */
@@ -167,6 +202,8 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	uint32_t batch_count = 0, batch_capacity, cluster_count;
 	struct ue_bridge_bsp_batch *batches = 0;
 	uint32_t *run = 0;
+	struct shader_key *keys = 0;
+	struct shader_group *groups = 0;
 	int32_t cluster;
 
 	memset(&scratch, 0, sizeof(scratch));
@@ -189,6 +226,10 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	scratch.stamp = (uint64_t *)calloc(scratch.largest_material + 1u, sizeof(uint64_t));
 	scratch.batch_index = (ue_bridge_bsp_index *)malloc((scratch.largest_material + 1u) * sizeof(ue_bridge_bsp_index));
 	run = (uint32_t *)malloc((source->surface_count + 1u) * sizeof(uint32_t));
+	keys = (struct shader_key *)malloc((source->surface_count + 1u) * sizeof(struct shader_key));
+	groups = (struct shader_group *)malloc((source->surface_count + 1u) * sizeof(struct shader_group));
+	if (!keys || !groups)
+		goto failed;
 	if (!scratch.owner || !scratch.material || !scratch.order || !scratch.cluster_start || !scratch.stamp || !scratch.batch_index || !run)
 		goto failed;
 
@@ -255,26 +296,38 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	{
 		uint32_t begin = cluster == -1 ? 0u : scratch.cluster_start[cluster];
 		uint32_t end = scratch.cluster_start[cluster + 1];
-		uint32_t first;
+		uint32_t group_count = 0, group;
 
-		/* each distinct shader of the run, in order of first appearance */
-		for (first = begin; first < end; first++)
+		/* each distinct shader of the run, in order of first appearance: sort the
+		run's surfaces by shader (stable through the position), cut the groups,
+		then order the groups by their first position. A scan per shader grows
+		with a cluster's surfaces times its shaders, which a large BSP's first
+		load would pay mid-play. */
+		for (index = begin; index < end; index++)
 		{
-			int32_t shader = source->materials[scratch.material[scratch.order[first]]].shader_tag;
-			uint32_t run_count = 0, seen, scan;
+			keys[index - begin].shader = source->materials[scratch.material[scratch.order[index]]].shader_tag;
+			keys[index - begin].position = index - begin;
+		}
+		qsort(keys, end - begin, sizeof(*keys), compare_shader_keys);
+		for (index = 0; index < end - begin; index++)
+		{
+			if (index == 0 || keys[index].shader != keys[index - 1u].shader)
+			{
+				groups[group_count].start = index;
+				groups[group_count].first = keys[index].position;
+				groups[group_count].count = 0;
+				group_count++;
+			}
+			groups[group_count - 1u].count++;
+		}
+		qsort(groups, group_count, sizeof(*groups), compare_shader_groups);
+		for (group = 0; group < group_count; group++)
+		{
+			uint32_t run_count = groups[group].count, scan;
+			int32_t shader = keys[groups[group].start].shader;
 
-			for (seen = begin; seen < first; seen++)
-			{
-				if (source->materials[scratch.material[scratch.order[seen]]].shader_tag == shader)
-					break;
-			}
-			if (seen < first)
-				continue;
-			for (scan = first; scan < end; scan++)
-			{
-				if (source->materials[scratch.material[scratch.order[scan]]].shader_tag == shader)
-					run[run_count++] = scratch.order[scan];
-			}
+			for (scan = 0; scan < run_count; scan++)
+				run[scan] = scratch.order[begin + keys[groups[group].start + scan].position];
 			if (batch_count >= batch_capacity)
 				goto failed;
 			if (!write_batch(writer, source, &scratch, run, run_count, stamp, (ue_bridge_cluster_index)cluster, shader, &batches[batch_count]))
@@ -291,6 +344,8 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 		memcpy(ue_bridge_load_pointer(writer, result.batches.offset), batches, batch_count * sizeof(struct ue_bridge_bsp_batch));
 	free(batches);
 	free(run);
+	free(keys);
+	free(groups);
 	scratch_free(&scratch);
 	result.tag_index = entry->tag_index;
 	result.ready = 0;
@@ -300,6 +355,8 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 failed:
 	free(batches);
 	free(run);
+	free(keys);
+	free(groups);
 	scratch_free(&scratch);
 	writer->overflow = 1;
 	writer->used = start;

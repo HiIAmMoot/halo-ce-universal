@@ -393,7 +393,7 @@ struct ue_bridge_part
 	uint16_t reserved;
 	/* struct ue_bridge_model_vertex */
 	struct ue_bridge_table vertices;
-	/* ue_bridge_model_index triangle list, in Halo's winding */
+	/* ue_bridge_model_index triangle list; front faces (right-handed cross product) agree with the vertex normals, the reverse of the game's D3DCULL_CCW order */
 	struct ue_bridge_table indices;
 };
 
@@ -420,7 +420,7 @@ struct ue_bridge_bsp_batch
 	int32_t shader_tag;
 	/* struct ue_bridge_bsp_vertex */
 	struct ue_bridge_table vertices;
-	/* ue_bridge_bsp_index triangle list, in Halo's winding */
+	/* ue_bridge_bsp_index triangle list; front faces (right-handed cross product) agree with the vertex normals, the reverse of the game's D3DCULL_CCW order */
 	struct ue_bridge_table indices;
 };
 

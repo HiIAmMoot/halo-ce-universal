@@ -130,6 +130,66 @@ static void bsp_export_groups_by_cluster_and_shader(void)
 	UEB_CHECK(batch && batch->indices.count == 3);
 }
 
+static void bsp_export_keeps_surface_order_within_a_shader_and_orders_batches_by_first_use(void)
+{
+	enum { SURFACES = 64 };
+	static struct ue_bridge_compressed_environment_vertex many_vertices[SURFACES * 3];
+	static uint16_t many_surfaces[SURFACES][3];
+	static struct ue_bridge_bsp_source_material many_materials[SURFACES];
+	static int32_t listed[SURFACES];
+	static const int32_t *lists[1] = { listed };
+	static uint32_t counts[1] = { SURFACES };
+	struct ue_bridge_bsp_source many;
+	struct ue_bridge_load_writer writer;
+	struct ue_bridge_bsp_entry entry;
+	const struct ue_bridge_bsp_batch *batches;
+	const struct ue_bridge_bsp_vertex *vertices;
+	const ue_bridge_bsp_index *indices;
+	uint32_t index;
+
+	memset(many_vertices, 0, sizeof(many_vertices));
+	for (index = 0; index < SURFACES * 3u; index++)
+		many_vertices[index].position[0] = (float)index;
+	for (index = 0; index < SURFACES; index++)
+	{
+		many_surfaces[index][0] = 0;
+		many_surfaces[index][1] = 1;
+		many_surfaces[index][2] = 2;
+		/* a material a surface, alternating shaders, the later one first in the list */
+		many_materials[index].shader_tag = index & 1u ? 0x30 : 0x40;
+		many_materials[index].first_surface = index;
+		many_materials[index].surface_count = 1;
+		many_materials[index].vertices = &many_vertices[index * 3u];
+		many_materials[index].vertex_count = 3;
+		listed[index] = (int32_t)index;
+	}
+	memset(&many, 0, sizeof(many));
+	many.surfaces = &many_surfaces[0][0];
+	many.surface_count = SURFACES;
+	many.materials = many_materials;
+	many.material_count = SURFACES;
+	many.cluster_surfaces = lists;
+	many.cluster_surface_counts = counts;
+	many.cluster_count = 1;
+	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
+	UEB_CHECK(ue_bridge_bsp_export(&writer, &many, &entry));
+	UEB_CHECK(entry.batches.count == 2);
+	batches = AT(struct ue_bridge_bsp_batch, entry.batches.offset);
+	/* batches by first use: shader 0x40 (surface 0) before 0x30 (surface 1) */
+	UEB_CHECK(batches[0].shader_tag == 0x40 && batches[1].shader_tag == 0x30);
+	for (index = 0; index < 2; index++)
+	{
+		uint32_t triangle;
+
+		vertices = AT(struct ue_bridge_bsp_vertex, batches[index].vertices.offset);
+		indices = AT(ue_bridge_bsp_index, batches[index].indices.offset);
+		UEB_CHECK(batches[index].indices.count == SURFACES / 2 * 3u);
+		/* surfaces of a shader keep their listed order: surface 2k + index, first corner at 3 * surface */
+		for (triangle = 0; triangle < SURFACES / 2; triangle++)
+			UEB_CHECK(vertices[indices[triangle * 3u]].position[0] == (float)(3u * (2u * triangle + index)));
+	}
+}
+
 static void bsp_export_counts_unclustered_and_duplicate_surfaces(void)
 {
 	struct ue_bridge_load_writer writer;
@@ -288,6 +348,7 @@ const struct ueb_test ueb_bsp_tests[] =
 	{ "unpack_cluster_list_skips_group_headers", unpack_cluster_list_skips_group_headers },
 	{ "unpack_cluster_list_stops_at_a_group_past_the_end", unpack_cluster_list_stops_at_a_group_past_the_end },
 	{ "bsp_export_groups_by_cluster_and_shader", bsp_export_groups_by_cluster_and_shader },
+	{ "bsp_export_keeps_surface_order_within_a_shader_and_orders_batches_by_first_use", bsp_export_keeps_surface_order_within_a_shader_and_orders_batches_by_first_use },
 	{ "bsp_export_counts_unclustered_and_duplicate_surfaces", bsp_export_counts_unclustered_and_duplicate_surfaces },
 	{ "bsp_export_remaps_vertices_per_batch", bsp_export_remaps_vertices_per_batch },
 	{ "bsp_export_skips_surfaces_out_of_range", bsp_export_skips_surfaces_out_of_range },

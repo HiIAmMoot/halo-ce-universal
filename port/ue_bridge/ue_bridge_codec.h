@@ -49,7 +49,8 @@ UEB_STATIC_ASSERT(sizeof(struct ue_bridge_compressed_environment_vertex) == 32, 
 void ue_bridge_unpack_normal(uint32_t packed, float out[3]);
 void ue_bridge_decode_model_vertex(const struct ue_bridge_compressed_model_vertex *in, struct ue_bridge_model_vertex *out);
 void ue_bridge_decode_environment_vertex(const struct ue_bridge_compressed_environment_vertex *in, struct ue_bridge_bsp_vertex *out);
-/* a D3D triangle strip as a list, degenerate triangles dropped; list holds
+/* a D3D triangle strip as a list, degenerate triangles dropped, in the
+format's winding (the reverse of the strip's D3D front-face order); list holds
 3 * (strip_length - 2) entries at most; returns the entries written */
 uint32_t ue_bridge_strip_to_list(const uint16_t *strip, uint32_t strip_length, ue_bridge_model_index *list);
 

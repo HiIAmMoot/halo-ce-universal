@@ -86,6 +86,19 @@ def export_line(log: Path, scenario: str) -> tuple[int, int]:
     pytest.fail(f"no export line for {scenario} in {log}")
 
 
+def first_bsp_export_ms(log: Path, scenario: str) -> int:
+    """the milliseconds of the BSP line just before the map's export line (the map's own first BSP)"""
+    lines = log.read_text(errors="replace").splitlines()
+    end = max((i for i, line in enumerate(lines) if f"exported {scenario}:" in line), default=None)
+    if end is None:
+        pytest.fail(f"no export line for {scenario} in {log}")
+    for line in reversed(lines[:end]):
+        match = re.search(r"ue bridge: BSP \d+: .* exported in (\d+) ms", line)
+        if match:
+            return int(match.group(1))
+    pytest.fail(f"no BSP export line before the export of {scenario} in {log}")
+
+
 @pytest.mark.parametrize("name", list(MAPS))
 def test_export_is_complete_and_consistent(roles_exe, name):
     if not map_available(name):
@@ -108,6 +121,10 @@ def test_export_is_complete_and_consistent(roles_exe, name):
         for bsp in loaded:
             assert bsp["normals_agree"] >= 0.95, bsp
         milliseconds, mismatches = export_line(run.log, MAPS[name])
+        bsp_milliseconds = first_bsp_export_ms(run.log, MAPS[name])
+        # the BSP's grouping must not grow with a cluster's surfaces times its shaders
+        # (a10's BSP 0: 40,946 surfaces in 33 clusters took 74 ms when it did)
+        assert bsp_milliseconds < 10, bsp_milliseconds
         # the shared normal decode reads what the game's own does
         assert mismatches == 0
         # the spec's 15 s silence rule for hosts: stop and report well before it (section 5.3)

@@ -544,9 +544,9 @@ static void game_bsp_loaded_exports_only_once_started(void)
 static void game_console_started_applies_the_start_map(void)
 {
 	game_reset();
-	setting_start_map = "levels\a10\a10";
+	setting_start_map = "levels\\a10\\a10";
 	ue_bridge_game_console_started();
-	UEB_CHECK(strcmp(world_start_map, "levels\a10\a10") == 0);
+	UEB_CHECK(strcmp(world_start_map, "levels\\a10\\a10") == 0);
 	UEB_CHECK(strstr(log_lines, "ue_bridge.start_map") != 0);
 }
 
@@ -558,7 +558,7 @@ static void game_console_started_without_a_start_map_does_nothing(void)
 	UEB_CHECK(world_start_map_calls == 0);
 	game_reset();
 	setting_enabled = 0;
-	setting_start_map = "levels\a10\a10";
+	setting_start_map = "levels\\a10\\a10";
 	ue_bridge_game_console_started();
 	UEB_CHECK(world_start_map_calls == 0);
 }

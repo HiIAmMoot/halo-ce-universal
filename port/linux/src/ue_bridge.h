@@ -105,6 +105,11 @@ its first load; NULL when no export of the current load_epoch has ended */
 struct ue_bridge_load_writer *ue_bridge_load_append(void);
 /* the region's root; NULL when inactive */
 struct ue_bridge_load_root *ue_bridge_load_root(void);
+/* records where the game put the BSP table (the root's bsps fields are for
+UE: the game never reads them back); a table outside the region is refused */
+void ue_bridge_load_set_bsp_table(uint32_t offset, uint32_t count);
+/* the entry at index of the recorded table; NULL past it */
+struct ue_bridge_bsp_entry *ue_bridge_load_bsp_slot(uint32_t index);
 /* marks the BSP's entry ready, after its data; complete 0 also clears
 export_complete (the BSP didn't fit) */
 void ue_bridge_load_publish_bsp(short structure_bsp_index, int complete);
