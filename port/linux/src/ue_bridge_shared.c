@@ -9,3 +9,5 @@ port/ue_bridge, so they are compiled through this file.
 #include "../../ue_bridge/ue_bridge_ring.c"
 #include "../../ue_bridge/ue_bridge_policy.c"
 #include "../../ue_bridge/ue_bridge_load.c"
+#include "../../ue_bridge/ue_bridge_codec.c"
+#include "../../ue_bridge/ue_bridge_model.c"

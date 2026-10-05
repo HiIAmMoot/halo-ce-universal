@@ -27,6 +27,8 @@ SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
     BRIDGE / "ue_bridge_load.c",
     BRIDGE / "ue_bridge_policy.c",
+    BRIDGE / "ue_bridge_codec.c",
+    BRIDGE / "ue_bridge_model.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     BRIDGE / "tests" / "test_main.c",
     BRIDGE / "tests" / "test_format.c",
@@ -38,6 +40,8 @@ SOURCES = [
     ROOT / "port" / "linux" / "src" / "ue_bridge_log.c",
     BRIDGE / "tests" / "test_core.c",
     BRIDGE / "tests" / "test_game.c",
+    BRIDGE / "tests" / "test_codec.c",
+    BRIDGE / "tests" / "test_model.c",
 ]
 LIBRARIES: list[str] = []
 

@@ -21,6 +21,8 @@ static const struct ueb_test *const suites[] =
 	ueb_frame_rate_tests,
 	ueb_core_tests,
 	ueb_game_tests,
+	ueb_codec_tests,
+	ueb_model_tests,
 	0
 };
 
