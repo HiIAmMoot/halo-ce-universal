@@ -16,6 +16,7 @@ a fake in port/ue_bridge/tests), so this file has no platform calls.
 
 #include "../../ue_bridge/ue_bridge_format.h"
 #include "../../ue_bridge/ue_bridge_load.h"
+#include "../../ue_bridge/ue_bridge_tick.h"
 
 struct ue_bridge_os
 {
@@ -79,8 +80,49 @@ uint32_t ue_bridge_section_size(void);
 read back from the header, which UE can write. NULL when inactive. */
 const struct ue_bridge_layout *ue_bridge_trusted_layout(void);
 
+/* an empty tick: no records */
 void ue_bridge_publish_tick(uint64_t tick);
 void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction);
+
+/* the next tick slot, begun: add records with ue_bridge_tick_writer_add,
+then ue_bridge_tick_end publishes it; NULL when inactive */
+struct ue_bridge_tick_writer *ue_bridge_tick_begin(uint64_t tick);
+void ue_bridge_tick_end(int16_t active_bsp);
+
+/* window 0's render camera, in world units and radians */
+struct ue_bridge_camera
+{
+	float position[3];
+	float forward[3];
+	float up[3];
+	float vertical_fov;
+	float z_near;
+	float z_far;
+};
+
+/* camera NULL: no window camera was drawn this frame */
+void ue_bridge_publish_frame_camera(uint64_t frame, float interpolation_fraction, uint64_t tick, const struct ue_bridge_camera *camera);
+
+/* the load handshake (Phase 0 design, section 5.6) */
+#define UE_BRIDGE_LOAD_HOLD_MS 10000u
+
+enum ue_bridge_hold
+{
+	UE_BRIDGE_HOLD_NONE = 0,
+	UE_BRIDGE_HOLD_WAITING,
+	UE_BRIDGE_HOLD_READY,
+	UE_BRIDGE_HOLD_TIMED_OUT,
+	UE_BRIDGE_HOLD_READER_GONE
+};
+
+/* 1 when a renderer is attached, not stopping, and heartbeating within its
+own published hang timeout (or under a debugger) */
+int ue_bridge_reader_present(void);
+/* holds for the current load_epoch when a reader is present; 1 when holding */
+int ue_bridge_hold_begin(void);
+/* WAITING while the hold lasts; once it ends, why (game_holding cleared),
+and NONE after that. *held_ms receives the time held so far. */
+enum ue_bridge_hold ue_bridge_hold_poll(uint32_t *held_ms);
 /* the display's refresh rate and the frame rate the game aims for (0:
 uncapped), as ue_bridge_frame_rate.h computes them; stored as given */
 void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz);

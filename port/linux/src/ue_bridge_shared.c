@@ -12,3 +12,4 @@ port/ue_bridge, so they are compiled through this file.
 #include "../../ue_bridge/ue_bridge_codec.c"
 #include "../../ue_bridge/ue_bridge_model.c"
 #include "../../ue_bridge/ue_bridge_bsp.c"
+#include "../../ue_bridge/ue_bridge_tick.c"

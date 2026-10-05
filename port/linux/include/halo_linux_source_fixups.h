@@ -40,6 +40,10 @@ float render_interpolation_game_time_sec(long ticks);
 void ue_bridge_game_loading(int loading);
 void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
+void ue_bridge_game_window_camera(long window_index, struct render_camera const *camera);
+void ue_bridge_game_frame_end(long frame, long tick, float interpolation_fraction);
+/* cseries.h's boolean, spelled out: this header precedes every game header */
+unsigned char render_interpolation_object_at_rest(long object_index);
 void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_map_ready(void);
 void ue_bridge_game_structure_bsp_loaded(short structure_bsp_index);

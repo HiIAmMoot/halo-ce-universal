@@ -131,3 +131,73 @@ def test_export_is_complete_and_consistent(roles_exe, name):
         assert milliseconds < 5000
     finally:
         run.stop()
+
+
+def hold_line(log: Path) -> tuple[str, int]:
+    for line in reversed(log.read_text(errors="replace").splitlines()):
+        match = re.search(r"hold ended: (.+) after (\d+) ms", line)
+        if match:
+            return match.group(1), int(match.group(2))
+    pytest.fail(f"no hold line in {log}")
+
+
+def start_fake_ue(roles: Path, ready_after_ms: int) -> subprocess.Popen:
+    # roles.c takes "--name value" pairs; a long run so the stand-in renderer outlives the test
+    return subprocess.Popen([str(roles), "--role=fake-ue", "--ready-after-ms", str(ready_after_ms), "--run-ms", "600000"])
+
+
+@pytest.mark.parametrize("name", list(MAPS))
+def test_ticks_carry_every_object_in_order(roles_exe, name):
+    if not map_available(name):
+        pytest.skip(f"{name}.map is not in {GAME_DIR / 'maps'}")
+    run = run_game(MAPS[name])
+    try:
+        wait_for_export(roles_exe, MAPS[name])
+        time.sleep(5.0)
+        world = read_world(roles_exe)
+        tick = world["tick"]
+        assert tick["objects"] > 0 and tick["ascending"] == 1 and tick["truncated"] == 0, tick
+        assert tick["load_epoch"] == world["load_epoch"], tick
+        # scenery that never moves comes to rest on its second tick
+        assert tick["at_rest"] > 0, tick
+        assert 0 <= tick["active_bsp"] < len(world["bsps"]), tick
+        frame = world["frame"]
+        assert frame["camera_valid"] == 1 and 0.1 < frame["vertical_fov"] < 3.0, frame
+        print(f"{name}: objects {tick['objects']}, at rest {tick['at_rest']}, used {tick['used']} bytes, bsp {tick['active_bsp']}")
+    finally:
+        run.stop()
+
+
+def test_game_holds_until_the_renderer_is_ready(roles_exe):
+    if not map_available("a10"):
+        pytest.skip("a10.map is not in build/windows/maps")
+    renderer = start_fake_ue(roles_exe, 3000)
+    # the stand-in renderer is killed at the end; the game must not take that as its cue to quit mid-assert
+    run = run_game(MAPS["a10"], {"HALO_UE_BRIDGE_ON_PEER_EXIT": "continue"})
+    try:
+        wait_for_export(roles_exe, MAPS["a10"])
+        time.sleep(8.0)
+        reason, held = hold_line(run.log)
+        assert reason == "ready" and 2500 <= held < 10000, (reason, held)
+    finally:
+        run.stop()
+        renderer.kill()
+
+
+def test_game_hold_ends_at_the_cap(roles_exe):
+    if not map_available("a10"):
+        pytest.skip("a10.map is not in build/windows/maps")
+    renderer = start_fake_ue(roles_exe, -1)
+    run = run_game(MAPS["a10"], {"HALO_UE_BRIDGE_ON_PEER_EXIT": "continue"})
+    try:
+        wait_for_export(roles_exe, MAPS["a10"])
+        time.sleep(13.0)
+        reason, held = hold_line(run.log)
+        assert reason == "timed out" and held >= 10000, (reason, held)
+        # the game runs on after the cap
+        first = read_world(roles_exe)["tick"]["id"]
+        time.sleep(1.0)
+        assert read_world(roles_exe)["tick"]["id"] > first
+    finally:
+        run.stop()
+        renderer.kill()

@@ -30,6 +30,7 @@ SOURCES = [
     BRIDGE / "ue_bridge_codec.c",
     BRIDGE / "ue_bridge_model.c",
     BRIDGE / "ue_bridge_bsp.c",
+    BRIDGE / "ue_bridge_tick.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     BRIDGE / "tests" / "test_main.c",
     BRIDGE / "tests" / "test_format.c",
@@ -44,6 +45,7 @@ SOURCES = [
     BRIDGE / "tests" / "test_codec.c",
     BRIDGE / "tests" / "test_model.c",
     BRIDGE / "tests" / "test_bsp.c",
+    BRIDGE / "tests" / "test_tick.c",
 ]
 LIBRARIES: list[str] = []
 
@@ -53,6 +55,7 @@ ROLE_SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
     BRIDGE / "ue_bridge_load.c",
     BRIDGE / "ue_bridge_policy.c",
+    BRIDGE / "ue_bridge_tick.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     ROOT / "port" / "windows" / "src" / "win32_ue_bridge.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge_log.c",

@@ -11,6 +11,8 @@ ue_bridge_platform_null.c says there is no bridge.
 
 #include "ue_bridge.h"
 
+struct render_camera;
+
 struct ue_bridge_watch_config
 {
 	/* asks the game to quit through its normal path; called on the watcher thread */
@@ -52,6 +54,10 @@ void ue_bridge_game_loading(int loading);
 void ue_bridge_game_modal(int open);
 void ue_bridge_game_tick(long tick);
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction);
+/* main_game_render, once a window's camera is set: only window 0's is kept */
+void ue_bridge_game_window_camera(long window_index, struct render_camera const *camera);
+/* render_interpolation_frame_end: publishes the frame with its camera */
+void ue_bridge_game_frame_end(long frame, long tick, float interpolation_fraction);
 void ue_bridge_game_map_loaded(void);
 void ue_bridge_game_state_loaded(void);
 void ue_bridge_game_map_ready(void);

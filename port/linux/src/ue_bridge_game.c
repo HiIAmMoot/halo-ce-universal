@@ -30,6 +30,10 @@ static char log_path[1024];
 static int frame_rate_published;
 static uint32_t published_refresh_hz;
 static uint32_t published_target_hz;
+static long last_tick;
+static int time_held;
+static struct ue_bridge_camera frame_camera;
+static int frame_camera_valid;
 
 static void at_exit(void)
 {
@@ -101,6 +105,9 @@ void ue_bridge_game_shutdown(void)
 
 		started = 0;
 		halted = 0;
+		last_tick = 0;
+		time_held = 0;
+		frame_camera_valid = 0;
 		/* the watcher first: it reads the header on every pass, and ue_bridge_stop unmaps it */
 		ue_bridge_platform_stop_watcher();
 		ue_bridge_stop(stopping);
@@ -129,12 +136,35 @@ void ue_bridge_game_frame_rate_poll(void)
 		ue_bridge_log("ue bridge: frame rate uncapped, display %lu Hz", (unsigned long)refresh_hz);
 }
 
+static void end_hold(void)
+{
+	static const char *const reasons[] = { "", "", "ready", "timed out", "the renderer went away" };
+	uint32_t held_ms = 0;
+	enum ue_bridge_hold state = ue_bridge_hold_poll(&held_ms);
+
+	if (state == UE_BRIDGE_HOLD_WAITING)
+	{
+		/* main_new_map can switch BSP after the map's initialization, and
+		scenario_switch_structure_bsp ends with main_start_time: stop time
+		again on every pass, or that switch would end the hold early */
+		ue_bridge_world_stop_time();
+		return;
+	}
+	if (state == UE_BRIDGE_HOLD_NONE)
+		return;
+	time_held = 0;
+	ue_bridge_world_start_time();
+	ue_bridge_log("ue bridge: hold ended: %s after %lu ms", reasons[state], (unsigned long)held_ms);
+}
+
 /* every main-loop pass (platform_pump_events): menus and pauses included */
 void ue_bridge_game_pump(void)
 {
 	ensure_started();
 	if (started && !halted)
 		ue_bridge_heartbeat();
+	if (started && time_held)
+		end_hold();
 }
 
 /* around a map load (main_new_map), when the main loop doesn't pass for seconds */
@@ -158,19 +188,39 @@ void ue_bridge_game_modal(int open)
 void ue_bridge_game_tick(long tick)
 {
 	ensure_started();
+	last_tick = tick;
 	if (started)
-		ue_bridge_publish_tick((uint64_t)tick);
+		ue_bridge_world_publish_tick((uint64_t)tick);
 }
 
 void ue_bridge_game_frame_begin(long frame, float interpolation_fraction)
 {
+	(void)frame;
+	(void)interpolation_fraction;
 	ensure_started();
-	if (started)
-	{
-		if (!halted)
-			ue_bridge_heartbeat();
-		ue_bridge_publish_frame((uint64_t)frame, interpolation_fraction);
-	}
+	/* (two tests, not one: a mutant in tools/mutate_ue_bridge.py names the halted guard, and
+	`if (!started || halted)` already occurs in ue_bridge_game_halted) */
+	if (!started)
+		return;
+	if (!halted)
+		ue_bridge_heartbeat();
+}
+
+/* main_game_render, once a window's camera is set (main.c); split screen:
+player 1's window only (Phase 0 design, section 8) */
+void ue_bridge_game_window_camera(long window_index, struct render_camera const *camera)
+{
+	if (started && window_index == 0)
+		frame_camera_valid = ue_bridge_world_camera(camera, &frame_camera);
+}
+
+/* render_interpolation_frame_end: the frame's render state is complete */
+void ue_bridge_game_frame_end(long frame, long tick, float interpolation_fraction)
+{
+	if (!started)
+		return;
+	ue_bridge_publish_frame_camera((uint64_t)frame, interpolation_fraction, (uint64_t)tick, frame_camera_valid ? &frame_camera : NULL);
+	frame_camera_valid = 0;
 }
 
 void ue_bridge_game_map_loaded(void)
@@ -185,8 +235,17 @@ main menu's, a reset's and a network game's included */
 void ue_bridge_game_map_ready(void)
 {
 	ensure_started();
-	if (started)
-		ue_bridge_world_export_map();
+	if (!started)
+		return;
+	ue_bridge_world_export_map();
+	/* the objects as placed: UE builds the meshes they need before it says ready */
+	ue_bridge_world_publish_tick((uint64_t)last_tick);
+	if (!time_held && ue_bridge_world_hold_allowed() && ue_bridge_hold_begin())
+	{
+		time_held = 1;
+		ue_bridge_world_stop_time();
+		ue_bridge_log("ue bridge: holding the map start for the renderer (at most %lu ms)", (unsigned long)UE_BRIDGE_LOAD_HOLD_MS);
+	}
 }
 
 /* scenario_switch_structure_bsp (scenario.c), once the BSP is loaded */

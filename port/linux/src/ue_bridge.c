@@ -27,6 +27,10 @@ static struct
 	/* the BSP table as the game laid it out: the root's copy sits in memory UE can write */
 	uint32_t bsp_offset;
 	uint32_t bsp_count;
+	struct ue_bridge_tick_writer tick_writer;
+	volatile struct ue_bridge_slot *tick_slot;
+	int holding;
+	uint64_t hold_started;
 } bridge;
 
 static volatile struct ue_bridge_header *bridge_header(void)
@@ -256,38 +260,80 @@ const struct ue_bridge_layout *ue_bridge_trusted_layout(void)
 	return bridge.section_view ? &bridge.layout : 0;
 }
 
-void ue_bridge_publish_tick(uint64_t tick)
+/* a slot of a ring at the game's own geometry; only the write count is taken
+from the shared descriptor (ue_bridge_ring_end_write advances it there) */
+static volatile struct ue_bridge_slot *trusted_begin_write(volatile struct ue_bridge_header *header,
+	volatile struct ue_bridge_ring_desc *shared, const struct ue_bridge_ring_desc *trusted)
+{
+	struct ue_bridge_ring_desc ring = *trusted;
+
+	ring.published = ueb_load_u32(&shared->published);
+	return ue_bridge_ring_begin_write((volatile uint8_t *)header, &ring);
+}
+
+struct ue_bridge_tick_writer *ue_bridge_tick_begin(uint64_t tick)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
-	volatile struct ue_bridge_tick_header *slot;
+
+	if (!header)
+		return NULL;
+	bridge.tick_slot = trusted_begin_write(header, &header->tick_ring, &bridge.layout.tick_ring);
+	bridge.tick_slot->id = tick;
+	ue_bridge_tick_writer_begin(&bridge.tick_writer, (void *)(uintptr_t)bridge.tick_slot, bridge.layout.tick_ring.slot_size);
+	return &bridge.tick_writer;
+}
+
+void ue_bridge_tick_end(int16_t active_bsp)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (!header || !bridge.tick_slot)
+		return;
+	ue_bridge_tick_writer_end(&bridge.tick_writer, header->load_epoch, header->state_epoch, active_bsp);
+	/* stamped as it is published: 10.1 measures from here */
+	bridge.tick_slot->publish_qpc = bridge.os->qpc();
+	ue_bridge_ring_end_write(&header->tick_ring, bridge.tick_slot);
+	bridge.tick_slot = NULL;
+}
+
+void ue_bridge_publish_tick(uint64_t tick)
+{
+	if (ue_bridge_tick_begin(tick))
+		ue_bridge_tick_end(-1);
+}
+
+void ue_bridge_publish_frame_camera(uint64_t frame, float interpolation_fraction, uint64_t tick, const struct ue_bridge_camera *camera)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+	volatile struct ue_bridge_frame_slot *slot;
+	int index;
 
 	if (!header)
 		return;
-	slot = (volatile struct ue_bridge_tick_header *)ue_bridge_ring_begin_write((volatile uint8_t *)header, &header->tick_ring);
-	slot->slot.id = tick;
+	slot = (volatile struct ue_bridge_frame_slot *)trusted_begin_write(header, &header->frame_ring, &bridge.layout.frame_ring);
+	slot->slot.id = frame;
+	slot->interpolation_fraction = interpolation_fraction;
+	slot->tick_id = tick;
+	slot->camera_valid = camera ? 1u : 0u;
+	if (camera)
+	{
+		for (index = 0; index < 3; index++)
+		{
+			slot->camera_position[index] = camera->position[index];
+			slot->camera_forward[index] = camera->forward[index];
+			slot->camera_up[index] = camera->up[index];
+		}
+		slot->vertical_fov = camera->vertical_fov;
+		slot->z_near = camera->z_near;
+		slot->z_far = camera->z_far;
+	}
 	slot->slot.publish_qpc = bridge.os->qpc();
-	slot->used = sizeof(struct ue_bridge_tick_header);
-	slot->object_count = 0;
-	slot->load_epoch = header->load_epoch;
-	slot->state_epoch = header->state_epoch;
-	slot->active_bsp = -1;
-	slot->flags = 0;
-	ue_bridge_ring_end_write(&header->tick_ring, &slot->slot);
+	ue_bridge_ring_end_write(&header->frame_ring, &slot->slot);
 }
 
 void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction)
 {
-	volatile struct ue_bridge_header *header = bridge_header();
-	volatile struct ue_bridge_frame_slot *slot;
-
-	if (!header)
-		return;
-	slot = (volatile struct ue_bridge_frame_slot *)ue_bridge_ring_begin_write((volatile uint8_t *)header, &header->frame_ring);
-	slot->slot.id = frame;
-	slot->slot.publish_qpc = bridge.os->qpc();
-	slot->interpolation_fraction = interpolation_fraction;
-	slot->camera_valid = 0;
-	ue_bridge_ring_end_write(&header->frame_ring, &slot->slot);
+	ue_bridge_publish_frame_camera(frame, interpolation_fraction, 0, NULL);
 }
 
 void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz)
@@ -420,4 +466,64 @@ void ue_bridge_set_busy(int busy)
 
 	if (header)
 		ueb_store_u32(&header->game_busy, busy ? 1u : 0u);
+}
+
+static uint32_t elapsed_ms(uint64_t since)
+{
+	uint64_t frequency = bridge.os->qpc_frequency();
+	uint64_t now = bridge.os->qpc();
+	uint64_t milliseconds;
+
+	/* a heartbeat UE stamped after this clock read is fresh, not 584 years old */
+	if (!frequency || now <= since)
+		return 0u;
+	milliseconds = (now - since) * 1000u / frequency;
+	/* a heartbeat of 0 (never written) is days old: it must not wrap into a fresh one */
+	return milliseconds > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)milliseconds;
+}
+
+int ue_bridge_reader_present(void)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+	uint32_t timeout;
+
+	if (!header || !ueb_load_u32(&header->ue_attached) || ueb_load_u32(&header->ue_stopping) != UE_BRIDGE_STOP_NONE)
+		return 0;
+	if (ueb_load_u32(&header->ue_debugger_attached))
+		return 1;
+	timeout = ueb_load_u32(&header->ue_hang_timeout_ms);
+	return elapsed_ms(ueb_load_u64(&header->ue_heartbeat_qpc)) < (timeout ? timeout : UE_BRIDGE_DEFAULT_HANG_TIMEOUT_MS);
+}
+
+int ue_bridge_hold_begin(void)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (!header || !ue_bridge_reader_present())
+		return 0;
+	bridge.holding = 1;
+	bridge.hold_started = bridge.os->qpc();
+	ueb_store_u32(&header->game_holding, 1u);
+	return 1;
+}
+
+enum ue_bridge_hold ue_bridge_hold_poll(uint32_t *held_ms)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+	enum ue_bridge_hold state;
+
+	if (!header || !bridge.holding)
+		return UE_BRIDGE_HOLD_NONE;
+	*held_ms = elapsed_ms(bridge.hold_started);
+	if (ueb_load_u32(&header->ue_ready) == header->load_epoch)
+		state = UE_BRIDGE_HOLD_READY;
+	else if (!ue_bridge_reader_present())
+		state = UE_BRIDGE_HOLD_READER_GONE;
+	else if (*held_ms >= UE_BRIDGE_LOAD_HOLD_MS)
+		state = UE_BRIDGE_HOLD_TIMED_OUT;
+	else
+		return UE_BRIDGE_HOLD_WAITING;
+	bridge.holding = 0;
+	ueb_store_u32(&header->game_holding, 0);
+	return state;
 }

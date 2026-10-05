@@ -39,6 +39,8 @@ with their unit, and with what it rides.
 #include "render/render_cameras.h"
 #include "units/units.h"
 
+#include "../../ue_bridge/ue_bridge_tick.h"
+
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
 unsigned long config_changes(void);
@@ -90,6 +92,8 @@ struct interpolated_object
 	short node_count;
 	short node_capacity;
 	boolean has_previous;
+	/* the latest snapshot's node matrices equal the previous one's, byte for byte (the UE bridge skips its pose writes) */
+	boolean at_rest;
 	byte latest; /* which snapshot is the latest */
 	long blended_frame;
 	/* where it is drawn from where it is: a correction fading, and those
@@ -385,9 +389,11 @@ void render_interpolation_tick(void)
 	struct object_datum *object;
 	long previous_tick = interpolation_tick++;
 
-	ue_bridge_game_tick(interpolation_tick);
 	if (!halo_interpolation_enabled())
+	{
+		ue_bridge_game_tick(interpolation_tick);
 		return;
+	}
 	/* the cameras' corrections a tick on, as the objects' (below) */
 	{
 		short local_player_index;
@@ -406,7 +412,10 @@ void render_interpolation_tick(void)
 
 		interpolated_objects = calloc(MAXIMUM_INTERPOLATED_OBJECTS, sizeof(*interpolated_objects));
 		if (!interpolated_objects)
+		{
+			ue_bridge_game_tick(interpolation_tick);
 			return;
+		}
 		for (index = 0; index < MAXIMUM_INTERPOLATED_OBJECTS; index++)
 			interpolated_objects[index].object_index = NONE;
 	}
@@ -465,6 +474,13 @@ void render_interpolation_tick(void)
 			record->nodes + record->latest * record->node_capacity,
 			object_get_node_matrices(iterator.index),
 			node_count * sizeof(real_matrix4x3));
+		/* the UE bridge's at-rest flag compares this snapshot with the
+		previous, not _object_at_rest_bit: that bit tracks physics, and a
+		physically resting object can still be animating */
+		record->at_rest = ue_bridge_nodes_at_rest(
+			record->nodes + (record->latest ^ 1) * record->node_capacity,
+			record->nodes + record->latest * record->node_capacity,
+			node_count * sizeof(real_matrix4x3), continuing);
 		record->rotations_valid[record->latest] = FALSE;
 		record->object_index = iterator.index;
 		record->node_count = node_count;
@@ -472,6 +488,7 @@ void render_interpolation_tick(void)
 		record->has_previous = continuing;
 		record->blended_frame = NONE;
 	}
+	ue_bridge_game_tick(interpolation_tick);
 }
 
 /* a new map (game.c): its objects take the indices of the last one's, and
@@ -506,12 +523,29 @@ void render_interpolation_frame_begin(void)
 
 void render_interpolation_frame_end(void)
 {
+	ue_bridge_game_frame_end(interpolation_frame, interpolation_tick, interpolation_fraction);
 	interpolation_rendering = FALSE;
 }
 
 real render_interpolation_fraction(void)
 {
 	return interpolation_rendering ? interpolation_fraction : 1.0f;
+}
+
+/* the object's node matrices are those of the tick before (the UE bridge,
+port/linux/game/ue_bridge_publish.c); FALSE when unknown */
+boolean render_interpolation_object_at_rest(long object_index)
+{
+	struct interpolated_object *record;
+	long absolute_index;
+
+	if (!interpolated_objects || object_index == NONE)
+		return FALSE;
+	absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	if (absolute_index >= MAXIMUM_INTERPOLATED_OBJECTS)
+		return FALSE;
+	record = &interpolated_objects[absolute_index];
+	return record->object_index == object_index && record->tick == interpolation_tick && record->at_rest;
 }
 
 real_matrix4x3 *render_interpolation_object_node_matrices(long object_index)

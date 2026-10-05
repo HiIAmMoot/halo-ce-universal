@@ -24,6 +24,7 @@ static const struct ueb_test *const suites[] =
 	ueb_codec_tests,
 	ueb_model_tests,
 	ueb_bsp_tests,
+	ueb_tick_tests,
 	0
 };
 

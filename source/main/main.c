@@ -3116,6 +3116,7 @@ static void main_game_render(
 		}
 
 		set_window_camera_values(window, observer);
+		ue_bridge_game_window_camera(window_index, &window->render_camera);
 		window->console_window = FALSE;
 	}
 

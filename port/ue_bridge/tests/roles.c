@@ -49,6 +49,10 @@ fake-ue: a renderer that attaches through the directory.
   --hang-timeout-ms N published as ue_hang_timeout_ms
   --editor            published as ue_is_editor
   --debugger-flag     published as ue_debugger_attached
+  --ready-after-ms N  once the game's export for its load_epoch is published
+                      (export_epoch == load_epoch), waits N ms, heartbeating,
+                      then writes ue_ready = load_epoch, once per epoch; N < 0
+                      and the default never write it
   --dump-on-crashing  dumps the game to game_crash.dmp when it is crashing,
                       then sets ue_dump_done (without it, ignores the crash)
   It exits when the game's process does.
@@ -459,7 +463,10 @@ static int fake_ue(int argc, char **argv)
 	long hang_after = option_number(argc, argv, "--hang-after-ms", -1);
 	long crash_linger = option_number(argc, argv, "--crash-linger-ms", 0);
 	long exit_linger = option_number(argc, argv, "--exit-linger-ms", 0);
+	long ready_after = option_number(argc, argv, "--ready-after-ms", -1);
 	int dump_on_crashing = option_flag(argc, argv, "--dump-on-crashing");
+	uint32_t readied_epoch = 0, pending_epoch = 0;
+	DWORD pending_since = 0;
 	volatile struct ue_bridge_directory *directory;
 	volatile struct ue_bridge_header *header;
 	void *directory_handle;
@@ -515,6 +522,25 @@ static int fake_ue(int argc, char **argv)
 		}
 		if (hang_after < 0 || elapsed < hang_after)
 			ueb_store_u64(&header->ue_heartbeat_qpc, os->qpc());
+		if (ready_after >= 0)
+		{
+			uint32_t epoch = ueb_load_u32(&header->export_epoch);
+
+			/* epoch 0 is no map: ue_ready starts at 0 and would already read as ready */
+			if (epoch && epoch == ueb_load_u32(&header->load_epoch) && epoch != readied_epoch)
+			{
+				if (pending_epoch != epoch)
+				{
+					pending_epoch = epoch;
+					pending_since = GetTickCount();
+				}
+				if ((long)(GetTickCount() - pending_since) >= ready_after)
+				{
+					ueb_store_u32(&header->ue_ready, epoch);
+					readied_epoch = epoch;
+				}
+			}
+		}
 		if (dump_on_crashing && !handled_crash && ueb_load_u32(&header->game_crashing))
 		{
 			if (game && session_dir)
@@ -792,7 +818,46 @@ static int role_read_world(void)
 			(unsigned long)entry->cluster_count, (unsigned long)entry->unclustered_surfaces, (unsigned long)entry->duplicate_surfaces,
 			triangles, triangles ? (double)agree / triangles : 0.0, (unsigned long)hash);
 	}
-	printf("]}\n");
+	printf("]");
+	{
+		static uint8_t tick[UE_BRIDGE_TICK_SLOT_SIZE];
+		struct ue_bridge_frame_slot frame;
+		uint32_t bytes = 0, offset, index, at_rest = 0, hidden = 0, ascending = 1, previous = 0;
+		const struct ue_bridge_tick_header *tick_header = (const struct ue_bridge_tick_header *)tick;
+		struct ue_bridge_ring_desc ring = *(const struct ue_bridge_ring_desc *)&header->tick_ring;
+
+		if (ue_bridge_ring_read_newest_used(view, &ring, offsetof(struct ue_bridge_tick_header, used), tick, sizeof(tick), &bytes, 0)
+			== UE_BRIDGE_READ_NONE)
+		{
+			memset(tick, 0, sizeof(struct ue_bridge_tick_header));
+		}
+		for (index = 0, offset = sizeof(struct ue_bridge_tick_header); index < tick_header->object_count; index++)
+		{
+			const struct ue_bridge_object_record *record = (const struct ue_bridge_object_record *)(tick + offset);
+
+			/* a record that runs past what was copied would be read out of the buffer */
+			if (offset + sizeof(*record) > bytes || record->size < sizeof(*record) || offset + record->size > bytes)
+				break;
+			at_rest += (record->flags & UE_BRIDGE_OBJECT_AT_REST) != 0;
+			hidden += (record->flags & UE_BRIDGE_OBJECT_HIDDEN) != 0;
+			if (index && (record->datum_index & 0xFFFFu) <= previous)
+				ascending = 0;
+			previous = record->datum_index & 0xFFFFu;
+			offset += record->size;
+		}
+		printf(", \"tick\": {\"id\": %llu, \"objects\": %lu, \"truncated\": %lu, \"ascending\": %lu, \"at_rest\": %lu, \"hidden\": %lu, "
+			"\"active_bsp\": %d, \"load_epoch\": %lu, \"used\": %lu}",
+			(unsigned long long)tick_header->slot.id, (unsigned long)tick_header->object_count,
+			(unsigned long)(tick_header->flags & UE_BRIDGE_TICK_TRUNCATED), (unsigned long)ascending, (unsigned long)at_rest,
+			(unsigned long)hidden, (int)tick_header->active_bsp, (unsigned long)tick_header->load_epoch, (unsigned long)tick_header->used);
+		memset(&frame, 0, sizeof(frame));
+		ring = *(const struct ue_bridge_ring_desc *)&header->frame_ring;
+		ue_bridge_ring_read_newest(view, &ring, &frame, sizeof(frame), 0);
+		printf(", \"frame\": {\"id\": %llu, \"camera_valid\": %lu, \"position\": [%f, %f, %f], \"vertical_fov\": %f, \"game_holding\": %lu}",
+			(unsigned long long)frame.slot.id, (unsigned long)frame.camera_valid, frame.camera_position[0], frame.camera_position[1],
+			frame.camera_position[2], frame.vertical_fov, (unsigned long)header->game_holding);
+	}
+	printf("}\n");
 	free(region);
 	return 0;
 }

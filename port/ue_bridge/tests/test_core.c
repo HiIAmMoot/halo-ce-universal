@@ -1039,6 +1039,167 @@ static void load_bsp_table_is_the_games_own_not_the_roots(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+static void tick_begin_end_publishes_records_and_epochs(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_tick_writer *writer;
+	struct ue_bridge_matrix node;
+	static uint8_t out[TEST_TICK_SLOT_SIZE];
+	uint32_t bytes = 0;
+	const struct ue_bridge_tick_header *tick = (const struct ue_bridge_tick_header *)out;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	memset(&node, 0, sizeof(node));
+	node.scale = 1.0f;
+	writer = ue_bridge_tick_begin(41);
+	UEB_CHECK(writer != 0);
+	UEB_CHECK(ue_bridge_tick_writer_add(writer, 0x00020001u, 3, 0, 0, 0, &node, 1));
+	fake_now = 777;
+	ue_bridge_tick_end(1);
+	UEB_CHECK(ue_bridge_ring_read_newest_used((const volatile uint8_t *)header, &header->tick_ring,
+		offsetof(struct ue_bridge_tick_header, used), out, sizeof(out), &bytes, 0) == UE_BRIDGE_READ_NEWEST);
+	UEB_CHECK(tick->slot.id == 41);
+	/* stamped when published, not when begun: latency is measured from here */
+	UEB_CHECK(tick->slot.publish_qpc == 777);
+	UEB_CHECK(tick->object_count == 1 && tick->load_epoch == 1 && tick->active_bsp == 1);
+	UEB_CHECK(bytes == tick->used);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void frame_camera_is_published_or_marked_invalid(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_frame_slot frame;
+	struct ue_bridge_camera camera;
+
+	start_bridge();
+	header = fake_bridge_section();
+	memset(&camera, 0, sizeof(camera));
+	camera.position[1] = 2.5f;
+	camera.vertical_fov = 1.2f;
+	ue_bridge_publish_frame_camera(9, 0.5f, 30, &camera);
+	UEB_CHECK(ue_bridge_ring_read_newest((const volatile uint8_t *)header, &header->frame_ring, &frame, sizeof(frame), 0) == UE_BRIDGE_READ_NEWEST);
+	UEB_CHECK(frame.slot.id == 9 && frame.tick_id == 30 && frame.camera_valid == 1);
+	UEB_CHECK(frame.camera_position[1] == 2.5f && frame.vertical_fov == 1.2f && frame.interpolation_fraction == 0.5f);
+	ue_bridge_publish_frame_camera(10, 0.0f, 30, 0);
+	ue_bridge_ring_read_newest((const volatile uint8_t *)header, &header->frame_ring, &frame, sizeof(frame), 0);
+	UEB_CHECK(frame.slot.id == 10 && frame.camera_valid == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+/* a renderer as UE publishes itself: attached, heartbeating, its own timeout */
+static void attach_reader(volatile struct ue_bridge_header *header, uint64_t heartbeat)
+{
+	header->ue_hang_timeout_ms = 10000;
+	header->ue_heartbeat_qpc = heartbeat;
+	header->ue_attached = 1;
+	header->ue_stopping = UE_BRIDGE_STOP_NONE;
+}
+
+static void hold_needs_a_fresh_reader(void)
+{
+	volatile struct ue_bridge_header *header;
+
+	start_bridge();
+	header = fake_bridge_section();
+	fake_now = 200000000ull;
+	UEB_CHECK(!ue_bridge_hold_begin());
+	attach_reader(header, fake_now - 150000000ull);
+	UEB_CHECK(!ue_bridge_hold_begin());
+	header->ue_heartbeat_qpc = fake_now - 10000000ull;
+	UEB_CHECK(ue_bridge_hold_begin());
+	UEB_CHECK(header->game_holding == 1);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_ends_when_ready(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	UEB_CHECK(ue_bridge_hold_begin());
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_WAITING);
+	fake_now += 25000000ull;
+	header->ue_heartbeat_qpc = fake_now;
+	header->ue_ready = 1;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_READY);
+	UEB_CHECK(held == 2500);
+	UEB_CHECK(header->game_holding == 0);
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_NONE);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_ends_at_the_cap(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	ue_bridge_hold_begin();
+	fake_now += 99990000ull;
+	header->ue_heartbeat_qpc = fake_now;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_WAITING);
+	fake_now += 20000ull;
+	header->ue_heartbeat_qpc = fake_now;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_TIMED_OUT);
+	UEB_CHECK(held >= UE_BRIDGE_LOAD_HOLD_MS);
+	UEB_CHECK(header->game_holding == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_ends_when_ue_detaches(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	/* ue_ready starts at 0: an epoch of 0 would read as ready */
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	ue_bridge_hold_begin();
+	header->ue_attached = 0;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_READER_GONE);
+	attach_reader(header, fake_now);
+	ue_bridge_hold_begin();
+	header->ue_stopping = UE_BRIDGE_STOP_CRASH;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_READER_GONE);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_keeps_waiting_while_ue_is_in_a_debugger(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	/* ue_ready starts at 0: an epoch of 0 would read as ready */
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	ue_bridge_hold_begin();
+	/* a short timeout, so the 5 s old heartbeat below is stale and only the debugger keeps the reader present */
+	header->ue_hang_timeout_ms = 2000;
+	header->ue_debugger_attached = 1;
+	fake_now += 50000000ull;
+	/* a stale heartbeat under a debugger is a breakpoint, not a gone renderer; the cap still applies */
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_WAITING);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1080,5 +1241,12 @@ const struct ueb_test ueb_core_tests[] =
 	{ "load_append_continues_after_the_export_of_this_epoch_only", load_append_continues_after_the_export_of_this_epoch_only },
 	{ "load_publish_bsp_sets_ready_and_can_clear_completeness", load_publish_bsp_sets_ready_and_can_clear_completeness },
 	{ "load_bsp_table_is_the_games_own_not_the_roots", load_bsp_table_is_the_games_own_not_the_roots },
+	{ "tick_begin_end_publishes_records_and_epochs", tick_begin_end_publishes_records_and_epochs },
+	{ "frame_camera_is_published_or_marked_invalid", frame_camera_is_published_or_marked_invalid },
+	{ "hold_needs_a_fresh_reader", hold_needs_a_fresh_reader },
+	{ "hold_ends_when_ready", hold_ends_when_ready },
+	{ "hold_ends_at_the_cap", hold_ends_at_the_cap },
+	{ "hold_ends_when_ue_detaches", hold_ends_when_ue_detaches },
+	{ "hold_keeps_waiting_while_ue_is_in_a_debugger", hold_keeps_waiting_while_ue_is_in_a_debugger },
 	{ 0, 0 }
 };
