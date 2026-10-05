@@ -56,10 +56,10 @@ static void ensure_started(void)
 	settings.log_path = log_path;
 	settings.max_objects = HALO_PORT_MAXIMUM_OBJECTS_PER_MAP;
 	section_mb = config_integer("ue_bridge.section_mb");
-	if (section_mb < 16 || section_mb > (long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20))
+	if (section_mb < (long)UE_BRIDGE_MIN_SECTION_MB || section_mb > (long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20))
 	{
-		ue_bridge_log("ue bridge: ue_bridge.section_mb %ld is outside 16 to %lu; using %lu",
-			section_mb, (unsigned long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20), (unsigned long)UE_BRIDGE_DEFAULT_SECTION_MB);
+		ue_bridge_log("ue bridge: ue_bridge.section_mb %ld is outside %lu to %lu; using %lu",
+			section_mb, (unsigned long)UE_BRIDGE_MIN_SECTION_MB, (unsigned long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20), (unsigned long)UE_BRIDGE_DEFAULT_SECTION_MB);
 		section_mb = UE_BRIDGE_DEFAULT_SECTION_MB;
 	}
 	settings.section_size = (uint32_t)section_mb << 20;

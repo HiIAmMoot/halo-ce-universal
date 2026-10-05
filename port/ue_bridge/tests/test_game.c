@@ -87,7 +87,7 @@ const char *platform_data_root(void)
 	return "D:/data";
 }
 
-#define TEST_SECTION_SIZE (16u << 20)
+#define TEST_SECTION_SIZE (UE_BRIDGE_MIN_SECTION_MB << 20)
 
 static uint64_t game_section[TEST_SECTION_SIZE / 8];
 static uint32_t last_mapped_size;
@@ -160,7 +160,7 @@ static void game_reset(void)
 	memset(game_section, 0, sizeof(game_section));
 	memset(game_directory, 0, sizeof(game_directory));
 	game_maps = 0;
-	setting_section_mb = 16;
+	setting_section_mb = UE_BRIDGE_MIN_SECTION_MB;
 	last_mapped_size = 0;
 	game_now = 100;
 	platform_refresh_hz = 144.0f;
@@ -221,7 +221,7 @@ static void game_section_size_comes_from_the_setting(void)
 static void game_section_setting_out_of_range_uses_the_default_and_logs(void)
 {
 	game_reset();
-	setting_section_mb = 4;
+	setting_section_mb = UE_BRIDGE_MIN_SECTION_MB - 1;
 	ue_bridge_game_pump();
 	UEB_CHECK(strstr(log_lines, "ue_bridge.section_mb") != 0);
 	UEB_CHECK(last_mapped_size == UE_BRIDGE_DEFAULT_SECTION_MB << 20);

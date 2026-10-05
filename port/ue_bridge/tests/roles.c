@@ -75,9 +75,9 @@ probe-directory: exits 0 when no bridge directory exists, 1 when one does.
 #include <stdlib.h>
 #include <string.h>
 
-/* 16 MB, the smallest section the game allows: every role that starts the core
+/* the smallest section the game allows: every role that starts the core
 and the reader that maps it agree on this size */
-#define ROLE_SECTION_SIZE (16u << 20)
+#define ROLE_SECTION_SIZE (UE_BRIDGE_MIN_SECTION_MB << 20)
 #define ROLE_TICK_SLOT_SIZE 0x10000u
 
 static FILE *role_log;

@@ -45,6 +45,7 @@ near MAX_PATH doesn't fit, and is then published empty (and logged) */
 the layout is ue_bridge_layout_compute's (ue_bridge_load.h). Version 3 adds
 the load region and the tick and frame payloads (Phase 0 design, sections
 4.4 to 4.6, milestone M2). */
+#define UE_BRIDGE_MIN_SECTION_MB 16u
 #define UE_BRIDGE_DEFAULT_SECTION_MB 96u
 #define UE_BRIDGE_MAX_SECTION_SIZE 0x40000000u
 #define UE_BRIDGE_TICK_SLOT_SIZE 0x200000u

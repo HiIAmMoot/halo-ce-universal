@@ -167,7 +167,7 @@ MUTANTS = [
     Mutant("3", "port/linux/src/ue_bridge.c",
            "uint32_t odd = directory_begin_write(directory);",
            "directory->session_id = bridge.session_id; uint32_t odd = directory_begin_write(directory);",
-           "core_concurrent_reader_never_sees_a_mixed_directory_entry", runs=3),
+           "core_concurrent_reader_never_sees_a_mixed_directory_entry", runs=10),
     Mutant("3", "port/linux/src/ue_bridge.c",
            "ue_bridge_publish_stopping(stopping);",
            "bridge.os->unmap_section(section_view, bridge.section_handle); bridge.os->unmap_section(bridge.directory_view, bridge.directory_handle); ue_bridge_publish_stopping(stopping);",
@@ -441,7 +441,7 @@ MUTANTS = [
            "if (ueb_load_u32(&slot->sequence) != before)", "if (0)",
            "slot_read_used_detects_change_during_copy"),
     Mutant("m2a-2", "port/linux/src/ue_bridge_game.c",
-           "if (section_mb < 16 || section_mb > (long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20))", "if (0)",
+           "if (section_mb < (long)UE_BRIDGE_MIN_SECTION_MB || section_mb > (long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20))", "if (0)",
            "game_section_setting_out_of_range_uses_the_default_and_logs"),
 ]
 
