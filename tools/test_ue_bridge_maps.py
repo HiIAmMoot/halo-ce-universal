@@ -39,6 +39,8 @@ def map_available(name: str) -> bool:
 class GameRun:
     process: subprocess.Popen
     log: Path
+    # debug.txt is appended to across runs: a run's lines start here
+    log_offset: int = 0
 
     def stop(self) -> None:
         self.process.kill()
@@ -55,8 +57,9 @@ def run_game(scenario: str, extra_env: dict[str, str] | None = None) -> GameRun:
     env.update({"HALO_UE_BRIDGE": "1", "HALO_UE_BRIDGE_START_MAP": scenario, "HALO_FULLSCREEN": "0"})
     env.update(extra_env or {})
     log = GAME_DIR / "debug.txt"
+    offset = log.stat().st_size if log.is_file() else 0
     process = subprocess.Popen([str(GAME)], cwd=GAME_DIR, env=env)
-    return GameRun(process, log)
+    return GameRun(process, log, offset)
 
 
 def read_world(roles: Path) -> dict | None:
@@ -133,12 +136,13 @@ def test_export_is_complete_and_consistent(roles_exe, name):
         run.stop()
 
 
-def hold_line(log: Path) -> tuple[str, int]:
-    for line in reversed(log.read_text(errors="replace").splitlines()):
+def hold_line(run: GameRun) -> tuple[str, int]:
+    text = run.log.read_bytes()[run.log_offset:].decode(errors="replace")
+    for line in reversed(text.splitlines()):
         match = re.search(r"hold ended: (.+) after (\d+) ms", line)
         if match:
             return match.group(1), int(match.group(2))
-    pytest.fail(f"no hold line in {log}")
+    pytest.fail(f"no hold line in {run.log} after offset {run.log_offset}")
 
 
 def start_fake_ue(roles: Path, ready_after_ms: int) -> subprocess.Popen:
@@ -177,7 +181,7 @@ def test_game_holds_until_the_renderer_is_ready(roles_exe):
     try:
         wait_for_export(roles_exe, MAPS["a10"])
         time.sleep(8.0)
-        reason, held = hold_line(run.log)
+        reason, held = hold_line(run)
         assert reason == "ready" and 2500 <= held < 10000, (reason, held)
     finally:
         run.stop()
@@ -192,7 +196,7 @@ def test_game_hold_ends_at_the_cap(roles_exe):
     try:
         wait_for_export(roles_exe, MAPS["a10"])
         time.sleep(13.0)
-        reason, held = hold_line(run.log)
+        reason, held = hold_line(run)
         assert reason == "timed out" and held >= 10000, (reason, held)
         # the game runs on after the cap
         first = read_world(roles_exe)["tick"]["id"]
@@ -215,9 +219,24 @@ def test_game_hold_ends_when_the_renderer_process_dies(roles_exe):
         renderer.kill()
         renderer.wait(timeout=30)
         time.sleep(3.0)
-        reason, held = hold_line(run.log)
+        reason, held = hold_line(run)
         # the watcher polls every 250 ms: far inside the 10 s cap
         assert reason == "the renderer went away" and held < 6000, (reason, held)
     finally:
         run.stop()
         renderer.kill()
+
+
+def test_published_z_far_is_the_fog_clamped_one(roles_exe):
+    if not map_available("c10"):
+        pytest.skip("c10.map is not in build/windows/maps")
+    scenario = "levels\c10\c10"
+    run = run_game(scenario)
+    try:
+        wait_for_export(roles_exe, scenario)
+        time.sleep(4.0)
+        frame = read_world(roles_exe)["frame"]
+        # c10's fog clamps the far plane well under the 1024 the camera starts with (render_player_frame)
+        assert frame["camera_valid"] == 1 and 0 < frame["z_far"] < 1024.0, frame
+    finally:
+        run.stop()

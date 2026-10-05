@@ -853,9 +853,9 @@ static int role_read_world(void)
 		memset(&frame, 0, sizeof(frame));
 		ring = *(const struct ue_bridge_ring_desc *)&header->frame_ring;
 		ue_bridge_ring_read_newest(view, &ring, &frame, sizeof(frame), 0);
-		printf(", \"frame\": {\"id\": %llu, \"camera_valid\": %lu, \"position\": [%f, %f, %f], \"vertical_fov\": %f, \"game_holding\": %lu}",
+		printf(", \"frame\": {\"id\": %llu, \"camera_valid\": %lu, \"position\": [%f, %f, %f], \"vertical_fov\": %f, \"z_far\": %f, \"game_holding\": %lu}",
 			(unsigned long long)frame.slot.id, (unsigned long)frame.camera_valid, frame.camera_position[0], frame.camera_position[1],
-			frame.camera_position[2], frame.vertical_fov, (unsigned long)header->game_holding);
+			frame.camera_position[2], frame.vertical_fov, frame.z_far, (unsigned long)header->game_holding);
 	}
 	printf("}\n");
 	free(region);
