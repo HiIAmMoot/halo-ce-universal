@@ -28,6 +28,7 @@ update.h's: posix_update.c on Linux, win32_update.c on Windows.
 #include "platform.h"
 #include "port_config.h"
 #include "update.h"
+#include "ue_bridge_platform.h"
 
 #ifndef HALO_ANDROID
 
@@ -509,7 +510,9 @@ static void updater_update(void)
 		char message[800];
 
 		snprintf(message, sizeof(message), "The update failed:\n\n%s", error);
+		ue_bridge_game_modal(1);
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Halo", message, NULL);
+		ue_bridge_game_modal(0);
 	}
 }
 
@@ -613,8 +616,10 @@ void updater_poll(SDL_Window *window)
 		SDL_MessageBoxData question = { SDL_MESSAGEBOX_INFORMATION, window, "Halo: new version", message,
 			3, question_buttons, NULL };
 
+		ue_bridge_game_modal(1);
 		if (!SDL_ShowMessageBox(&question, &answer))
 			answer = 0;
+		ue_bridge_game_modal(0);
 	}
 	if (answer == 2)
 	{
@@ -624,7 +629,10 @@ void updater_poll(SDL_Window *window)
 			2, confirm_buttons, NULL };
 		int confirmed = 0;
 
-		if (SDL_ShowMessageBox(&confirm, &confirmed) && confirmed == 1)
+		ue_bridge_game_modal(1);
+		confirmed = SDL_ShowMessageBox(&confirm, &confirmed) ? confirmed : 0;
+		ue_bridge_game_modal(0);
+		if (confirmed == 1)
 		{
 			if (config_write_boolean("update.auto", 0))
 				platform_log("update: update.auto = false written to config.toml");
