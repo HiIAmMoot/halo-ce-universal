@@ -34,6 +34,7 @@ struct ueb_test
 
 extern const struct ueb_test ueb_format_tests[];
 extern const struct ueb_test ueb_ring_tests[];
+extern const struct ueb_test ueb_load_tests[];
 extern const struct ueb_test ueb_policy_tests[];
 extern const struct ueb_test ueb_frame_rate_tests[];
 extern const struct ueb_test ueb_core_tests[];

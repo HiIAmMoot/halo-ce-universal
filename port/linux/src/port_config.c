@@ -221,6 +221,9 @@ static const struct config_setting config_settings[] =
 	{ "ue_bridge.on_peer_exit", _config_string, "\"shutdown\"", "HALO_UE_BRIDGE_ON_PEER_EXIT", _environment_value, _platform_desktop,
 		"When an attached HaloCEUE exits, crashes or hangs: \"shutdown\" quits the\n"
 		"game too; \"continue\" keeps playing until a HaloCEUE attaches again." },
+	{ "ue_bridge.section_mb", _config_integer, "96", "HALO_UE_BRIDGE_SECTION_MB", _environment_value, _platform_desktop,
+		"The size of the bridge's shared memory in megabytes (16 to 1024). The\n"
+		"loaded map's geometry for the HaloCEUE renderer must fit in it." },
 
 	{ "paths.data", _config_string, "\"\"", "HALO_DATA_ROOT", _environment_value, _platform_desktop,
 		"The folder holding the game data's maps folder; empty looks in the\n"

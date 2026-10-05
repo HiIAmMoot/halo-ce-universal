@@ -26,6 +26,7 @@ void ue_bridge_game_frame_rate_poll(void);
 /* ---------- the settings and the platform layer the adapter calls */
 
 static int setting_enabled;
+static long setting_section_mb;
 static const char *setting_on_peer_exit;
 /* every line logged since the last reset */
 static char log_lines[2048];
@@ -36,6 +37,11 @@ static int debug_dated = 1;
 int config_boolean(const char *name)
 {
 	return strcmp(name, "ue_bridge.enabled") == 0 && setting_enabled;
+}
+
+long config_integer(const char *name)
+{
+	return strcmp(name, "ue_bridge.section_mb") == 0 ? setting_section_mb : 0;
 }
 
 const char *config_string(const char *name)
@@ -81,17 +87,22 @@ const char *platform_data_root(void)
 	return "D:/data";
 }
 
-static uint64_t game_section[UE_BRIDGE_SECTION_SIZE / 8];
+#define TEST_SECTION_SIZE (16u << 20)
+
+static uint64_t game_section[TEST_SECTION_SIZE / 8];
+static uint32_t last_mapped_size;
 static uint64_t game_directory[UE_BRIDGE_DIRECTORY_SIZE / 8];
 static int game_maps;
 static uint64_t game_now;
 
 static void *game_map(const char *name, uint32_t size, void **handle)
 {
-	(void)size;
 	game_maps++;
 	*handle = 0;
-	return strcmp(name, UE_BRIDGE_DIRECTORY_NAME) == 0 ? (void *)game_directory : (void *)game_section;
+	if (strcmp(name, UE_BRIDGE_DIRECTORY_NAME) == 0)
+		return game_directory;
+	last_mapped_size = size;
+	return game_section;
 }
 
 static void game_unmap(void *view, void *handle) { (void)view; (void)handle; }
@@ -134,6 +145,8 @@ void ue_bridge_platform_stop_watcher(void) { watcher_stops++; }
 
 void ue_bridge_request_quit(void) { }
 
+uint32_t ue_bridge_platform_largest_free_block(void) { return 0; }
+
 static void game_reset(void)
 {
 	ue_bridge_game_shutdown();
@@ -147,6 +160,8 @@ static void game_reset(void)
 	memset(game_section, 0, sizeof(game_section));
 	memset(game_directory, 0, sizeof(game_directory));
 	game_maps = 0;
+	setting_section_mb = 16;
+	last_mapped_size = 0;
 	game_now = 100;
 	platform_refresh_hz = 144.0f;
 	platform_target_hz = 144;
@@ -191,6 +206,25 @@ static void game_starts_on_first_hook_with_settings(void)
 	UEB_CHECK(watcher_starts == 1);
 	UEB_CHECK(last_watch.request_quit == ue_bridge_request_quit);
 	UEB_CHECK(last_watch.continue_on_peer_exit == 0);
+}
+
+static void game_section_size_comes_from_the_setting(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	UEB_CHECK(last_mapped_size == TEST_SECTION_SIZE);
+	UEB_CHECK(section_header()->section_size == TEST_SECTION_SIZE);
+	UEB_CHECK(section_header()->load_region.size >= UE_BRIDGE_MIN_LOAD_SIZE);
+	UEB_CHECK(section_header()->tick_ring.slot_size == UE_BRIDGE_TICK_SLOT_SIZE);
+}
+
+static void game_section_setting_out_of_range_uses_the_default_and_logs(void)
+{
+	game_reset();
+	setting_section_mb = 4;
+	ue_bridge_game_pump();
+	UEB_CHECK(strstr(log_lines, "ue_bridge.section_mb") != 0);
+	UEB_CHECK(last_mapped_size == UE_BRIDGE_DEFAULT_SECTION_MB << 20);
 }
 
 static void game_starts_only_once(void)
@@ -462,6 +496,8 @@ const struct ueb_test ueb_game_tests[] =
 {
 	{ "game_disabled_starts_nothing", game_disabled_starts_nothing },
 	{ "game_starts_on_first_hook_with_settings", game_starts_on_first_hook_with_settings },
+	{ "game_section_size_comes_from_the_setting", game_section_size_comes_from_the_setting },
+	{ "game_section_setting_out_of_range_uses_the_default_and_logs", game_section_setting_out_of_range_uses_the_default_and_logs },
 	{ "game_starts_only_once", game_starts_only_once },
 	{ "game_continue_setting_reaches_watcher", game_continue_setting_reaches_watcher },
 	{ "game_unknown_on_peer_exit_logs_and_shuts_down", game_unknown_on_peer_exit_logs_and_shuts_down },

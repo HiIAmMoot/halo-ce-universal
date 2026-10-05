@@ -14,12 +14,16 @@ against its unmap.
 #include <string.h>
 #include <windows.h>
 
+/* a small section: the layout puts 64 KB tick slots and a 1 MB load region in it */
+#define TEST_SECTION_SIZE (0x200000u)
+#define TEST_TICK_SLOT_SIZE (0x10000u)
+
 #define FAKE_SECTIONS 4
 
 static struct
 {
 	char name[UE_BRIDGE_NAME_CHARS];
-	uint64_t storage[UE_BRIDGE_SECTION_SIZE / 8];
+	uint64_t storage[TEST_SECTION_SIZE / 8];
 	int used;
 } fake_sections[FAKE_SECTIONS];
 
@@ -71,7 +75,8 @@ static int header_is_complete(volatile struct ue_bridge_header *header)
 		&& header->magic == UE_BRIDGE_MAGIC
 		&& header->version == UE_BRIDGE_VERSION
 		&& header->header_size == UE_BRIDGE_HEADER_SIZE
-		&& header->section_size == UE_BRIDGE_SECTION_SIZE
+		&& header->section_size == TEST_SECTION_SIZE
+		&& header->load_region.size >= UE_BRIDGE_MIN_LOAD_SIZE
 		&& header->session_id != 0
 		&& header->qpc_frequency != 0
 		&& header->game_pid != 0
@@ -246,6 +251,8 @@ static struct ue_bridge_settings enabled_settings(void)
 	settings.enabled = 1;
 	settings.log_path = "C:/halo/debug.txt";
 	settings.max_objects = 8192;
+	settings.section_size = TEST_SECTION_SIZE;
+	settings.tick_slot_size = TEST_TICK_SLOT_SIZE;
 	return settings;
 }
 
@@ -288,7 +295,7 @@ static void core_start_fills_header(void)
 	UEB_CHECK(header->magic == UE_BRIDGE_MAGIC);
 	UEB_CHECK(header->version == UE_BRIDGE_VERSION);
 	UEB_CHECK(header->header_size == UE_BRIDGE_HEADER_SIZE);
-	UEB_CHECK(header->section_size == UE_BRIDGE_SECTION_SIZE);
+	UEB_CHECK(header->section_size == TEST_SECTION_SIZE);
 	UEB_CHECK(header->session_id == 0x1122334455667788ull);
 	UEB_CHECK(header->qpc_frequency == 10000000ull);
 	UEB_CHECK(header->game_pid == 1234);
@@ -308,8 +315,8 @@ static void core_rings_are_valid_and_do_not_overlap(void)
 	fake_reset();
 	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
 	header = ue_bridge_header();
-	UEB_CHECK(ue_bridge_ring_valid(&header->tick_ring, UE_BRIDGE_SECTION_SIZE, sizeof(struct ue_bridge_slot)));
-	UEB_CHECK(ue_bridge_ring_valid(&header->frame_ring, UE_BRIDGE_SECTION_SIZE, sizeof(struct ue_bridge_frame_slot)));
+	UEB_CHECK(ue_bridge_ring_valid(&header->tick_ring, TEST_SECTION_SIZE, sizeof(struct ue_bridge_tick_header)));
+	UEB_CHECK(ue_bridge_ring_valid(&header->frame_ring, TEST_SECTION_SIZE, sizeof(struct ue_bridge_frame_slot)));
 	UEB_CHECK(header->tick_ring.offset >= UE_BRIDGE_HEADER_SIZE);
 	UEB_CHECK(header->tick_ring.offset + header->tick_ring.slot_size * header->tick_ring.slot_count <= header->frame_ring.offset);
 }
@@ -642,7 +649,7 @@ static void core_start_fails_when_the_section_already_exists(void)
 	fake_reset();
 	os = fake_os;
 	os.map_new_section = fake_new_section;
-	squatter = (volatile uint32_t *)fake_map("Local\\HaloCEUE.Bridge.1234.1122334455667788", UE_BRIDGE_SECTION_SIZE, &handle);
+	squatter = (volatile uint32_t *)fake_map("Local\\HaloCEUE.Bridge.1234.1122334455667788", TEST_SECTION_SIZE, &handle);
 	UEB_CHECK(squatter != 0);
 	squatter[0] = 0xDEADBEEFu;
 	fake_maps = 0;

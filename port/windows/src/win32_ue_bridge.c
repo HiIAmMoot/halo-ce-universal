@@ -268,18 +268,16 @@ static void write_header_snapshot(const char *directory, volatile struct ue_brid
 	CloseHandle(file);
 }
 
-/* UE can write the header, so the ring's geometry comes from the format's
-constants and only its write count is read live (ue_bridge_ring_read_newest) */
-static uint64_t newest_id(volatile struct ue_bridge_header *header, volatile struct ue_bridge_ring_desc *live,
-	uint32_t offset, uint32_t slot_count)
+/* UE can write the header, so the ring's geometry is the game's own, from
+ue_bridge_layout_compute at start, and only its write count is read live
+(ue_bridge_ring_read_newest) */
+static uint64_t newest_id(volatile struct ue_bridge_header *header, const struct ue_bridge_ring_desc *trusted,
+	volatile struct ue_bridge_ring_desc *live)
 {
 	struct ue_bridge_slot slot;
-	struct ue_bridge_ring_desc ring;
+	struct ue_bridge_ring_desc ring = *trusted;
 	enum ue_bridge_read_result result;
 
-	ring.offset = offset;
-	ring.slot_size = UE_BRIDGE_SLOT_SIZE;
-	ring.slot_count = slot_count;
 	ring.published = ueb_load_u32(&live->published);
 	result = ue_bridge_ring_read_newest((const volatile uint8_t *)header, &ring, &slot, sizeof(slot), NULL);
 
@@ -292,6 +290,7 @@ static void write_game_report(enum ue_bridge_action action, const struct ue_brid
 	char directory[UE_BRIDGE_PATH_BYTES];
 	char crashes[UE_BRIDGE_PATH_BYTES + 32];
 	char text[2048];
+	const struct ue_bridge_layout *layout = ue_bridge_trusted_layout();
 
 	report_directory(header, directory, sizeof(directory));
 	/* UE's crash reporter writes under <project>/Saved/Crashes; the session
@@ -315,8 +314,8 @@ static void write_game_report(enum ue_bridge_action action, const struct ue_brid
 		ue_bridge_action_name(action),
 		(unsigned long)peer->exit_code,
 		(unsigned long)peer->stopping,
-		(unsigned long long)newest_id(header, &header->tick_ring, UE_BRIDGE_HEADER_SIZE, UE_BRIDGE_TICK_SLOTS),
-		(unsigned long long)newest_id(header, &header->frame_ring, UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * UE_BRIDGE_TICK_SLOTS, UE_BRIDGE_FRAME_SLOTS),
+		(unsigned long long)(layout ? newest_id(header, &layout->tick_ring, &header->tick_ring) : 0),
+		(unsigned long long)(layout ? newest_id(header, &layout->frame_ring, &header->frame_ring) : 0),
 		(unsigned long)header->load_epoch,
 		(unsigned long)header->state_epoch,
 		crashes,
@@ -649,4 +648,25 @@ void ue_bridge_platform_stop_watcher(void)
 	CloseHandle(watcher_stop);
 	watcher_thread = NULL;
 	watcher_stop = NULL;
+}
+
+/* the largest free block of the address space, in bytes: how much room a
+larger section would have (Phase 0 design, section 11 item 7) */
+uint32_t ue_bridge_platform_largest_free_block(void)
+{
+	MEMORY_BASIC_INFORMATION info;
+	uintptr_t address = 0x10000u;
+	SIZE_T largest = 0;
+
+	while (VirtualQuery((LPCVOID)address, &info, sizeof(info)) == sizeof(info))
+	{
+		uintptr_t next = (uintptr_t)info.BaseAddress + info.RegionSize;
+
+		if (info.State == MEM_FREE && info.RegionSize > largest)
+			largest = info.RegionSize;
+		if (next <= address)
+			break;
+		address = next;
+	}
+	return largest > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)largest;
 }

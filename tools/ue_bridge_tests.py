@@ -25,11 +25,13 @@ BUILD = ROOT / "build" / "ue_bridge_tests"
 # every source the test binary links; later tasks append theirs
 SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
+    BRIDGE / "ue_bridge_load.c",
     BRIDGE / "ue_bridge_policy.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     BRIDGE / "tests" / "test_main.c",
     BRIDGE / "tests" / "test_format.c",
     BRIDGE / "tests" / "test_ring.c",
+    BRIDGE / "tests" / "test_load.c",
     BRIDGE / "tests" / "test_policy.c",
     BRIDGE / "tests" / "test_frame_rate.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge_game.c",
@@ -43,6 +45,7 @@ LIBRARIES: list[str] = []
 # Windows layer, no fakes
 ROLE_SOURCES = [
     BRIDGE / "ue_bridge_ring.c",
+    BRIDGE / "ue_bridge_load.c",
     BRIDGE / "ue_bridge_policy.c",
     ROOT / "port" / "linux" / "src" / "ue_bridge.c",
     ROOT / "port" / "windows" / "src" / "win32_ue_bridge.c",

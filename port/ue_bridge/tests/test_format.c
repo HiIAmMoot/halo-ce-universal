@@ -22,7 +22,7 @@ static void format_directory_layout(void)
 
 static void format_header_layout(void)
 {
-	UEB_CHECK(sizeof(struct ue_bridge_header) == 1224);
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1248);
 	UEB_CHECK(offsetof(struct ue_bridge_header, session_id) == 16);
 	UEB_CHECK(offsetof(struct ue_bridge_header, qpc_frequency) == 24);
 	UEB_CHECK(offsetof(struct ue_bridge_header, max_objects) == 36);
@@ -44,26 +44,59 @@ static void format_header_layout(void)
 	UEB_CHECK(sizeof(struct ue_bridge_header) <= UE_BRIDGE_HEADER_SIZE);
 }
 
-static void format_version_is_2(void)
-{
-	UEB_CHECK(UE_BRIDGE_VERSION == 2u);
-}
-
 static void format_slot_layout(void)
 {
 	UEB_CHECK(sizeof(struct ue_bridge_slot) == 24);
 	UEB_CHECK(offsetof(struct ue_bridge_slot, id) == 8);
-	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 32);
+	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 88);
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, interpolation_fraction) == 24);
-	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) <= UE_BRIDGE_SLOT_SIZE);
-	UEB_CHECK(UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * (UE_BRIDGE_TICK_SLOTS + UE_BRIDGE_FRAME_SLOTS) <= UE_BRIDGE_SECTION_SIZE);
+}
+
+static void format_version_is_three(void)
+{
+	UEB_CHECK(UE_BRIDGE_VERSION == 3u);
+}
+
+static void format_header_tail_offsets(void)
+{
+	UEB_CHECK(offsetof(struct ue_bridge_header, load_region) == 1224);
+	UEB_CHECK(offsetof(struct ue_bridge_header, load_sequence) == 1232);
+	UEB_CHECK(offsetof(struct ue_bridge_header, export_epoch) == 1236);
+	UEB_CHECK(offsetof(struct ue_bridge_header, export_complete) == 1240);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_holding) == 1244);
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1248);
+}
+
+static void format_payload_sizes(void)
+{
+	UEB_CHECK(sizeof(struct ue_bridge_matrix) == 52);
+	UEB_CHECK(sizeof(struct ue_bridge_tick_header) == 48);
+	UEB_CHECK(offsetof(struct ue_bridge_tick_header, used) == 24);
+	UEB_CHECK(sizeof(struct ue_bridge_object_record) == 16);
+	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 88);
+	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, camera_position) == 32);
+	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, tick_id) == 80);
+	UEB_CHECK(sizeof(struct ue_bridge_load_root) == 120);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, bsps) == 88);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, max_nodes_per_model) == 100);
+	UEB_CHECK(sizeof(struct ue_bridge_definition) == 16);
+	UEB_CHECK(sizeof(struct ue_bridge_model) == 68);
+	UEB_CHECK(sizeof(struct ue_bridge_node) == 108);
+	UEB_CHECK(sizeof(struct ue_bridge_part) == 20);
+	UEB_CHECK(sizeof(struct ue_bridge_model_vertex) == 40);
+	UEB_CHECK(offsetof(struct ue_bridge_model_vertex, node) == 32);
+	UEB_CHECK(offsetof(struct ue_bridge_model_vertex, weight) == 36);
+	UEB_CHECK(sizeof(struct ue_bridge_bsp_batch) == 24);
+	UEB_CHECK(sizeof(struct ue_bridge_bsp_vertex) == 32);
 }
 
 const struct ueb_test ueb_format_tests[] =
 {
 	{ "format_directory_layout", format_directory_layout },
 	{ "format_header_layout", format_header_layout },
-	{ "format_version_is_2", format_version_is_2 },
+	{ "format_version_is_three", format_version_is_three },
+	{ "format_header_tail_offsets", format_header_tail_offsets },
+	{ "format_payload_sizes", format_payload_sizes },
 	{ "format_slot_layout", format_slot_layout },
 	{ 0, 0 }
 };

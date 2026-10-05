@@ -75,6 +75,11 @@ probe-directory: exits 0 when no bridge directory exists, 1 when one does.
 #include <stdlib.h>
 #include <string.h>
 
+/* 16 MB, the smallest section the game allows: every role that starts the core
+and the reader that maps it agree on this size */
+#define ROLE_SECTION_SIZE (16u << 20)
+#define ROLE_TICK_SLOT_SIZE 0x10000u
+
 static FILE *role_log;
 
 /* the real game's platform_log is stderr: it never reaches debug.txt, so here it doesn't reach the log file either */
@@ -322,6 +327,8 @@ static int fake_game(int argc, char **argv)
 	settings.enabled = !option_flag(argc, argv, "--disabled");
 	settings.log_path = log;
 	settings.max_objects = 8192;
+	settings.section_size = ROLE_SECTION_SIZE;
+	settings.tick_slot_size = ROLE_TICK_SLOT_SIZE;
 	if (cycles > 0)
 		return fake_game_cycles(&settings, cycles, option_number(argc, argv, "--hold-ms", 0), option_text(argc, argv, "--ready-file"), option_text(argc, argv, "--go-file"));
 	SetUnhandledExceptionFilter(game_filter);
@@ -429,7 +436,7 @@ static volatile struct ue_bridge_header *attach(const struct ue_bridge_os *os, v
 			memcpy(section_name, (const void *)(uintptr_t)directory->section_name, sizeof(section_name));
 			section_name[sizeof(section_name) - 1] = 0;
 			if (ueb_load_u32(&directory->sequence) == before)
-				return (volatile struct ue_bridge_header *)os->map_section(section_name, UE_BRIDGE_SECTION_SIZE, section_handle);
+				return (volatile struct ue_bridge_header *)os->map_section(section_name, ROLE_SECTION_SIZE, section_handle);
 		}
 		Sleep(20);
 	}

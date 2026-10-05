@@ -15,6 +15,7 @@ a fake in port/ue_bridge/tests), so this file has no platform calls.
 #include <stdint.h>
 
 #include "../../ue_bridge/ue_bridge_format.h"
+#include "../../ue_bridge/ue_bridge_load.h"
 
 struct ue_bridge_os
 {
@@ -53,6 +54,9 @@ struct ue_bridge_settings
 	/* in the platform's path encoding; NULL for none */
 	const char *log_path;
 	uint32_t max_objects;
+	/* bytes, a multiple of 4096 */
+	uint32_t section_size;
+	uint32_t tick_slot_size;
 };
 
 /* 1 when the bridge is active (already, or now). The bridge keeps the os pointer, so
@@ -68,6 +72,12 @@ int ue_bridge_active(void);
 uint64_t ue_bridge_session_id(void);
 /* NULL when inactive */
 volatile struct ue_bridge_header *ue_bridge_header(void);
+/* the bridge section's first byte and size; NULL and 0 when inactive */
+volatile uint8_t *ue_bridge_section(void);
+uint32_t ue_bridge_section_size(void);
+/* the ring and region geometry this game laid out, from its own settings; never
+read back from the header, which UE can write. NULL when inactive. */
+const struct ue_bridge_layout *ue_bridge_trusted_layout(void);
 
 void ue_bridge_publish_tick(uint64_t tick);
 void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction);

@@ -19,6 +19,8 @@ static struct
 	void *directory_view;
 	void *directory_handle;
 	uint64_t session_id;
+	uint32_t section_size;
+	struct ue_bridge_layout layout;
 } bridge;
 
 static volatile struct ue_bridge_header *bridge_header(void)
@@ -115,10 +117,17 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 {
 	char section_name[UE_BRIDGE_NAME_CHARS];
 	volatile struct ue_bridge_header *header;
+	struct ue_bridge_layout layout;
 	uint32_t pid;
 
 	if (bridge.section_view || !settings->enabled)
 		return bridge.section_view != 0;
+	if (!ue_bridge_layout_compute(settings->section_size, settings->tick_slot_size, &layout))
+	{
+		if (os->log)
+			os->log("ue bridge: the section size leaves no room for the rings and a load region");
+		return 0;
+	}
 	bridge.os = os;
 	pid = os->pid();
 	bridge.session_id = os->random64();
@@ -127,7 +136,7 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 		bridge.session_id = 1;
 	snprintf(section_name, sizeof(section_name), "Local\\HaloCEUE.Bridge.%lu.%016llx",
 		(unsigned long)pid, (unsigned long long)bridge.session_id);
-	bridge.section_view = (os->map_new_section ? os->map_new_section : os->map_section)(section_name, UE_BRIDGE_SECTION_SIZE, &bridge.section_handle);
+	bridge.section_view = (os->map_new_section ? os->map_new_section : os->map_section)(section_name, settings->section_size, &bridge.section_handle);
 	if (!bridge.section_view)
 	{
 		bridge_log("ue bridge: cannot create the bridge section; the bridge is off");
@@ -138,18 +147,17 @@ int ue_bridge_start(const struct ue_bridge_settings *settings, const struct ue_b
 	header->magic = UE_BRIDGE_MAGIC;
 	header->version = UE_BRIDGE_VERSION;
 	header->header_size = UE_BRIDGE_HEADER_SIZE;
-	header->section_size = UE_BRIDGE_SECTION_SIZE;
+	header->section_size = settings->section_size;
 	header->session_id = bridge.session_id;
 	header->qpc_frequency = os->qpc_frequency();
 	header->game_pid = pid;
 	header->max_objects = settings->max_objects;
 	header->game_hang_timeout_ms = UE_BRIDGE_DEFAULT_HANG_TIMEOUT_MS;
-	header->tick_ring.offset = UE_BRIDGE_HEADER_SIZE;
-	header->tick_ring.slot_size = UE_BRIDGE_SLOT_SIZE;
-	header->tick_ring.slot_count = UE_BRIDGE_TICK_SLOTS;
-	header->frame_ring.offset = UE_BRIDGE_HEADER_SIZE + UE_BRIDGE_SLOT_SIZE * UE_BRIDGE_TICK_SLOTS;
-	header->frame_ring.slot_size = UE_BRIDGE_SLOT_SIZE;
-	header->frame_ring.slot_count = UE_BRIDGE_FRAME_SLOTS;
+	header->tick_ring = layout.tick_ring;
+	header->frame_ring = layout.frame_ring;
+	header->load_region = layout.load_region;
+	bridge.section_size = settings->section_size;
+	bridge.layout = layout;
 	if (os->path_to_utf8 && settings->log_path)
 	{
 		char utf8[UE_BRIDGE_PATH_BYTES];
@@ -227,17 +235,38 @@ volatile struct ue_bridge_header *ue_bridge_header(void)
 	return bridge_header();
 }
 
+volatile uint8_t *ue_bridge_section(void)
+{
+	return (volatile uint8_t *)bridge.section_view;
+}
+
+uint32_t ue_bridge_section_size(void)
+{
+	return bridge.section_view ? bridge.section_size : 0;
+}
+
+const struct ue_bridge_layout *ue_bridge_trusted_layout(void)
+{
+	return bridge.section_view ? &bridge.layout : 0;
+}
+
 void ue_bridge_publish_tick(uint64_t tick)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
-	volatile struct ue_bridge_slot *slot;
+	volatile struct ue_bridge_tick_header *slot;
 
 	if (!header)
 		return;
-	slot = ue_bridge_ring_begin_write((volatile uint8_t *)header, &header->tick_ring);
-	slot->id = tick;
-	slot->publish_qpc = bridge.os->qpc();
-	ue_bridge_ring_end_write(&header->tick_ring, slot);
+	slot = (volatile struct ue_bridge_tick_header *)ue_bridge_ring_begin_write((volatile uint8_t *)header, &header->tick_ring);
+	slot->slot.id = tick;
+	slot->slot.publish_qpc = bridge.os->qpc();
+	slot->used = sizeof(struct ue_bridge_tick_header);
+	slot->object_count = 0;
+	slot->load_epoch = header->load_epoch;
+	slot->state_epoch = header->state_epoch;
+	slot->active_bsp = -1;
+	slot->flags = 0;
+	ue_bridge_ring_end_write(&header->tick_ring, &slot->slot);
 }
 
 void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction)
@@ -251,6 +280,7 @@ void ue_bridge_publish_frame(uint64_t frame, float interpolation_fraction)
 	slot->slot.id = frame;
 	slot->slot.publish_qpc = bridge.os->qpc();
 	slot->interpolation_fraction = interpolation_fraction;
+	slot->camera_valid = 0;
 	ue_bridge_ring_end_write(&header->frame_ring, &slot->slot);
 }
 

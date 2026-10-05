@@ -286,6 +286,73 @@ static void ring_heartbeat_store_is_never_torn(void)
 	UEB_CHECK(!torn);
 }
 
+/* a slot whose used size sits at offset 24, as the tick header's does */
+static void slot_read_used_copies_only_the_used_bytes(void)
+{
+	static uint64_t storage[256];
+	volatile struct ue_bridge_slot *slot = (volatile struct ue_bridge_slot *)storage;
+	uint8_t out[2048];
+	uint32_t bytes = 0;
+
+	memset(storage, 0xAB, sizeof(storage));
+	slot->sequence = 2;
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 100;
+	memset(out, 0, sizeof(out));
+	UEB_CHECK(ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, 0, 0));
+	UEB_CHECK(bytes == 100);
+	UEB_CHECK(out[99] == 0xAB);
+	UEB_CHECK(out[100] == 0);
+}
+
+static void slot_read_used_clamps_a_used_size_past_the_slot(void)
+{
+	static uint64_t storage[16];
+	volatile struct ue_bridge_slot *slot = (volatile struct ue_bridge_slot *)storage;
+	uint8_t out[1024];
+	uint32_t bytes = 0;
+
+	slot->sequence = 2;
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 0x7FFFFFFFu;
+	UEB_CHECK(!ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, 0, 0));
+	/* past the 128-byte slot but inside the output: the slot bound alone must refuse it */
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 200;
+	UEB_CHECK(!ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, 0, 0));
+	/* a used size below the field that holds it is no slot */
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 8;
+	UEB_CHECK(!ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, 0, 0));
+}
+
+static void bump_sequence(void *context)
+{
+	volatile struct ue_bridge_slot *slot = (volatile struct ue_bridge_slot *)context;
+
+	slot->sequence += 2;
+}
+
+static void slot_read_used_detects_change_during_copy(void)
+{
+	static uint64_t storage[64];
+	volatile struct ue_bridge_slot *slot = (volatile struct ue_bridge_slot *)storage;
+	uint8_t out[512];
+	uint32_t bytes = 0;
+
+	slot->sequence = 2;
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 64;
+	UEB_CHECK(!ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, bump_sequence, (void *)slot));
+}
+
+static void slot_read_used_refuses_an_output_too_small(void)
+{
+	static uint64_t storage[64];
+	volatile struct ue_bridge_slot *slot = (volatile struct ue_bridge_slot *)storage;
+	uint8_t out[32];
+	uint32_t bytes = 0;
+
+	slot->sequence = 2;
+	*(volatile uint32_t *)((volatile uint8_t *)slot + 24) = 64;
+	UEB_CHECK(!ue_bridge_slot_try_read_used(slot, sizeof(storage), 24, out, sizeof(out), &bytes, 0, 0));
+}
+
 const struct ueb_test ueb_ring_tests[] =
 {
 	{ "ring_valid_accepts_a_sane_ring", ring_valid_accepts_a_sane_ring },
@@ -299,5 +366,9 @@ const struct ueb_test ueb_ring_tests[] =
 	{ "slot_try_read_detects_change_during_copy", slot_try_read_detects_change_during_copy },
 	{ "ring_concurrent_reader_never_sees_mixed_payload", ring_concurrent_reader_never_sees_mixed_payload },
 	{ "ring_heartbeat_store_is_never_torn", ring_heartbeat_store_is_never_torn },
+	{ "slot_read_used_copies_only_the_used_bytes", slot_read_used_copies_only_the_used_bytes },
+	{ "slot_read_used_clamps_a_used_size_past_the_slot", slot_read_used_clamps_a_used_size_past_the_slot },
+	{ "slot_read_used_detects_change_during_copy", slot_read_used_detects_change_during_copy },
+	{ "slot_read_used_refuses_an_output_too_small", slot_read_used_refuses_an_output_too_small },
 	{ 0, 0 }
 };

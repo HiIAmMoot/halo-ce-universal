@@ -28,3 +28,8 @@ int ue_bridge_platform_start_watcher(const struct ue_bridge_watch_config *config
 void ue_bridge_platform_stop_watcher(void)
 {
 }
+
+uint32_t ue_bridge_platform_largest_free_block(void)
+{
+	return 0;
+}

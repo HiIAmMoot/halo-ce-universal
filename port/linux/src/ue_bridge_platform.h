@@ -33,6 +33,9 @@ void ue_bridge_platform_install_crash_hook(void);
 /* 1 when the thread watching the renderer runs */
 int ue_bridge_platform_start_watcher(const struct ue_bridge_watch_config *config);
 void ue_bridge_platform_stop_watcher(void);
+/* the largest free block of the address space, in bytes: how much room a
+larger section would have */
+uint32_t ue_bridge_platform_largest_free_block(void);
 
 /* sdl_platform.c: the display's refresh rate (0 when it reports none) and the
 frames a second the frame limiter aims for (0: uncapped) */

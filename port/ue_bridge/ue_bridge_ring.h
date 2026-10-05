@@ -121,6 +121,13 @@ reader's own mapping. */
 int ue_bridge_slot_try_read(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, void *out, uint32_t out_size,
 	ue_bridge_read_hook between, void *context);
 
+/* as ue_bridge_slot_try_read, but copies only the slot's used bytes: the
+uint32_t at used_offset, read inside the same sequence check. 0 when that
+size is below used_offset + 4, past slot_size or past out_capacity. *bytes
+receives the bytes copied. */
+int ue_bridge_slot_try_read_used(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, uint32_t used_offset,
+	void *out, uint32_t out_capacity, uint32_t *bytes, ue_bridge_read_hook between, void *context);
+
 /* the newest complete slot, or the one before it when the newest is being
 rewritten; *published (when set) receives the ring's write count.
 The descriptor must have passed ue_bridge_ring_valid against the size of the
@@ -130,6 +137,10 @@ reads only published live. out_size must not exceed slot_size, or the tail of
 out is left unwritten. */
 enum ue_bridge_read_result ue_bridge_ring_read_newest(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
 	void *out, uint32_t out_size, uint32_t *published);
+
+/* ue_bridge_ring_read_newest, by used size */
+enum ue_bridge_read_result ue_bridge_ring_read_newest_used(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
+	uint32_t used_offset, void *out, uint32_t out_capacity, uint32_t *bytes, uint32_t *published);
 
 #ifdef __cplusplus
 }

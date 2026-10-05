@@ -41,6 +41,7 @@ static void ensure_started(void)
 	struct ue_bridge_watch_config watch;
 	const struct ue_bridge_os *os;
 	const char *on_peer_exit;
+	long section_mb;
 
 	if (start_attempted)
 		return;
@@ -54,6 +55,15 @@ static void ensure_started(void)
 	settings.enabled = 1;
 	settings.log_path = log_path;
 	settings.max_objects = HALO_PORT_MAXIMUM_OBJECTS_PER_MAP;
+	section_mb = config_integer("ue_bridge.section_mb");
+	if (section_mb < 16 || section_mb > (long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20))
+	{
+		ue_bridge_log("ue bridge: ue_bridge.section_mb %ld is outside 16 to %lu; using %lu",
+			section_mb, (unsigned long)(UE_BRIDGE_MAX_SECTION_SIZE >> 20), (unsigned long)UE_BRIDGE_DEFAULT_SECTION_MB);
+		section_mb = UE_BRIDGE_DEFAULT_SECTION_MB;
+	}
+	settings.section_size = (uint32_t)section_mb << 20;
+	settings.tick_slot_size = UE_BRIDGE_TICK_SLOT_SIZE;
 	on_peer_exit = config_string("ue_bridge.on_peer_exit");
 	watch.request_quit = ue_bridge_request_quit;
 	watch.continue_on_peer_exit = strcmp(on_peer_exit, "continue") == 0;
@@ -77,6 +87,8 @@ static void ensure_started(void)
 		atexit(at_exit);
 	}
 	ue_bridge_log("ue bridge: on, session %016llx", (unsigned long long)ue_bridge_session_id());
+	ue_bridge_log("ue bridge: section %lu MB; largest free address block after it %lu MB",
+		(unsigned long)(settings.section_size >> 20), (unsigned long)(ue_bridge_platform_largest_free_block() >> 20));
 }
 
 void ue_bridge_game_shutdown(void)

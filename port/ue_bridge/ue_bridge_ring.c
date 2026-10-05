@@ -45,28 +45,48 @@ void ue_bridge_ring_end_write(volatile struct ue_bridge_ring_desc *ring, volatil
 	ueb_store_u32(&ring->published, ring->published + 1u);
 }
 
-int ue_bridge_slot_try_read(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, void *out, uint32_t out_size,
-	ue_bridge_read_hook between, void *context)
+/* used_offset for a read of a fixed size (M1's reads) */
+#define FIXED_SIZE 0xFFFFFFFFu
+
+/* the one slot read: a fixed size (the smaller of out_capacity and
+slot_size), or the uint32_t at used_offset, read inside the same sequence
+check */
+static int slot_read(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, uint32_t used_offset,
+	void *out, uint32_t out_capacity, uint32_t *bytes, ue_bridge_read_hook between, void *context)
 {
 	uint32_t before = ueb_load_u32(&slot->sequence);
-	uint32_t size = out_size < slot_size ? out_size : slot_size;
+	uint32_t used;
 
 	if (before & 1u)
 		return 0;
+	if (used_offset == FIXED_SIZE)
+	{
+		used = out_capacity < slot_size ? out_capacity : slot_size;
+	}
+	else
+	{
+		used = *(const volatile uint32_t *)((const volatile uint8_t *)slot + used_offset);
+		if (used < used_offset + 4u || used > slot_size || used > out_capacity)
+			return 0;
+	}
 	/* a plain copy of memory the writer may be changing: the sequence
 	re-check below throws it away if so */
-	memcpy(out, (const void *)(uintptr_t)slot, size);
+	memcpy(out, (const void *)(uintptr_t)slot, used);
 	if (between)
 		between(context);
 	/* stops the compiler moving the copy's loads below the re-check; x86
 	hardware keeps that order, so no test can detect a removed fence and this
 	comment is the only guard */
 	ueb_fence();
-	return ueb_load_u32(&slot->sequence) == before;
+	if (ueb_load_u32(&slot->sequence) != before)
+		return 0;
+	if (bytes)
+		*bytes = used;
+	return 1;
 }
 
-enum ue_bridge_read_result ue_bridge_ring_read_newest(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
-	void *out, uint32_t out_size, uint32_t *published)
+static enum ue_bridge_read_result ring_read(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
+	uint32_t used_offset, void *out, uint32_t out_capacity, uint32_t *bytes, uint32_t *published)
 {
 	uint32_t count = ueb_load_u32(&ring->published);
 	uint32_t attempt;
@@ -79,8 +99,32 @@ enum ue_bridge_read_result ue_bridge_ring_read_newest(const volatile uint8_t *ba
 	{
 		const volatile struct ue_bridge_slot *slot = ring_slot((volatile uint8_t *)(uintptr_t)base, ring, count - 1u - attempt);
 
-		if (ue_bridge_slot_try_read(slot, ring->slot_size, out, out_size, 0, 0))
+		if (slot_read(slot, ring->slot_size, used_offset, out, out_capacity, bytes, 0, 0))
 			return attempt == 0 ? UE_BRIDGE_READ_NEWEST : UE_BRIDGE_READ_PREVIOUS;
 	}
 	return UE_BRIDGE_READ_TORN;
+}
+
+int ue_bridge_slot_try_read(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, void *out, uint32_t out_size,
+	ue_bridge_read_hook between, void *context)
+{
+	return slot_read(slot, slot_size, FIXED_SIZE, out, out_size, 0, between, context);
+}
+
+int ue_bridge_slot_try_read_used(const volatile struct ue_bridge_slot *slot, uint32_t slot_size, uint32_t used_offset,
+	void *out, uint32_t out_capacity, uint32_t *bytes, ue_bridge_read_hook between, void *context)
+{
+	return slot_read(slot, slot_size, used_offset, out, out_capacity, bytes, between, context);
+}
+
+enum ue_bridge_read_result ue_bridge_ring_read_newest(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
+	void *out, uint32_t out_size, uint32_t *published)
+{
+	return ring_read(base, ring, FIXED_SIZE, out, out_size, 0, published);
+}
+
+enum ue_bridge_read_result ue_bridge_ring_read_newest_used(const volatile uint8_t *base, const volatile struct ue_bridge_ring_desc *ring,
+	uint32_t used_offset, void *out, uint32_t out_capacity, uint32_t *bytes, uint32_t *published)
+{
+	return ring_read(base, ring, used_offset, out, out_capacity, bytes, published);
 }
