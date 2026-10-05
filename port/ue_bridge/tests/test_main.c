@@ -23,6 +23,7 @@ static const struct ueb_test *const suites[] =
 	ueb_game_tests,
 	ueb_codec_tests,
 	ueb_model_tests,
+	ueb_bsp_tests,
 	0
 };
 

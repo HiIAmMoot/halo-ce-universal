@@ -41,5 +41,6 @@ extern const struct ueb_test ueb_core_tests[];
 extern const struct ueb_test ueb_game_tests[];
 extern const struct ueb_test ueb_codec_tests[];
 extern const struct ueb_test ueb_model_tests[];
+extern const struct ueb_test ueb_bsp_tests[];
 
 #endif
