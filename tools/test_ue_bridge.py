@@ -155,7 +155,7 @@ def test_game_never_kills_hung_editor_ue(spawn, tmp_path):
 
 def test_no_hang_action_while_ue_debugger_flag_set(spawn, tmp_path):
     game = start_game(spawn, tmp_path)
-    ue, session = start_ue(spawn, tmp_path, "--debugger-flag", "--hang-after-ms", 200, "--hang-timeout-ms", 1000,
+    ue, session = start_ue(spawn, tmp_path, "--debugger-flag", "--hang-after-ms", 500, "--hang-timeout-ms", 1000,
                            "--run-ms", 4000)
     time.sleep(3.0)
     assert game.poll() is None
@@ -220,7 +220,7 @@ def test_game_never_terminates_a_peer_that_has_not_beaten_since_it_was_opened(sp
 
 def test_no_hang_action_while_ue_busy(spawn, tmp_path):
     game = start_game(spawn, tmp_path)
-    ue, session = start_ue(spawn, tmp_path, "--busy-flag", "--hang-after-ms", 200, "--hang-timeout-ms", 1000,
+    ue, session = start_ue(spawn, tmp_path, "--busy-flag", "--hang-after-ms", 500, "--hang-timeout-ms", 1000,
                            "--run-ms", 4000)
     time.sleep(3.0)
     assert game.poll() is None

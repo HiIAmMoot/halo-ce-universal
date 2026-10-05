@@ -23,7 +23,8 @@ against its unmap.
 static struct
 {
 	char name[UE_BRIDGE_NAME_CHARS];
-	uint64_t storage[TEST_SECTION_SIZE / 8];
+	/* page-aligned: the directory's first page holds nothing but the directory, so a test can watch writes to it */
+	uint64_t storage[TEST_SECTION_SIZE / 8] __attribute__((aligned(4096)));
 	int used;
 } fake_sections[FAKE_SECTIONS];
 
@@ -767,6 +768,77 @@ static void core_start_and_stop_each_take_the_directory_lock_once(void)
 	UEB_CHECK(!fake_lock_misuse);
 }
 
+/* The seqlock only protects a field written after the sequence turns odd. A write
+watch makes that deterministic: the directory's page is read-only while the lock
+is held, and the first write to it must be the sequence itself. Timing cannot
+hide a field written before it, as it can from the concurrent reader. */
+static volatile LONG fake_watching;
+static void *volatile fake_first_write;
+
+static LONG CALLBACK first_write_watch(EXCEPTION_POINTERS *info)
+{
+	volatile struct ue_bridge_directory *directory = fake_directory();
+	EXCEPTION_RECORD *record = info->ExceptionRecord;
+	uintptr_t address;
+	DWORD old;
+
+	if (!fake_watching || !directory || record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->ExceptionInformation[0] != 1)
+		return EXCEPTION_CONTINUE_SEARCH;
+	address = (uintptr_t)record->ExceptionInformation[1];
+	if (address < (uintptr_t)directory || address >= (uintptr_t)directory + 4096u)
+		return EXCEPTION_CONTINUE_SEARCH;
+	if (!fake_first_write)
+		fake_first_write = (void *)address;
+	VirtualProtect((void *)directory, 4096u, PAGE_READWRITE, &old);
+	return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static void watch_lock(void)
+{
+	DWORD old;
+
+	fake_lock();
+	fake_first_write = 0;
+	VirtualProtect((void *)fake_directory(), 4096u, PAGE_READONLY, &old);
+}
+
+static void watch_unlock(void)
+{
+	DWORD old;
+
+	VirtualProtect((void *)fake_directory(), 4096u, PAGE_READWRITE, &old);
+	fake_unlock();
+}
+
+static const struct ue_bridge_os watching_os =
+{
+	fake_map, fake_unmap, fake_qpc, fake_frequency, fake_pid, fake_random64, fake_debugger_present, fake_log,
+	0, watch_lock, watch_unlock
+};
+
+static void core_directory_writes_begin_with_the_sequence(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+	void *handler;
+	void *start_first;
+
+	fake_reset();
+	handler = AddVectoredExceptionHandler(1, first_write_watch);
+	UEB_CHECK(handler != 0);
+	/* the page must exist before it is protected, so the first start creates it unwatched */
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	fake_watching = 1;
+	UEB_CHECK(ue_bridge_start(&settings, &watching_os));
+	start_first = fake_first_write;
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	fake_watching = 0;
+	RemoveVectoredExceptionHandler(handler);
+	UEB_CHECK(start_first == (void *)&fake_directory()->sequence);
+	/* the stop's withdrawal is the second write section: its first write is the sequence too */
+	UEB_CHECK(fake_first_write == (void *)&fake_directory()->sequence);
+}
+
 /* ---------- two-thread stress tests */
 
 #define STRESS_MILLISECONDS 500u
@@ -1323,6 +1395,7 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_stop_writes_before_it_unmaps", core_stop_writes_before_it_unmaps },
 	{ "core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it", core_stop_hides_the_header_from_the_crash_filter_before_unmapping_it },
 	{ "core_start_and_stop_each_take_the_directory_lock_once", core_start_and_stop_each_take_the_directory_lock_once },
+	{ "core_directory_writes_begin_with_the_sequence", core_directory_writes_begin_with_the_sequence },
 	{ "core_concurrent_reader_never_sees_a_mixed_directory_entry", core_concurrent_reader_never_sees_a_mixed_directory_entry },
 	{ "core_concurrent_reader_never_sees_a_tick_without_its_payload", core_concurrent_reader_never_sees_a_tick_without_its_payload },
 	{ "load_begin_marks_the_sequence_odd_and_clears_the_root", load_begin_marks_the_sequence_odd_and_clears_the_root },
