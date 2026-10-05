@@ -150,7 +150,8 @@ static void model_export_decodes_parts_and_skips_stripped_ones(void)
 	UEB_CHECK(vertices[3].position[0] == 3.0f);
 	UEB_CHECK(vertices[0].weight == 1.0f);
 	indices = AT(ue_bridge_model_index, part->indices.offset);
-	UEB_CHECK(indices[3] == 2 && indices[4] == 1 && indices[5] == 3);
+	UEB_CHECK(indices[0] == 1 && indices[1] == 0 && indices[2] == 2);
+	UEB_CHECK(indices[3] == 1 && indices[4] == 2 && indices[5] == 3);
 	/* exported geometry 0 is Halo geometry 1 */
 	part = AT(struct ue_bridge_part, exported_geometries[0].parts.offset);
 	UEB_CHECK(AT(struct ue_bridge_model_vertex, part->vertices.offset)[0].node[0] == 1);

@@ -147,7 +147,11 @@ static int write_batch(struct ue_bridge_load_writer *writer, const struct ue_bri
 				memcpy((struct ue_bridge_bsp_vertex *)ue_bridge_load_pointer(writer, batch->vertices.offset) + vertex_count, &decoded, sizeof(decoded));
 				vertex_count++;
 			}
-			((ue_bridge_bsp_index *)ue_bridge_load_pointer(writer, batch->indices.offset))[index * 3u + corner] = scratch->batch_index[vertex];
+			/* corners 1 and 2 swap: the game's faces wind the other way from the
+			right-handed cross product (measured on bloodgulch and a10 by
+			tools/test_ue_bridge_maps.py), and the export's cross products agree
+			with the vertex normals */
+			((ue_bridge_bsp_index *)ue_bridge_load_pointer(writer, batch->indices.offset))[index * 3u + (corner == 0u ? 0u : 3u - corner)] = scratch->batch_index[vertex];
 		}
 	}
 	return 1;

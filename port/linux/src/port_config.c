@@ -224,6 +224,9 @@ static const struct config_setting config_settings[] =
 	{ "ue_bridge.section_mb", _config_integer, "96", "HALO_UE_BRIDGE_SECTION_MB", _environment_value, _platform_desktop,
 		"The size of the bridge's shared memory in megabytes (16 to 1024). The\n"
 		"loaded map's geometry for the HaloCEUE renderer must fit in it." },
+	{ "ue_bridge.start_map", _config_string, "\"\"", "HALO_UE_BRIDGE_START_MAP", _environment_value, _platform_desktop,
+		"With the bridge on: the scenario to start instead of the main menu, as\n"
+		"the map_name command takes it (levels\\a10\\a10). Empty: as usual." },
 
 	{ "paths.data", _config_string, "\"\"", "HALO_DATA_ROOT", _environment_value, _platform_desktop,
 		"The folder holding the game data's maps folder; empty looks in the\n"

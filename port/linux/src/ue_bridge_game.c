@@ -10,6 +10,7 @@ functions (render_interpolation.c) and by the game state's after-load procs
 #include "port_config.h"
 #include "ue_bridge.h"
 #include "ue_bridge_platform.h"
+#include "ue_bridge_world.h"
 #include "../include/halo_port_capacity.h"
 
 #include <stdio.h>
@@ -177,6 +178,39 @@ void ue_bridge_game_map_loaded(void)
 	ensure_started();
 	if (started)
 		ue_bridge_bump_load_epoch();
+}
+
+/* the end of game_initialize_for_new_map (game.c): every map start, the
+main menu's, a reset's and a network game's included */
+void ue_bridge_game_map_ready(void)
+{
+	ensure_started();
+	if (started)
+		ue_bridge_world_export_map();
+}
+
+/* scenario_switch_structure_bsp (scenario.c), once the BSP is loaded */
+void ue_bridge_game_structure_bsp_loaded(short structure_bsp_index)
+{
+	if (started)
+		ue_bridge_world_export_bsp(structure_bsp_index);
+}
+
+/* main_loop, after console_startup has run init.txt: a start map from the
+settings overrides it, so a launcher never has to write the owner's init.txt */
+void ue_bridge_game_console_started(void)
+{
+	const char *map;
+
+	ensure_started();
+	if (!started)
+		return;
+	map = config_string("ue_bridge.start_map");
+	if (map && map[0])
+	{
+		ue_bridge_log("ue bridge: starting %s (ue_bridge.start_map)", map);
+		ue_bridge_world_set_start_map(map);
+	}
 }
 
 /* halt_and_catch_fire (main.c): the busy flag would otherwise excuse the

@@ -158,11 +158,14 @@ static void bsp_export_remaps_vertices_per_batch(void)
 	vertices = AT(struct ue_bridge_bsp_vertex, batch->vertices.offset);
 	indices = AT(ue_bridge_bsp_index, batch->indices.offset);
 	/* surface 0 (material 0: vertices 10 11 12), then surface 2 (material 1: 20 21 22) */
+	/* each triangle's last two corners swap: the game's winding is the other way
+	from the right-handed cross product (measured on bloodgulch and a10) */
 	UEB_CHECK(vertices[indices[0]].position[0] == 10.0f);
-	UEB_CHECK(vertices[indices[1]].position[0] == 11.0f);
-	UEB_CHECK(vertices[indices[2]].position[0] == 12.0f);
+	UEB_CHECK(vertices[indices[1]].position[0] == 12.0f);
+	UEB_CHECK(vertices[indices[2]].position[0] == 11.0f);
 	UEB_CHECK(vertices[indices[3]].position[0] == 20.0f);
-	UEB_CHECK(vertices[indices[5]].position[0] == 22.0f);
+	UEB_CHECK(vertices[indices[4]].position[0] == 22.0f);
+	UEB_CHECK(vertices[indices[5]].position[0] == 21.0f);
 	for (index = 0; index < batch->indices.count; index++)
 		UEB_CHECK(indices[index] < batch->vertices.count);
 }

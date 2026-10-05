@@ -1039,6 +1039,7 @@ boolean scenario_switch_structure_bsp(
 				struct collision_bsp);
 			scenario_globals->structure_bsp_index = structure_bsp_index;
 			global_structure_bsp_index = structure_bsp_index;
+			ue_bridge_game_structure_bsp_loaded(structure_bsp_index);
 
 			if (had_old_structure_bsp)
 			{

@@ -667,6 +667,7 @@ void game_initialize_for_new_map(
 	from now on go elsewhere, port/linux/game/network_objects.c) */
 	network_objects_placed();
 	ui_widgets_safe_to_load(TRUE);
+	ue_bridge_game_map_ready();
 
 	return;
 }

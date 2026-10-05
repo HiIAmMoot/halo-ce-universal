@@ -59,17 +59,20 @@ uint32_t ue_bridge_strip_to_list(const uint16_t *strip, uint32_t strip_length, u
 
 		if (a == b || b == c || a == c)
 			continue;
-		/* a strip flips facing every triangle: swapping an odd triangle's
-		first two keeps them all facing the same way */
+		/* A strip flips facing every triangle, so the swap goes on alternate
+		triangles. Which ones: the game's faces wind the other way from the
+		right-handed cross product (measured on bloodgulch and a10 by
+		tools/test_ue_bridge_maps.py), so the even triangles swap and each one's
+		cross product agrees with its vertex normals. */
 		if (index & 1u)
 		{
-			list[written++] = b;
 			list[written++] = a;
+			list[written++] = b;
 		}
 		else
 		{
-			list[written++] = a;
 			list[written++] = b;
+			list[written++] = a;
 		}
 		list[written++] = c;
 	}

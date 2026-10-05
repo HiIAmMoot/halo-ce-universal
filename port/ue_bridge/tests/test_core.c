@@ -899,6 +899,117 @@ static void core_concurrent_reader_never_sees_a_tick_without_its_payload(void)
 	UEB_CHECK(!mismatched);
 }
 
+static void start_bridge(void)
+{
+	struct ue_bridge_settings settings = enabled_settings();
+
+	fake_reset();
+	UEB_CHECK(ue_bridge_start(&settings, &fake_os));
+}
+
+static volatile struct ue_bridge_load_root *test_root(volatile struct ue_bridge_header *header)
+{
+	return (volatile struct ue_bridge_load_root *)((volatile uint8_t *)header + header->load_region.offset);
+}
+
+static void load_begin_marks_the_sequence_odd_and_clears_the_root(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_load_writer *writer;
+
+	start_bridge();
+	header = fake_bridge_section();
+	test_root(header)->magic = 0x12345678u;
+	writer = ue_bridge_load_begin();
+	UEB_CHECK(writer != 0);
+	UEB_CHECK(header->load_sequence & 1u);
+	UEB_CHECK(header->export_epoch == 0);
+	UEB_CHECK(test_root(header)->magic == 0);
+	UEB_CHECK(writer->used == 0 && writer->capacity == header->load_region.size);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_begin_uses_the_game_layout_not_the_header(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_load_writer *writer;
+	uint32_t trusted;
+
+	start_bridge();
+	header = fake_bridge_section();
+	trusted = header->load_region.size;
+	/* UE can write the header: a damaged region size must not steer the game's writes */
+	header->load_region.size = trusted * 4u;
+	writer = ue_bridge_load_begin();
+	UEB_CHECK(writer->capacity == trusted);
+	UEB_CHECK(ue_bridge_trusted_layout()->load_region.size == trusted);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_end_publishes_the_epoch_and_completeness(void)
+{
+	volatile struct ue_bridge_header *header;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	ue_bridge_bump_load_epoch();
+	ue_bridge_load_begin();
+	ue_bridge_load_end(0);
+	UEB_CHECK((header->load_sequence & 1u) == 0);
+	UEB_CHECK(header->load_sequence != 0);
+	UEB_CHECK(header->export_epoch == 2);
+	UEB_CHECK(header->export_complete == 0);
+	ue_bridge_load_begin();
+	ue_bridge_load_end(1);
+	UEB_CHECK(header->export_complete == 1);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_append_continues_after_the_export_of_this_epoch_only(void)
+{
+	struct ue_bridge_load_writer *writer;
+
+	start_bridge();
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	writer = ue_bridge_load_begin();
+	ue_bridge_load_reserve(writer, 1, 64);
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	ue_bridge_load_end(1);
+	UEB_CHECK(ue_bridge_load_append() == writer);
+	UEB_CHECK(writer->used == 64);
+	/* a new map's epoch: the last map's region is no place to append */
+	ue_bridge_bump_load_epoch();
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_publish_bsp_sets_ready_and_can_clear_completeness(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_load_writer *writer;
+	volatile struct ue_bridge_bsp_entry *entries;
+
+	start_bridge();
+	header = fake_bridge_section();
+	writer = ue_bridge_load_begin();
+	/* a five-BSP table right after the root, as the map export lays it out */
+	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
+	test_root(header)->bsps.offset = ue_bridge_load_reserve(writer, 5, sizeof(struct ue_bridge_bsp_entry));
+	test_root(header)->bsps.count = 5;
+	entries = (volatile struct ue_bridge_bsp_entry *)((volatile uint8_t *)test_root(header) + test_root(header)->bsps.offset);
+	ue_bridge_load_end(1);
+	ue_bridge_load_publish_bsp(3, 1);
+	UEB_CHECK(entries[3].ready == 1);
+	UEB_CHECK(header->export_complete == 1);
+	/* an index past the table is ignored, completeness included */
+	ue_bridge_load_publish_bsp(5, 0);
+	UEB_CHECK(header->export_complete == 1);
+	ue_bridge_load_publish_bsp(4, 0);
+	UEB_CHECK(header->export_complete == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -934,5 +1045,10 @@ const struct ueb_test ueb_core_tests[] =
 	{ "core_start_and_stop_each_take_the_directory_lock_once", core_start_and_stop_each_take_the_directory_lock_once },
 	{ "core_concurrent_reader_never_sees_a_mixed_directory_entry", core_concurrent_reader_never_sees_a_mixed_directory_entry },
 	{ "core_concurrent_reader_never_sees_a_tick_without_its_payload", core_concurrent_reader_never_sees_a_tick_without_its_payload },
+	{ "load_begin_marks_the_sequence_odd_and_clears_the_root", load_begin_marks_the_sequence_odd_and_clears_the_root },
+	{ "load_begin_uses_the_game_layout_not_the_header", load_begin_uses_the_game_layout_not_the_header },
+	{ "load_end_publishes_the_epoch_and_completeness", load_end_publishes_the_epoch_and_completeness },
+	{ "load_append_continues_after_the_export_of_this_epoch_only", load_append_continues_after_the_export_of_this_epoch_only },
+	{ "load_publish_bsp_sets_ready_and_can_clear_completeness", load_publish_bsp_sets_ready_and_can_clear_completeness },
 	{ 0, 0 }
 };

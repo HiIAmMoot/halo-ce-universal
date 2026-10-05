@@ -7,6 +7,7 @@ platform layer and the core's operating system faked.
 
 #include "ueb_test.h"
 #include "../../linux/src/ue_bridge_platform.h"
+#include "../../linux/src/ue_bridge_world.h"
 #include "ue_bridge_ring.h"
 
 #include <stdarg.h>
@@ -26,6 +27,12 @@ void ue_bridge_game_frame_rate_poll(void);
 /* ---------- the settings and the platform layer the adapter calls */
 
 static int setting_enabled;
+static const char *setting_start_map;
+static int world_map_exports;
+static int world_bsp_exports;
+static short world_last_bsp;
+static char world_start_map[64];
+static int world_start_map_calls;
 static long setting_section_mb;
 static const char *setting_on_peer_exit;
 /* every line logged since the last reset */
@@ -46,6 +53,8 @@ long config_integer(const char *name)
 
 const char *config_string(const char *name)
 {
+	if (strcmp(name, "ue_bridge.start_map") == 0)
+		return setting_start_map ? setting_start_map : "";
 	return strcmp(name, "ue_bridge.on_peer_exit") == 0 && setting_on_peer_exit ? setting_on_peer_exit : "";
 }
 
@@ -86,6 +95,15 @@ const char *platform_data_root(void)
 {
 	return "D:/data";
 }
+
+int ue_bridge_world_export_map(void) { world_map_exports++; return 1; }
+void ue_bridge_world_export_bsp(short structure_bsp_index) { world_bsp_exports++; world_last_bsp = structure_bsp_index; }
+void ue_bridge_world_set_start_map(const char *scenario_name)
+{
+	world_start_map_calls++;
+	strncpy(world_start_map, scenario_name, sizeof(world_start_map) - 1);
+}
+unsigned short ue_bridge_export_definition_index(long definition_tag_index) { (void)definition_tag_index; return 0; }
 
 #define TEST_SECTION_SIZE (UE_BRIDGE_MIN_SECTION_MB << 20)
 
@@ -154,6 +172,12 @@ static void game_reset(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 	setting_enabled = 1;
 	setting_on_peer_exit = "shutdown";
+	setting_start_map = 0;
+	world_map_exports = 0;
+	world_bsp_exports = 0;
+	world_last_bsp = 0;
+	memset(world_start_map, 0, sizeof(world_start_map));
+	world_start_map_calls = 0;
 	memset(log_lines, 0, sizeof(log_lines));
 	memset(debug_lines, 0, sizeof(debug_lines));
 	debug_dated = 1;
@@ -492,6 +516,53 @@ static void game_shutdown_after_halt_beats_again_on_restart(void)
 	UEB_CHECK(section_header()->game_heartbeat_qpc == 1000);
 }
 
+static void game_map_ready_exports(void)
+{
+	game_reset();
+	ue_bridge_game_map_ready();
+	UEB_CHECK(world_map_exports == 1);
+}
+
+static void game_map_ready_with_the_bridge_off_exports_nothing(void)
+{
+	game_reset();
+	setting_enabled = 0;
+	ue_bridge_game_map_ready();
+	UEB_CHECK(world_map_exports == 0);
+}
+
+static void game_bsp_loaded_exports_only_once_started(void)
+{
+	game_reset();
+	ue_bridge_game_structure_bsp_loaded(2);
+	UEB_CHECK(world_bsp_exports == 0);
+	ue_bridge_game_pump();
+	ue_bridge_game_structure_bsp_loaded(2);
+	UEB_CHECK(world_bsp_exports == 1 && world_last_bsp == 2);
+}
+
+static void game_console_started_applies_the_start_map(void)
+{
+	game_reset();
+	setting_start_map = "levels\a10\a10";
+	ue_bridge_game_console_started();
+	UEB_CHECK(strcmp(world_start_map, "levels\a10\a10") == 0);
+	UEB_CHECK(strstr(log_lines, "ue_bridge.start_map") != 0);
+}
+
+static void game_console_started_without_a_start_map_does_nothing(void)
+{
+	game_reset();
+	ue_bridge_game_console_started();
+	/* an empty setting must not reach main_set_map_name at all: "" would still cancel the main menu */
+	UEB_CHECK(world_start_map_calls == 0);
+	game_reset();
+	setting_enabled = 0;
+	setting_start_map = "levels\a10\a10";
+	ue_bridge_game_console_started();
+	UEB_CHECK(world_start_map_calls == 0);
+}
+
 const struct ueb_test ueb_game_tests[] =
 {
 	{ "game_disabled_starts_nothing", game_disabled_starts_nothing },
@@ -520,5 +591,10 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_halted_before_start_does_nothing", game_halted_before_start_does_nothing },
 	{ "game_shutdown_after_halt_keeps_the_published_crash", game_shutdown_after_halt_keeps_the_published_crash },
 	{ "game_shutdown_after_halt_beats_again_on_restart", game_shutdown_after_halt_beats_again_on_restart },
+	{ "game_map_ready_exports", game_map_ready_exports },
+	{ "game_map_ready_with_the_bridge_off_exports_nothing", game_map_ready_with_the_bridge_off_exports_nothing },
+	{ "game_bsp_loaded_exports_only_once_started", game_bsp_loaded_exports_only_once_started },
+	{ "game_console_started_applies_the_start_map", game_console_started_applies_the_start_map },
+	{ "game_console_started_without_a_start_map_does_nothing", game_console_started_without_a_start_map_does_nothing },
 	{ 0, 0 }
 };

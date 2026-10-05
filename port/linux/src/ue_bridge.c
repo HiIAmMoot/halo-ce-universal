@@ -21,6 +21,9 @@ static struct
 	uint64_t session_id;
 	uint32_t section_size;
 	struct ue_bridge_layout layout;
+	struct ue_bridge_load_writer load_writer;
+	int load_live;
+	uint32_t load_live_epoch;
 } bridge;
 
 static volatile struct ue_bridge_header *bridge_header(void)
@@ -321,6 +324,72 @@ void ue_bridge_bump_state_epoch(void)
 
 	if (header)
 		ueb_store_u32(&header->state_epoch, header->state_epoch + 1u);
+}
+
+struct ue_bridge_load_writer *ue_bridge_load_begin(void)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+	volatile uint8_t *region;
+
+	if (!header)
+		return NULL;
+	/* odd before the first byte changes: a UE copying the region throws its copy away */
+	ueb_store_u32(&header->load_sequence, ueb_load_u32(&header->load_sequence) | 1u);
+	ueb_store_u32(&header->export_epoch, 0);
+	ueb_fence();
+	/* the game's own layout, never the header's copy: UE can write the header,
+	and these bytes steer the game's writes */
+	region = (volatile uint8_t *)header + bridge.layout.load_region.offset;
+	memset((void *)(uintptr_t)region, 0, sizeof(struct ue_bridge_load_root));
+	ue_bridge_load_writer_init(&bridge.load_writer, region, bridge.layout.load_region.size, 0);
+	bridge.load_live = 0;
+	return &bridge.load_writer;
+}
+
+void ue_bridge_load_end(int complete)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (!header)
+		return;
+	ueb_store_u32(&header->export_complete, complete ? 1u : 0u);
+	ueb_store_u32(&header->export_epoch, header->load_epoch);
+	ueb_fence();
+	ueb_store_u32(&header->load_sequence, (ueb_load_u32(&header->load_sequence) | 1u) + 1u);
+	bridge.load_live = 1;
+	bridge.load_live_epoch = header->load_epoch;
+}
+
+struct ue_bridge_load_writer *ue_bridge_load_append(void)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	if (!header || !bridge.load_live || bridge.load_live_epoch != header->load_epoch)
+		return NULL;
+	return &bridge.load_writer;
+}
+
+struct ue_bridge_load_root *ue_bridge_load_root(void)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+
+	return header ? (struct ue_bridge_load_root *)(uintptr_t)((volatile uint8_t *)header + bridge.layout.load_region.offset) : NULL;
+}
+
+void ue_bridge_load_publish_bsp(short structure_bsp_index, int complete)
+{
+	volatile struct ue_bridge_header *header = bridge_header();
+	struct ue_bridge_bsp_entry *entry;
+
+	if (!header || structure_bsp_index < 0)
+		return;
+	entry = ue_bridge_load_bsp_entry((volatile uint8_t *)ue_bridge_load_root(), (uint32_t)structure_bsp_index);
+	if (!entry)
+		return;
+	if (!complete)
+		ueb_store_u32(&header->export_complete, 0);
+	/* last, with release order: UE reads the entry only once this is 1 */
+	ueb_store_u32(&entry->ready, 1u);
 }
 
 void ue_bridge_set_busy(int busy)

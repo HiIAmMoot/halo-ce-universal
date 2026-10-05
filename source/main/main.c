@@ -3169,6 +3169,7 @@ void main_loop(
 	debug_keys_initialize();
 	game_initialize();
 	console_startup();
+	ue_bridge_game_console_started();
 	main_setup_connection();
 	main_initialize_time();
 

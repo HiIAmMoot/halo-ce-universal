@@ -63,6 +63,12 @@ probe-directory: exits 0 when no bridge directory exists, 1 when one does.
                       pid); exits 5 when any read was incoherent
   --stop-file PATH
   --ready-file PATH   written with the PID once reading
+
+read-world: attaches read-only to the live bridge, as UE does, copies the load
+region under the load sequence and prints one JSON object (the export's
+counts, limits, per-BSP figures and winding agreement); tools/test_ue_bridge_maps.py.
+  Exits 3 (no directory), 4 (no section), 5 (a region outside the section)
+  or 6 (the region stayed mid-export for 30 s).
 */
 
 #include "../../linux/src/ue_bridge_platform.h"
@@ -637,6 +643,149 @@ static int probe_directory(int argc, char **argv)
 	return 1;
 }
 
+/* --role=read-world: the live bridge as JSON on stdout (tools/test_ue_bridge_maps.py) */
+static double dot3(const float *a, const float *b)
+{
+	return (double)a[0] * b[0] + (double)a[1] * b[1] + (double)a[2] * b[2];
+}
+
+/* 1 when the face normal (b - a) x (c - a), right-handed, points the way the
+three vertex normals do on the whole */
+static int face_agrees(const float *a, const float *b, const float *c, const float *na, const float *nb, const float *nc)
+{
+	float u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+	float v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+	float face[3] = { u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0] };
+	float sum[3] = { na[0] + nb[0] + nc[0], na[1] + nb[1] + nc[1], na[2] + nb[2] + nc[2] };
+
+	return dot3(face, sum) > 0.0;
+}
+
+/* a JSON string: scenario names hold backslashes */
+static void print_json_string(const char *text)
+{
+	putchar('"');
+	for (; *text; text++)
+	{
+		if (*text == '"' || *text == '\\')
+			putchar('\\');
+		putchar(*text);
+	}
+	putchar('"');
+}
+
+static int role_read_world(void)
+{
+	HANDLE directory_mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, UE_BRIDGE_DIRECTORY_NAME);
+	const volatile struct ue_bridge_directory *directory;
+	HANDLE section_mapping;
+	const volatile uint8_t *view;
+	const volatile struct ue_bridge_header *header;
+	MEMORY_BASIC_INFORMATION info;
+	uint8_t *region;
+	const struct ue_bridge_load_root *root;
+	uint32_t before, size, bsp, index;
+	unsigned long model_triangles = 0, model_agree = 0, weights_out = 0;
+	ULONGLONG started = GetTickCount64();
+
+	if (!directory_mapping)
+		return 3;
+	directory = (const volatile struct ue_bridge_directory *)MapViewOfFile(directory_mapping, FILE_MAP_READ, 0, 0, 0);
+	section_mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, (const char *)directory->section_name);
+	if (!section_mapping)
+		return 4;
+	view = (const volatile uint8_t *)MapViewOfFile(section_mapping, FILE_MAP_READ, 0, 0, 0);
+	VirtualQuery((LPCVOID)view, &info, sizeof(info));
+	header = (const volatile struct ue_bridge_header *)view;
+	size = header->load_region.size;
+	if ((uint64_t)header->load_region.offset + size > info.RegionSize)
+		return 5;
+	region = (uint8_t *)malloc(size);
+	do
+	{
+		/* a game that halted mid-export leaves the sequence odd for ever */
+		if (GetTickCount64() - started > 30000u)
+			return 6;
+		before = ueb_load_u32(&header->load_sequence);
+		memcpy(region, (const void *)(uintptr_t)(view + header->load_region.offset), size);
+		ueb_fence();
+	} while ((before & 1u) || ueb_load_u32(&header->load_sequence) != before);
+	root = (const struct ue_bridge_load_root *)region;
+	printf("{\"load_epoch\": %lu, \"export_epoch\": %lu, \"export_complete\": %lu, \"missing\": %lu, \"map\": ",
+		(unsigned long)header->load_epoch, (unsigned long)header->export_epoch, (unsigned long)header->export_complete,
+		(unsigned long)root->missing);
+	print_json_string(root->magic == UE_BRIDGE_LOAD_MAGIC ? root->map_name : "");
+	printf(", \"limits\": [%lu, %lu, %lu, %lu]", (unsigned long)root->max_nodes_per_model, (unsigned long)root->max_regions_per_model,
+		(unsigned long)root->max_permutations_per_region, (unsigned long)root->max_regions_per_object);
+	printf(", \"definitions\": %lu, \"models\": %lu, ", (unsigned long)root->definitions.count, (unsigned long)root->models.count);
+	{
+		const struct ue_bridge_definition *definitions = (const struct ue_bridge_definition *)(region + root->definitions.offset);
+		unsigned long static_count = 0;
+
+		for (index = 0; index < root->definitions.count; index++)
+			static_count += definitions[index].animation_graph_tag == -1 && definitions[index].model >= 0;
+		printf("\"static_definitions\": %lu, ", static_count);
+	}
+	for (index = 0; index < root->models.count; index++)
+	{
+		const struct ue_bridge_model *model = (const struct ue_bridge_model *)(region + root->models.offset) + index;
+		const struct ue_bridge_geometry *geometries = (const struct ue_bridge_geometry *)(region + model->geometries.offset);
+		uint32_t geometry, part;
+
+		for (geometry = 0; geometry < model->geometries.count; geometry++)
+		{
+			for (part = 0; part < geometries[geometry].parts.count; part++)
+			{
+				const struct ue_bridge_part *p = (const struct ue_bridge_part *)(region + geometries[geometry].parts.offset) + part;
+				const struct ue_bridge_model_vertex *v = (const struct ue_bridge_model_vertex *)(region + p->vertices.offset);
+				const ue_bridge_model_index *i = (const ue_bridge_model_index *)(region + p->indices.offset);
+				uint32_t k;
+
+				for (k = 0; k < p->vertices.count; k++)
+					weights_out += !(v[k].weight >= 0.0f && v[k].weight <= 1.0f);
+				for (k = 0; k + 2 < p->indices.count; k += 3)
+				{
+					if (i[k] >= p->vertices.count || i[k + 1] >= p->vertices.count || i[k + 2] >= p->vertices.count)
+						continue;
+					model_triangles++;
+					model_agree += face_agrees(v[i[k]].position, v[i[k + 1]].position, v[i[k + 2]].position,
+						v[i[k]].normal, v[i[k + 1]].normal, v[i[k + 2]].normal);
+				}
+			}
+		}
+	}
+	printf("\"model_triangles\": %lu, \"model_normals_agree\": %.4f, \"weights_out_of_range\": %lu, \"bsps\": [",
+		model_triangles, model_triangles ? (double)model_agree / model_triangles : 0.0, weights_out);
+	for (bsp = 0; bsp < root->bsps.count; bsp++)
+	{
+		const struct ue_bridge_bsp_entry *entry = (const struct ue_bridge_bsp_entry *)(region + root->bsps.offset) + bsp;
+		unsigned long triangles = 0, agree = 0;
+
+		for (index = 0; entry->ready && index < entry->batches.count; index++)
+		{
+			const struct ue_bridge_bsp_batch *batch = (const struct ue_bridge_bsp_batch *)(region + entry->batches.offset) + index;
+			const struct ue_bridge_bsp_vertex *v = (const struct ue_bridge_bsp_vertex *)(region + batch->vertices.offset);
+			const ue_bridge_bsp_index *i = (const ue_bridge_bsp_index *)(region + batch->indices.offset);
+			uint32_t k;
+
+			for (k = 0; k + 2 < batch->indices.count; k += 3)
+			{
+				triangles++;
+				agree += face_agrees(v[i[k]].position, v[i[k + 1]].position, v[i[k + 2]].position,
+					v[i[k]].normal, v[i[k + 1]].normal, v[i[k + 2]].normal);
+			}
+		}
+		printf("%s{\"index\": %lu, \"ready\": %lu, \"batches\": %lu, \"clusters\": %lu, \"unclustered\": %lu, \"duplicates\": %lu, "
+			"\"triangles\": %lu, \"normals_agree\": %.4f}",
+			bsp ? ", " : "", (unsigned long)bsp, (unsigned long)entry->ready, (unsigned long)entry->batches.count,
+			(unsigned long)entry->cluster_count, (unsigned long)entry->unclustered_surfaces, (unsigned long)entry->duplicate_surfaces,
+			triangles, triangles ? (double)agree / triangles : 0.0);
+	}
+	printf("]}\n");
+	free(region);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *role = argc >= 2 && strncmp(argv[1], "--role=", 7) == 0 ? argv[1] + 7 : "";
@@ -649,6 +798,8 @@ int main(int argc, char **argv)
 		return fake_ue(argc, argv);
 	if (strcmp(role, "probe-directory") == 0)
 		return probe_directory(argc, argv);
-	fprintf(stderr, "usage: ue_bridge_roles.exe --role=fake-game|fake-ue|probe-directory [options]\n");
+	if (strcmp(role, "read-world") == 0)
+		return role_read_world();
+	fprintf(stderr, "usage: ue_bridge_roles.exe --role=fake-game|fake-ue|probe-directory|read-world [options]\n");
 	return 2;
 }

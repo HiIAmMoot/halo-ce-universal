@@ -93,10 +93,13 @@ static void strip_alternates_winding(void)
 	ue_bridge_model_index list[9];
 
 	UEB_CHECK(ue_bridge_strip_to_list(strip, 5, list) == 9);
-	UEB_CHECK(list[0] == 0 && list[1] == 1 && list[2] == 2);
-	/* the odd triangle swaps its first two, keeping every triangle's facing */
-	UEB_CHECK(list[3] == 2 && list[4] == 1 && list[5] == 3);
-	UEB_CHECK(list[6] == 2 && list[7] == 3 && list[8] == 4);
+	/* a strip flips facing every triangle, and the game's faces wind the other
+	way from the right-handed cross product (measured on bloodgulch and a10): the
+	even triangles swap their first two, the odd ones keep order, so every
+	triangle's cross product agrees with its vertex normals */
+	UEB_CHECK(list[0] == 1 && list[1] == 0 && list[2] == 2);
+	UEB_CHECK(list[3] == 1 && list[4] == 2 && list[5] == 3);
+	UEB_CHECK(list[6] == 3 && list[7] == 2 && list[8] == 4);
 }
 
 static void strip_drops_degenerate_triangles(void)
@@ -107,9 +110,9 @@ static void strip_drops_degenerate_triangles(void)
 	uint32_t count = ue_bridge_strip_to_list(strip, 8, list);
 
 	UEB_CHECK(count == 6);
-	UEB_CHECK(list[0] == 0 && list[1] == 1 && list[2] == 2);
-	/* index 5's triangle (5 6 7) is odd: swapped */
-	UEB_CHECK(list[3] == 6 && list[4] == 5 && list[5] == 7);
+	UEB_CHECK(list[0] == 1 && list[1] == 0 && list[2] == 2);
+	/* index 5's triangle (5 6 7) is odd: kept */
+	UEB_CHECK(list[3] == 5 && list[4] == 6 && list[5] == 7);
 }
 
 static void strip_shorter_than_a_triangle_is_empty(void)

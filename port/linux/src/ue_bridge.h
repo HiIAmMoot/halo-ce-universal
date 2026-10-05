@@ -94,4 +94,19 @@ void ue_bridge_set_busy(int busy);
 is dying or halted but its process lives on, so ue_bridge_stop isn't called */
 void ue_bridge_publish_stopping(uint32_t stopping);
 
+/* the load region's writer for a whole-map export, from the region's start:
+load_sequence goes odd and the root is cleared; NULL when inactive */
+struct ue_bridge_load_writer *ue_bridge_load_begin(void);
+/* publishes the export for the current load_epoch: export_complete,
+export_epoch, then load_sequence even */
+void ue_bridge_load_end(int complete);
+/* the same writer, after what the map export wrote, for a BSP appended on
+its first load; NULL when no export of the current load_epoch has ended */
+struct ue_bridge_load_writer *ue_bridge_load_append(void);
+/* the region's root; NULL when inactive */
+struct ue_bridge_load_root *ue_bridge_load_root(void);
+/* marks the BSP's entry ready, after its data; complete 0 also clears
+export_complete (the BSP didn't fit) */
+void ue_bridge_load_publish_bsp(short structure_bsp_index, int complete);
+
 #endif
