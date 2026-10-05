@@ -67,6 +67,11 @@ triangle strips are 16-bit, so a part has at most 65536 vertices. A BSP
 batch merges many surfaces, so its indices are 32-bit. */
 typedef uint16_t ue_bridge_model_index;
 typedef uint32_t ue_bridge_bsp_index;
+/* a batch's cluster; -1 is "no cluster", so a cluster index the type can't
+hold must never be stored (it would wrap into -1 or another cluster) */
+typedef int16_t ue_bridge_cluster_index;
+/* clusters the type holds: indices 0 through its maximum */
+#define UE_BRIDGE_MAX_CLUSTERS ((uint32_t)INT16_MAX + 1u)
 
 struct ue_bridge_region_desc
 {
@@ -410,7 +415,7 @@ struct ue_bridge_model_vertex
 struct ue_bridge_bsp_batch
 {
 	/* -1 for surfaces no cluster lists */
-	int16_t cluster;
+	ue_bridge_cluster_index cluster;
 	uint16_t reserved;
 	int32_t shader_tag;
 	/* struct ue_bridge_bsp_vertex */
@@ -611,6 +616,7 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_model_vertex, weight) == 36, "model 
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_model_vertex) == 40, "model vertex size");
 UEB_STATIC_ASSERT(sizeof(ue_bridge_model_index) == 2, "model index width");
 UEB_STATIC_ASSERT(sizeof(ue_bridge_bsp_index) == 4, "bsp index width");
+UEB_STATIC_ASSERT(sizeof(ue_bridge_cluster_index) == 2, "cluster index width");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_bsp_batch, cluster) == 0, "bsp batch cluster");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_bsp_batch, reserved) == 2, "bsp batch reserved");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_bsp_batch, shader_tag) == 4, "bsp batch shader_tag");

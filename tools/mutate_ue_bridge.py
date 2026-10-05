@@ -485,6 +485,9 @@ MUTANTS = [
     Mutant("m2a-4", "port/ue_bridge/ue_bridge_bsp.c",
            "writer->used = start;", "(void)start;",
            "bsp_export_into_a_full_region_leaves_the_entry_unready"),
+    Mutant("m2a-4", "port/ue_bridge/ue_bridge_bsp.c",
+           "cluster_count = source->cluster_count < UE_BRIDGE_MAX_CLUSTERS ? source->cluster_count : UE_BRIDGE_MAX_CLUSTERS;", "cluster_count = source->cluster_count;",
+           "bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold"),
 ]
 
 

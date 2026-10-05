@@ -169,9 +169,9 @@ static void bsp_export_remaps_vertices_per_batch(void)
 
 static void bsp_export_skips_surfaces_out_of_range(void)
 {
-	static const int32_t bad_cluster[] = { 99, -4, 1 };
+	static const int32_t bad_cluster[] = { 99, -4, 1, 6 };
 	static const int32_t *const bad_surfaces[] = { bad_cluster };
-	static const uint32_t bad_counts[] = { 3 };
+	static const uint32_t bad_counts[] = { 4 };
 	struct ue_bridge_load_writer writer;
 	struct ue_bridge_bsp_entry entry;
 
@@ -183,9 +183,72 @@ static void bsp_export_skips_surfaces_out_of_range(void)
 	UEB_CHECK(ue_bridge_bsp_export(&writer, &source, &entry));
 	UEB_CHECK(find_batch(&entry, 0, 0x10) && find_batch(&entry, 0, 0x10)->indices.count == 3);
 	UEB_CHECK(entry.unclustered_surfaces == 5);
-	/* an index past the table must be skipped before it is looked up, not
-	read out of bounds and counted as a duplicate */
+	/* an index past the table (99, and 6, one past the last surface) must be
+	skipped before it is looked up, not read out of bounds and counted as a
+	duplicate */
 	UEB_CHECK(entry.duplicate_surfaces == 0);
+}
+
+#define HUGE_CLUSTERS 131072u
+static const int32_t *huge_surfaces[HUGE_CLUSTERS];
+static uint32_t huge_counts[HUGE_CLUSTERS];
+static struct ue_bridge_bsp_source_material huge_materials[32768];
+
+static void bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold(void)
+{
+	static const int32_t last[] = { 5 };
+	struct ue_bridge_load_writer writer;
+	struct ue_bridge_bsp_entry entry;
+	const struct ue_bridge_bsp_batch *batches;
+	uint32_t index;
+
+	build_source();
+	memset(huge_counts, 0, sizeof(huge_counts));
+	huge_surfaces[0] = cluster0;
+	huge_counts[0] = 3;
+	huge_surfaces[1] = cluster1;
+	huge_counts[1] = 3;
+	/* one cluster past the type: its index would wrap to the lowest value */
+	huge_surfaces[UE_BRIDGE_MAX_CLUSTERS] = last;
+	huge_counts[UE_BRIDGE_MAX_CLUSTERS] = 1;
+	source.cluster_surfaces = huge_surfaces;
+	source.cluster_surface_counts = huge_counts;
+	source.cluster_count = UE_BRIDGE_MAX_CLUSTERS + 1u;
+	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
+	UEB_CHECK(ue_bridge_bsp_export(&writer, &source, &entry));
+	batches = AT(struct ue_bridge_bsp_batch, entry.batches.offset);
+	for (index = 0; index < entry.batches.count; index++)
+		UEB_CHECK(batches[index].cluster >= -1);
+	/* the surface it listed stays reachable, in the no-cluster batch */
+	UEB_CHECK(find_batch(&entry, -1, 0x20) && find_batch(&entry, -1, 0x20)->indices.count == 3);
+	UEB_CHECK(entry.unclustered_surfaces == 1);
+}
+
+static void bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product(void)
+{
+	struct ue_bridge_load_writer writer;
+	struct ue_bridge_bsp_entry entry;
+	uint32_t index;
+
+	build_source();
+	memset(huge_counts, 0, sizeof(huge_counts));
+	huge_surfaces[0] = cluster0;
+	huge_counts[0] = 3;
+	huge_surfaces[1] = cluster1;
+	huge_counts[1] = 3;
+	for (index = 0; index < 3; index++)
+		huge_materials[index] = materials[index];
+	for (; index < 32768; index++)
+		memset(&huge_materials[index], 0, sizeof(huge_materials[index])), huge_materials[index].first_surface = 6;
+	source.materials = huge_materials;
+	source.material_count = 32768;
+	source.cluster_surfaces = huge_surfaces;
+	source.cluster_surface_counts = huge_counts;
+	/* (clusters + 1) * materials is 2^32: a batch array sized by it is empty */
+	source.cluster_count = HUGE_CLUSTERS - 1u;
+	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
+	UEB_CHECK(ue_bridge_bsp_export(&writer, &source, &entry));
+	UEB_CHECK(entry.batches.count == 4);
 }
 
 static void bsp_export_drops_a_surface_naming_a_missing_vertex(void)
@@ -225,6 +288,8 @@ const struct ueb_test ueb_bsp_tests[] =
 	{ "bsp_export_counts_unclustered_and_duplicate_surfaces", bsp_export_counts_unclustered_and_duplicate_surfaces },
 	{ "bsp_export_remaps_vertices_per_batch", bsp_export_remaps_vertices_per_batch },
 	{ "bsp_export_skips_surfaces_out_of_range", bsp_export_skips_surfaces_out_of_range },
+	{ "bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold", bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold },
+	{ "bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product", bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product },
 	{ "bsp_export_drops_a_surface_naming_a_missing_vertex", bsp_export_drops_a_surface_naming_a_missing_vertex },
 	{ "bsp_export_into_a_full_region_leaves_the_entry_unready", bsp_export_into_a_full_region_leaves_the_entry_unready },
 	{ 0, 0 }

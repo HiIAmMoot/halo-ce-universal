@@ -81,7 +81,7 @@ static void scratch_free(struct bsp_scratch *scratch)
 /* writes the batch of the given surfaces (all of one cluster and shader);
 stamp numbers the batch so the vertex remap never needs clearing */
 static int write_batch(struct ue_bridge_load_writer *writer, const struct ue_bridge_bsp_source *source, struct bsp_scratch *scratch,
-	const uint32_t *surfaces, uint32_t surface_count, uint64_t stamp, int16_t cluster, int32_t shader, struct ue_bridge_bsp_batch *batch)
+	const uint32_t *surfaces, uint32_t surface_count, uint64_t stamp, ue_bridge_cluster_index cluster, int32_t shader, struct ue_bridge_bsp_batch *batch)
 {
 	uint32_t vertex_count = 0, index, corner;
 	int32_t current_material = -1;
@@ -160,14 +160,17 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	struct ue_bridge_bsp_entry result;
 	uint32_t surface, cluster_index, index;
 	uint64_t stamp = 1;
-	uint32_t batch_count = 0, batch_capacity;
+	uint32_t batch_count = 0, batch_capacity, cluster_count;
 	struct ue_bridge_bsp_batch *batches = 0;
 	uint32_t *run = 0;
 	int32_t cluster;
 
 	memset(&scratch, 0, sizeof(scratch));
 	memset(&result, 0, sizeof(result));
-	result.cluster_count = source->cluster_count;
+	/* clusters past what the batch's cluster field holds would wrap into -1
+	or another cluster, so they list nothing: their surfaces fall to -1 */
+	cluster_count = source->cluster_count < UE_BRIDGE_MAX_CLUSTERS ? source->cluster_count : UE_BRIDGE_MAX_CLUSTERS;
+	result.cluster_count = cluster_count;
 	if (source->material_count >= BSP_STAMP_MATERIALS)
 		goto failed;
 	for (index = 0; index < source->material_count; index++)
@@ -178,13 +181,16 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	scratch.owner = (int32_t *)malloc((source->surface_count + 1u) * sizeof(int32_t));
 	scratch.material = (int32_t *)malloc((source->surface_count + 1u) * sizeof(int32_t));
 	scratch.order = (uint32_t *)malloc((source->surface_count + 1u) * sizeof(uint32_t));
-	scratch.cluster_start = (uint32_t *)calloc(source->cluster_count + 2u, sizeof(uint32_t));
+	scratch.cluster_start = (uint32_t *)calloc(cluster_count + 2u, sizeof(uint32_t));
 	scratch.stamp = (uint64_t *)calloc(scratch.largest_material + 1u, sizeof(uint64_t));
 	scratch.batch_index = (ue_bridge_bsp_index *)malloc((scratch.largest_material + 1u) * sizeof(ue_bridge_bsp_index));
 	run = (uint32_t *)malloc((source->surface_count + 1u) * sizeof(uint32_t));
 	if (!scratch.owner || !scratch.material || !scratch.order || !scratch.cluster_start || !scratch.stamp || !scratch.batch_index || !run)
 		goto failed;
 
+	/* the spare slot reads as a defined value, so a listed index one past the
+	last surface that slipped the range check would show as a duplicate */
+	scratch.owner[source->surface_count] = 0;
 	for (surface = 0; surface < source->surface_count; surface++)
 	{
 		int32_t material = material_of(source, surface);
@@ -200,7 +206,7 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 		scratch.owner[surface] = UNLISTED;
 		scratch.material[surface] = material;
 	}
-	for (cluster_index = 0; cluster_index < source->cluster_count; cluster_index++)
+	for (cluster_index = 0; cluster_index < cluster_count; cluster_index++)
 	{
 		for (index = 0; index < source->cluster_surface_counts[cluster_index]; index++)
 		{
@@ -226,7 +232,7 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 		if (scratch.material[surface] >= 0)
 			scratch.cluster_start[scratch.owner[surface] + 2]++;
 	}
-	for (cluster_index = 1; cluster_index < source->cluster_count + 2u; cluster_index++)
+	for (cluster_index = 1; cluster_index < cluster_count + 2u; cluster_index++)
 		scratch.cluster_start[cluster_index] += scratch.cluster_start[cluster_index - 1u];
 	for (surface = 0; surface < source->surface_count; surface++)
 	{
@@ -235,12 +241,13 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	}
 	/* cluster_start[c + 1] is now the end of cluster c's run (c from -1) */
 
-	/* at most one batch per cluster per material */
-	batch_capacity = (source->cluster_count + 1u) * (source->material_count ? source->material_count : 1u);
+	/* every batch holds at least one surface, so surfaces bound the batches;
+	a clusters x materials product could wrap in 32 bits on damaged counts */
+	batch_capacity = source->surface_count + 1u;
 	batches = (struct ue_bridge_bsp_batch *)malloc(batch_capacity * sizeof(struct ue_bridge_bsp_batch));
 	if (!batches)
 		goto failed;
-	for (cluster = -1; cluster < (int32_t)source->cluster_count; cluster++)
+	for (cluster = -1; cluster < (int32_t)cluster_count; cluster++)
 	{
 		uint32_t begin = cluster == -1 ? 0u : scratch.cluster_start[cluster];
 		uint32_t end = scratch.cluster_start[cluster + 1];
@@ -264,7 +271,9 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 				if (source->materials[scratch.material[scratch.order[scan]]].shader_tag == shader)
 					run[run_count++] = scratch.order[scan];
 			}
-			if (!write_batch(writer, source, &scratch, run, run_count, stamp, (int16_t)cluster, shader, &batches[batch_count]))
+			if (batch_count >= batch_capacity)
+				goto failed;
+			if (!write_batch(writer, source, &scratch, run, run_count, stamp, (ue_bridge_cluster_index)cluster, shader, &batches[batch_count]))
 				goto failed;
 			stamp += 2u;
 			batch_count++;
