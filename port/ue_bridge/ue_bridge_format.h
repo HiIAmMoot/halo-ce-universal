@@ -29,7 +29,7 @@ The game creates two named sections:
 #endif
 
 #define UE_BRIDGE_MAGIC 0x45554248u
-#define UE_BRIDGE_VERSION 3u
+#define UE_BRIDGE_VERSION 4u
 
 #define UE_BRIDGE_DIRECTORY_NAME "Local\\HaloCEUE.Bridge.Directory"
 #define UE_BRIDGE_DIRECTORY_SIZE 0x1000u
@@ -44,7 +44,8 @@ near MAX_PATH doesn't fit, and is then published empty (and logged) */
 /* The section's size comes from the game's settings (ue_bridge.section_mb);
 the layout is ue_bridge_layout_compute's (ue_bridge_load.h). Version 3 adds
 the load region and the tick and frame payloads (Phase 0 design, sections
-4.4 to 4.6, milestone M2). */
+4.4 to 4.6, milestone M2). Version 4 adds the header's game_truncated_ticks
+and the root's repaired_vertices and clamped_node_counts. */
 #define UE_BRIDGE_MIN_SECTION_MB 16u
 #define UE_BRIDGE_DEFAULT_SECTION_MB 96u
 #define UE_BRIDGE_MAX_SECTION_SIZE 0x40000000u
@@ -193,6 +194,12 @@ struct ue_bridge_header
 	uint32_t export_complete;
 	/* 1 while the game holds its map start for UE (the load handshake) */
 	uint32_t game_holding;
+
+	/* version 4, written by the game while it runs */
+	/* ticks published with UE_BRIDGE_TICK_TRUNCATED since the game started:
+	the objects past the cut were not written, so UE shows them frozen */
+	uint32_t game_truncated_ticks;
+	uint32_t reserved2;
 };
 
 struct ue_bridge_slot
@@ -326,6 +333,13 @@ struct ue_bridge_load_root
 	uint32_t max_regions_per_model;
 	uint32_t max_permutations_per_region;
 	uint32_t max_regions_per_object;
+	/* version 4. What the export saw in the exported models that the renderer
+	repairs on its side, for its load report: vertices whose node bytes name a
+	node the model lacks (node 0 reset, or the second node dropped), and detail
+	levels whose node count is outside the model's nodes. Counted by the game
+	from its own data; the renderer's own repair counts are the ones it acts on. */
+	uint32_t repaired_vertices;
+	uint32_t clamped_node_counts;
 	uint32_t reserved;
 };
 
@@ -517,7 +531,9 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, load_sequence) == 1232, "hea
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, export_epoch) == 1236, "header export_epoch");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, export_complete) == 1240, "header export_complete");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_holding) == 1244, "header game_holding");
-UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) == 1248, "header size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, game_truncated_ticks) == 1248, "header game_truncated_ticks");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_header, reserved2) == 1252, "header reserved2");
+UEB_STATIC_ASSERT(sizeof(struct ue_bridge_header) == 1256, "header size");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_region_desc, offset) == 0, "region desc offset");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_region_desc, size) == 4, "region desc size field");
 UEB_STATIC_ASSERT(sizeof(struct ue_bridge_region_desc) == 8, "region desc size");
@@ -578,8 +594,10 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_nodes_per_model) == 1
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_regions_per_model) == 104, "load root max_regions_per_model");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_permutations_per_region) == 108, "load root max_permutations_per_region");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_regions_per_object) == 112, "load root max_regions_per_object");
-UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, reserved) == 116, "load root reserved");
-UEB_STATIC_ASSERT(sizeof(struct ue_bridge_load_root) == 120, "load root size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, repaired_vertices) == 116, "load root repaired_vertices");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, clamped_node_counts) == 120, "load root clamped_node_counts");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, reserved) == 124, "load root reserved");
+UEB_STATIC_ASSERT(sizeof(struct ue_bridge_load_root) == 128, "load root size");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, tag_index) == 0, "definition tag_index");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, object_type) == 4, "definition object_type");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, model) == 6, "definition model");
