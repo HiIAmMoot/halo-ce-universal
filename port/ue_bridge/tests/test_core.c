@@ -1497,6 +1497,24 @@ static void load_discard_closes_appends_until_the_next_export_ends(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+/* "off changes nothing": with the bridge off the at-rest snapshot compare must not even read the matrices
+(the null pointers here would fault if it did) */
+static void at_rest_compare_runs_only_while_the_bridge_is_active(void)
+{
+	static const uint8_t same[16] = { 1, 2, 3 };
+	static uint8_t copy[16] = { 1, 2, 3 };
+
+	fake_reset();
+	UEB_CHECK(!ue_bridge_active());
+	UEB_CHECK(ue_bridge_snapshot_at_rest(0, 0, 16, 1) == 0);
+	start_bridge();
+	UEB_CHECK(ue_bridge_snapshot_at_rest(same, copy, 16, 1) == 1);
+	UEB_CHECK(ue_bridge_snapshot_at_rest(same, copy, 16, 0) == 0);
+	copy[15] = 9;
+	UEB_CHECK(ue_bridge_snapshot_at_rest(same, copy, 16, 1) == 0);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1554,5 +1572,6 @@ const struct ueb_test ueb_core_tests[] =
 	{ "hold_ready_means_the_games_epoch_not_the_headers", hold_ready_means_the_games_epoch_not_the_headers },
 	{ "truncated_ticks_are_counted_and_logged_once_per_epoch", truncated_ticks_are_counted_and_logged_once_per_epoch },
 	{ "load_discard_closes_appends_until_the_next_export_ends", load_discard_closes_appends_until_the_next_export_ends },
+	{ "at_rest_compare_runs_only_while_the_bridge_is_active", at_rest_compare_runs_only_while_the_bridge_is_active },
 	{ 0, 0 }
 };
