@@ -656,19 +656,14 @@ int ue_bridge_world_export_map(void)
 void ue_bridge_world_export_bsp(short structure_bsp_index)
 {
 	struct ue_bridge_load_writer *writer = ue_bridge_load_append();
-	struct ue_bridge_load_root *root = ue_bridge_load_root();
 	struct ue_bridge_bsp_entry *entry;
 
 	/* A map's own first BSP is loaded by scenario_load, inside game_load, before
-	game_initialize_for_new_map bumps load_epoch: at that point the append
-	writer still belongs to the previous map. The map name tells them apart,
-	and the map export picks the BSP up itself. Also: no export yet, or this
-	BSP is in already. */
-	if (!writer || structure_bsp_index < 0 ||
-		strncmp(root->map_name, tag_get_name(global_scenario_index), sizeof(root->map_name) - 1) != 0)
-	{
+	game_initialize_for_new_map bumps load_epoch: main_new_map's loading hook has
+	closed the previous export to appends by then, and the map export picks the
+	BSP up itself. Also: no export yet, or this BSP is in already. */
+	if (!writer || structure_bsp_index < 0)
 		return;
-	}
 	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
 	if (!entry || entry->ready)
 		return;

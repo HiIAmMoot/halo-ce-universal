@@ -171,8 +171,11 @@ void ue_bridge_game_pump(void)
 void ue_bridge_game_loading(int loading)
 {
 	ensure_started();
-	if (started)
-		ue_bridge_set_busy(loading);
+	if (!started)
+		return;
+	ue_bridge_set_busy(loading);
+	if (loading)
+		ue_bridge_load_discard();
 }
 
 /* around a modal dialog (SDL_ShowSimpleMessageBox runs its own message loop

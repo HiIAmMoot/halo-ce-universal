@@ -441,6 +441,11 @@ void ue_bridge_load_end(int complete)
 	bridge.load_live_epoch = bridge.load_epoch;
 }
 
+void ue_bridge_load_discard(void)
+{
+	bridge.load_live = 0;
+}
+
 struct ue_bridge_load_writer *ue_bridge_load_append(void)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
