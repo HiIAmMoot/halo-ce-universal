@@ -1429,6 +1429,52 @@ static void hold_ready_means_the_games_epoch_not_the_headers(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+static int count_text(const char *haystack, const char *needle)
+{
+	int found = 0;
+
+	for (; (haystack = strstr(haystack, needle)) != 0; haystack += strlen(needle))
+		found++;
+	return found;
+}
+
+/* a tick with more objects than its slot holds */
+static void publish_truncated_tick(uint64_t tick)
+{
+	struct ue_bridge_tick_writer *writer = ue_bridge_tick_begin(tick);
+	struct ue_bridge_matrix node;
+	uint32_t index;
+
+	memset(&node, 0, sizeof(node));
+	for (index = 0; index < 4096 && ue_bridge_tick_writer_add(writer, index, 0, 0, 0, 0, &node, 1); index++)
+		;
+	ue_bridge_tick_end(0);
+}
+
+static void truncated_ticks_are_counted_and_logged_once_per_epoch(void)
+{
+	volatile struct ue_bridge_header *header;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	UEB_CHECK(header->game_truncated_ticks == 0);
+	ue_bridge_publish_tick(1);
+	UEB_CHECK(header->game_truncated_ticks == 0 && count_text(fake_log_text, "truncated") == 0);
+	publish_truncated_tick(2);
+	UEB_CHECK(header->game_truncated_ticks == 1 && count_text(fake_log_text, "truncated") == 1);
+	/* UE can write the header: the count is the game's own */
+	header->game_truncated_ticks = 100;
+	publish_truncated_tick(3);
+	UEB_CHECK(header->game_truncated_ticks == 2 && count_text(fake_log_text, "truncated") == 1);
+	ue_bridge_publish_tick(4);
+	UEB_CHECK(header->game_truncated_ticks == 2);
+	ue_bridge_bump_load_epoch();
+	publish_truncated_tick(5);
+	UEB_CHECK(header->game_truncated_ticks == 3 && count_text(fake_log_text, "truncated") == 2);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1484,5 +1530,6 @@ const struct ueb_test ueb_core_tests[] =
 	{ "epochs_are_the_games_own_not_read_back_from_the_header", epochs_are_the_games_own_not_read_back_from_the_header },
 	{ "load_end_and_append_follow_the_games_epoch_not_the_headers", load_end_and_append_follow_the_games_epoch_not_the_headers },
 	{ "hold_ready_means_the_games_epoch_not_the_headers", hold_ready_means_the_games_epoch_not_the_headers },
+	{ "truncated_ticks_are_counted_and_logged_once_per_epoch", truncated_ticks_are_counted_and_logged_once_per_epoch },
 	{ 0, 0 }
 };
