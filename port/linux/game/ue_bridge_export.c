@@ -133,6 +133,12 @@ static struct
 	unsigned long normal_mismatches;
 	/* map exports whose definition or model count passed what the format's 16-bit indices hold, since the game started */
 	unsigned long refused_exports;
+	/* What the export decides from, kept here: the root and the BSP entries sit in memory UE can write, so
+	the export only writes them and never reads them back. */
+	char map_name[64];
+	uint32_t missing;
+	/* by scenario BSP index: its entry was published (ready) in this export, whether or not it fit */
+	unsigned char bsp_published[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO];
 	/* by tag absolute index */
 	unsigned short definition_of_tag[UE_BRIDGE_DATUM_ABSOLUTE_LIMIT];
 	short model_of_tag[UE_BRIDGE_DATUM_ABSOLUTE_LIMIT];
@@ -161,6 +167,20 @@ static void *export_zeroed_allocate(uint64_t count, size_t size)
 	if (block)
 		memset(block, 0, bytes);
 	return block;
+}
+
+/* the missing bits in the export's own state, and written through to the root */
+static void export_set_missing(struct ue_bridge_load_root *root, uint32_t bits)
+{
+	export_state.missing |= bits;
+	root->missing = export_state.missing;
+}
+
+/* the entry's ready flag, and the export's own record that it was set */
+static void export_publish_bsp(short structure_bsp_index, int complete)
+{
+	export_state.bsp_published[structure_bsp_index] = 1;
+	ue_bridge_load_publish_bsp(structure_bsp_index, complete);
 }
 
 static boolean part_shader_is_drawable(struct model *model, short shader_index)
@@ -342,6 +362,7 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	struct structure_bsp *bsp;
 	struct ue_bridge_load_root *root = ue_bridge_load_root();
 	struct ue_bridge_bsp_entry *entry;
+	struct ue_bridge_bsp_entry produced;
 	struct ue_bridge_bsp_source source;
 	struct ue_bridge_bsp_source_material *materials = 0;
 	int32_t **cluster_surfaces = 0;
@@ -353,8 +374,11 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	unsigned long started_ms = system_milliseconds();
 	int result = 0;
 
-	if (structure_bsp_index == NONE || structure_bsp_index != global_structure_bsp_index || structure_bsp_index < 0)
+	if (structure_bsp_index == NONE || structure_bsp_index != global_structure_bsp_index || structure_bsp_index < 0 ||
+		structure_bsp_index >= MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO)
+	{
 		return 0;
+	}
 	/* no entry: the BSP table itself didn't fit, and the map export set the missing bit */
 	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
 	if (!entry)
@@ -465,13 +489,18 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	source.cluster_surfaces = (const int32_t *const *)cluster_surfaces;
 	source.cluster_surface_counts = cluster_counts;
 	source.cluster_count = (uint32_t)bsp->clusters.count;
-	entry->tag_index = global_scenario_get_structure_bsp_tag(structure_bsp_index);
-	result = ue_bridge_bsp_export(writer, &source, entry);
+	/* built beside the entry and copied in, so the log below reads the game's own numbers */
+	memset(&produced, 0, sizeof(produced));
+	produced.tag_index = global_scenario_get_structure_bsp_tag(structure_bsp_index);
+	result = ue_bridge_bsp_export(writer, &source, &produced);
 	if (result)
-		ue_bridge_load_publish_bsp(structure_bsp_index, 1);
+	{
+		*entry = produced;
+		export_publish_bsp(structure_bsp_index, 1);
+	}
 	ue_bridge_log("ue bridge: BSP %d: %lu batches from %lu clusters, %lu surfaces in no cluster, %lu in two; %s in %lu ms",
-		(int)structure_bsp_index, (unsigned long)entry->batches.count, (unsigned long)source.cluster_count,
-		(unsigned long)entry->unclustered_surfaces, (unsigned long)entry->duplicate_surfaces, result ? "exported" : "did not fit",
+		(int)structure_bsp_index, (unsigned long)produced.batches.count, (unsigned long)source.cluster_count,
+		(unsigned long)produced.unclustered_surfaces, (unsigned long)produced.duplicate_surfaces, result ? "exported" : "did not fit",
 		(unsigned long)(system_milliseconds() - started_ms));
 
 done:
@@ -482,8 +511,8 @@ done:
 	with a loaded BSP absent. */
 	if (!result)
 	{
-		root->missing |= UE_BRIDGE_MISSING_BSPS;
-		ue_bridge_load_publish_bsp(structure_bsp_index, 0);
+		export_set_missing(root, UE_BRIDGE_MISSING_BSPS);
+		export_publish_bsp(structure_bsp_index, 0);
 	}
 	if (cluster_surfaces)
 	{
@@ -507,7 +536,7 @@ int ue_bridge_world_export_map(void)
 	long tag_index, *model_tags = 0;
 	uint32_t definition_count = 0, model_count = 0, exported_models = 0, index;
 	unsigned long started_ms = system_milliseconds();
-	uint32_t definitions_offset, models_offset, bsps_offset, bsp_count;
+	uint32_t definitions_offset, models_offset, bsps_offset, bsp_count, published_definitions = 0;
 	struct ue_bridge_model_counts model_counts;
 	int complete;
 
@@ -516,13 +545,17 @@ int ue_bridge_world_export_map(void)
 	export_state.exported = 0;
 	export_state.normal_mismatches = 0;
 	memset(&model_counts, 0, sizeof(model_counts));
+	export_state.missing = 0;
+	memset(export_state.bsp_published, 0, sizeof(export_state.bsp_published));
+	memset(export_state.map_name, 0, sizeof(export_state.map_name));
+	csstrncpy(export_state.map_name, tag_get_name(global_scenario_index), sizeof(export_state.map_name) - 1);
 	memset(export_state.definition_of_tag, 0xFF, sizeof(export_state.definition_of_tag));
 	memset(export_state.model_of_tag, 0xFF, sizeof(export_state.model_of_tag));
 	/* the root sits at the region's start */
 	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
 	root->magic = UE_BRIDGE_LOAD_MAGIC;
 	root->load_epoch = ue_bridge_load_epoch();
-	csstrncpy(root->map_name, tag_get_name(global_scenario_index), sizeof(root->map_name) - 1);
+	memcpy(root->map_name, export_state.map_name, sizeof(root->map_name));
 	/* the game's limits, so UE validates against this game and not a copy of its constants */
 	root->max_nodes_per_model = MAXIMUM_NODES_PER_MODEL;
 	root->max_regions_per_model = MAXIMUM_REGIONS_PER_MODEL;
@@ -534,7 +567,7 @@ int ue_bridge_world_export_map(void)
 	bsps_offset = ue_bridge_load_reserve(writer, bsp_count, sizeof(struct ue_bridge_bsp_entry));
 	if (bsps_offset == UE_BRIDGE_NO_OFFSET)
 	{
-		root->missing |= UE_BRIDGE_MISSING_BSPS;
+		export_set_missing(root, UE_BRIDGE_MISSING_BSPS);
 	}
 	else
 	{
@@ -566,9 +599,9 @@ int ue_bridge_world_export_map(void)
 	{
 		export_state.refused_exports++;
 		ue_bridge_log("ue bridge: export of %s refused (%lu so far): %lu definitions and %lu models, past what the format's 16-bit indices hold (%lu and %lu); no definition or model table is written",
-			root->map_name, export_state.refused_exports, (unsigned long)definition_count, (unsigned long)model_count,
+			export_state.map_name, export_state.refused_exports, (unsigned long)definition_count, (unsigned long)model_count,
 			(unsigned long)UE_BRIDGE_MAX_DEFINITIONS, (unsigned long)UE_BRIDGE_MAX_MODELS);
-		root->missing |= UE_BRIDGE_MISSING_DEFINITIONS | UE_BRIDGE_MISSING_MODELS;
+		export_set_missing(root, UE_BRIDGE_MISSING_DEFINITIONS | UE_BRIDGE_MISSING_MODELS);
 		memset(export_state.definition_of_tag, 0xFF, sizeof(export_state.definition_of_tag));
 		memset(export_state.model_of_tag, 0xFF, sizeof(export_state.model_of_tag));
 		definition_count = 0;
@@ -597,7 +630,7 @@ int ue_bridge_world_export_map(void)
 	/* the definition table first: it is small, and without it nothing can be drawn */
 	definitions_offset = ue_bridge_load_reserve(writer, definition_count, sizeof(struct ue_bridge_definition));
 	if (writer->overflow)
-		root->missing |= UE_BRIDGE_MISSING_DEFINITIONS;
+		export_set_missing(root, UE_BRIDGE_MISSING_DEFINITIONS);
 	models_offset = ue_bridge_load_reserve(writer, model_count, sizeof(struct ue_bridge_model));
 	for (index = 0; index < model_count && !writer->overflow; index++)
 	{
@@ -606,10 +639,10 @@ int ue_bridge_world_export_map(void)
 		exported_models++;
 	}
 	if (exported_models < model_count)
-		root->missing |= UE_BRIDGE_MISSING_MODELS;
+		export_set_missing(root, UE_BRIDGE_MISSING_MODELS);
 	root->repaired_vertices = model_counts.repaired_vertices;
 	root->clamped_node_counts = model_counts.clamped_node_counts;
-	if (!(root->missing & UE_BRIDGE_MISSING_DEFINITIONS))
+	if (!(export_state.missing & UE_BRIDGE_MISSING_DEFINITIONS))
 	{
 		index = 0;
 		tag_iterator_new(&iterator, OBJECT_DEFINITION_TAG);
@@ -629,6 +662,7 @@ int ue_bridge_world_export_map(void)
 		memcpy((void *)(uintptr_t)ue_bridge_load_at(writer, definitions_offset), definitions, definition_count * sizeof(*definitions));
 		root->definitions.offset = definitions_offset;
 		root->definitions.count = definition_count;
+		published_definitions = definition_count;
 	}
 	if (models_offset != UE_BRIDGE_NO_OFFSET && exported_models)
 	{
@@ -642,13 +676,13 @@ int ue_bridge_world_export_map(void)
 
 	if (global_structure_bsp_index != NONE)
 		export_loaded_bsp(writer, global_structure_bsp_index);
-	complete = root->missing == 0;
+	complete = export_state.missing == 0;
 	export_state.exported = 1;
 	ue_bridge_log("ue bridge: exported %s: %lu definitions, %lu of %lu models, %lu of %lu KB in %lu ms; %lu normal decode mismatches; %lu vertices and %lu node counts the renderer repairs%s",
-		root->map_name, (unsigned long)root->definitions.count, (unsigned long)exported_models, (unsigned long)model_count,
+		export_state.map_name, (unsigned long)published_definitions, (unsigned long)exported_models, (unsigned long)model_count,
 		(unsigned long)(writer->used >> 10), (unsigned long)(writer->capacity >> 10),
 		(unsigned long)(system_milliseconds() - started_ms), export_state.normal_mismatches,
-		(unsigned long)root->repaired_vertices, (unsigned long)root->clamped_node_counts,
+		(unsigned long)model_counts.repaired_vertices, (unsigned long)model_counts.clamped_node_counts,
 		complete ? "" : "; INCOMPLETE (raise ue_bridge.section_mb)");
 	return complete;
 }
@@ -665,7 +699,7 @@ void ue_bridge_world_export_bsp(short structure_bsp_index)
 	if (!writer || structure_bsp_index < 0)
 		return;
 	entry = ue_bridge_load_bsp_slot((uint32_t)structure_bsp_index);
-	if (!entry || entry->ready)
+	if (!entry || structure_bsp_index >= MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO || export_state.bsp_published[structure_bsp_index])
 		return;
 	export_loaded_bsp(writer, structure_bsp_index);
 }
