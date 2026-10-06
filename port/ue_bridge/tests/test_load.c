@@ -138,6 +138,18 @@ static void padded_array_bytes_refuses_what_wraps_size_t(void)
 	UEB_CHECK(bytes == 0x1234);
 }
 
+/* a tick record's definition is 16 bits with 0xFFFF for none, a definition's model 16 bits signed with -1 for none:
+the export must refuse a map with more than either holds, never wrap an index into another */
+static void index_counts_fit_holds_the_sixteen_bit_fields(void)
+{
+	UEB_CHECK(ue_bridge_index_counts_fit(0, 0));
+	UEB_CHECK(ue_bridge_index_counts_fit(UE_BRIDGE_MAX_DEFINITIONS, UE_BRIDGE_MAX_MODELS));
+	UEB_CHECK(!ue_bridge_index_counts_fit(UE_BRIDGE_MAX_DEFINITIONS + 1u, 0));
+	UEB_CHECK(!ue_bridge_index_counts_fit(0, UE_BRIDGE_MAX_MODELS + 1u));
+	UEB_CHECK(!ue_bridge_index_counts_fit(0xFFFFFFFFu, 0));
+	UEB_CHECK(!ue_bridge_index_counts_fit(0, 0xFFFFFFFFu));
+}
+
 const struct ueb_test ueb_load_tests[] =
 {
 	{ "layout_default_section", layout_default_section },
@@ -150,5 +162,6 @@ const struct ueb_test ueb_load_tests[] =
 	{ "load_bsp_entry_indexes_the_counted_table", load_bsp_entry_indexes_the_counted_table },
 	{ "padded_array_bytes_counts_one_spare_element", padded_array_bytes_counts_one_spare_element },
 	{ "padded_array_bytes_refuses_what_wraps_size_t", padded_array_bytes_refuses_what_wraps_size_t },
+	{ "index_counts_fit_holds_the_sixteen_bit_fields", index_counts_fit_holds_the_sixteen_bit_fields },
 	{ 0, 0 }
 };
