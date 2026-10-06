@@ -24,6 +24,11 @@ static struct
 	/* the epochs as the game counted them: the header's copies sit in memory UE can write */
 	uint32_t load_epoch;
 	uint32_t state_epoch;
+	/* the published count of truncated ticks, kept here for the same reason, and the epoch the
+	first of them was logged in (valid only while truncation_logged) */
+	uint32_t truncated_ticks;
+	uint32_t truncation_logged_epoch;
+	int truncation_logged;
 	struct ue_bridge_load_writer load_writer;
 	int load_live;
 	uint32_t load_live_epoch;
@@ -295,6 +300,21 @@ void ue_bridge_tick_end(int16_t active_bsp)
 	if (!header || !bridge.tick_slot)
 		return;
 	ue_bridge_tick_writer_end(&bridge.tick_writer, bridge.load_epoch, bridge.state_epoch, active_bsp);
+	if (bridge.tick_writer.flags & UE_BRIDGE_TICK_TRUNCATED)
+	{
+		ueb_store_u32(&header->game_truncated_ticks, ++bridge.truncated_ticks);
+		/* once per epoch: a map that overflows its slot would otherwise log every tick */
+		if (!bridge.truncation_logged || bridge.truncation_logged_epoch != bridge.load_epoch)
+		{
+			char message[160];
+
+			bridge.truncation_logged = 1;
+			bridge.truncation_logged_epoch = bridge.load_epoch;
+			snprintf(message, sizeof(message), "ue bridge: a tick holds only %lu of its objects (the slot is full); the rest stay frozen in the renderer (%lu truncated ticks so far)",
+				(unsigned long)bridge.tick_writer.object_count, (unsigned long)bridge.truncated_ticks);
+			bridge_log(message);
+		}
+	}
 	/* stamped as it is published: 10.1 measures from here */
 	bridge.tick_slot->publish_qpc = bridge.os->qpc();
 	ue_bridge_ring_end_write(&header->tick_ring, bridge.tick_slot);
