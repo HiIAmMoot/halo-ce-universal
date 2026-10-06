@@ -245,6 +245,11 @@ int ue_bridge_active(void)
 	return bridge.section_view != 0;
 }
 
+int ue_bridge_snapshot_at_rest(const void *previous, const void *latest, uint32_t bytes, int continuing)
+{
+	return bridge.section_view != 0 && ue_bridge_nodes_at_rest(previous, latest, bytes, continuing);
+}
+
 uint64_t ue_bridge_session_id(void)
 {
 	return bridge.session_id;

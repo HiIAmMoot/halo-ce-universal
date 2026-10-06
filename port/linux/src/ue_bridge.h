@@ -70,6 +70,9 @@ that runs a watcher thread (ue_bridge_platform_start_watcher) stops it first:
 the watcher reads the header on every pass and must not find it unmapped. */
 void ue_bridge_stop(uint32_t stopping);
 int ue_bridge_active(void);
+/* ue_bridge_nodes_at_rest while the bridge is active; 0 without comparing a byte
+when it is off, so a game without the bridge pays nothing for it */
+int ue_bridge_snapshot_at_rest(const void *previous, const void *latest, uint32_t bytes, int continuing);
 uint64_t ue_bridge_session_id(void);
 /* NULL when inactive */
 volatile struct ue_bridge_header *ue_bridge_header(void);

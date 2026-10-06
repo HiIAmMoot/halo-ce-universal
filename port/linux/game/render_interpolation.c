@@ -40,6 +40,7 @@ with their unit, and with what it rides.
 #include "units/units.h"
 
 #include "../../ue_bridge/ue_bridge_tick.h"
+#include "../src/ue_bridge.h"
 
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
@@ -477,7 +478,7 @@ void render_interpolation_tick(void)
 		/* the UE bridge's at-rest flag compares this snapshot with the
 		previous, not _object_at_rest_bit: that bit tracks physics, and a
 		physically resting object can still be animating */
-		record->at_rest = ue_bridge_nodes_at_rest(
+		record->at_rest = ue_bridge_snapshot_at_rest(
 			record->nodes + (record->latest ^ 1) * record->node_capacity,
 			record->nodes + record->latest * record->node_capacity,
 			node_count * sizeof(real_matrix4x3), continuing);
