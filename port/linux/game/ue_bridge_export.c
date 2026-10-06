@@ -643,7 +643,6 @@ int ue_bridge_world_export_map(void)
 	if (global_structure_bsp_index != NONE)
 		export_loaded_bsp(writer, global_structure_bsp_index);
 	complete = root->missing == 0;
-	ue_bridge_load_end(complete);
 	export_state.exported = 1;
 	ue_bridge_log("ue bridge: exported %s: %lu definitions, %lu of %lu models, %lu of %lu KB in %lu ms; %lu normal decode mismatches; %lu vertices and %lu node counts the renderer repairs%s",
 		root->map_name, (unsigned long)root->definitions.count, (unsigned long)exported_models, (unsigned long)model_count,

@@ -18,7 +18,9 @@ struct render_camera;
 struct ue_bridge_camera;
 
 /* the loaded map's object definitions, models and loaded BSP into the load
-region (ue_bridge_load_begin to ue_bridge_load_end); 1 when everything fit */
+region, from ue_bridge_load_begin on; 1 when everything fit. It leaves the
+load sequence open: the caller ends it with ue_bridge_load_end(the result),
+after the map's first tick is published. */
 int ue_bridge_world_export_map(void);
 /* the BSP the game just loaded, appended to this map's export if it isn't
 in it yet */

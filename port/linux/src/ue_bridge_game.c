@@ -234,12 +234,17 @@ void ue_bridge_game_map_loaded(void)
 main menu's, a reset's and a network game's included */
 void ue_bridge_game_map_ready(void)
 {
+	int complete;
+
 	ensure_started();
 	if (!started)
 		return;
-	ue_bridge_world_export_map();
-	/* the objects as placed: UE builds the meshes they need before it says ready */
+	complete = ue_bridge_world_export_map();
+	/* The objects as placed: UE builds the meshes they need before it says ready. Published before the
+	export ends, because UE reads the map the moment its load sequence is even, and a map read without a
+	tick of its epoch would be built late, from the next tick. */
 	ue_bridge_world_publish_tick((uint64_t)last_tick);
+	ue_bridge_load_end(complete);
 	if (!time_held && ue_bridge_world_hold_allowed() && ue_bridge_hold_begin())
 	{
 		time_held = 1;
