@@ -1362,6 +1362,73 @@ static void hold_ends_at_once_when_the_renderer_process_exits(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+/* UE can write the whole header: a tick or an export stamped from a rewritten epoch would
+pass a stale slot off as the current map's, or hide a new map */
+static void epochs_are_the_games_own_not_read_back_from_the_header(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_tick_writer *writer;
+	static uint8_t out[TEST_TICK_SLOT_SIZE];
+	uint32_t bytes = 0;
+	const struct ue_bridge_tick_header *tick = (const struct ue_bridge_tick_header *)out;
+
+	start_bridge();
+	header = fake_bridge_section();
+	UEB_CHECK(ue_bridge_load_epoch() == 0);
+	ue_bridge_bump_load_epoch();
+	ue_bridge_bump_state_epoch();
+	ue_bridge_bump_state_epoch();
+	header->load_epoch = 0x7777;
+	header->state_epoch = 0x8888;
+	UEB_CHECK(ue_bridge_load_epoch() == 1);
+	writer = ue_bridge_tick_begin(1);
+	UEB_CHECK(writer != 0);
+	ue_bridge_tick_end(0);
+	UEB_CHECK(ue_bridge_ring_read_newest_used((const volatile uint8_t *)header, &header->tick_ring,
+		offsetof(struct ue_bridge_tick_header, used), out, sizeof(out), &bytes, 0) == UE_BRIDGE_READ_NEWEST);
+	UEB_CHECK(tick->load_epoch == 1 && tick->state_epoch == 2);
+	/* a bump counts from the game's own epoch, and writes it back over the rewrite */
+	ue_bridge_bump_load_epoch();
+	ue_bridge_bump_state_epoch();
+	UEB_CHECK(header->load_epoch == 2 && header->state_epoch == 3);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void load_end_and_append_follow_the_games_epoch_not_the_headers(void)
+{
+	volatile struct ue_bridge_header *header;
+	struct ue_bridge_load_writer *writer;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	writer = ue_bridge_load_begin();
+	header->load_epoch = 9;
+	ue_bridge_load_end(1);
+	UEB_CHECK(header->export_epoch == 1);
+	UEB_CHECK(ue_bridge_load_append() == writer);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
+static void hold_ready_means_the_games_epoch_not_the_headers(void)
+{
+	volatile struct ue_bridge_header *header;
+	uint32_t held = 0;
+
+	start_bridge();
+	header = fake_bridge_section();
+	ue_bridge_bump_load_epoch();
+	fake_now = 100000000ull;
+	attach_reader(header, fake_now);
+	UEB_CHECK(ue_bridge_hold_begin());
+	header->load_epoch = 0x55;
+	header->ue_ready = 0x55;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_WAITING);
+	header->ue_ready = 1;
+	UEB_CHECK(ue_bridge_hold_poll(&held) == UE_BRIDGE_HOLD_READY);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1414,5 +1481,8 @@ const struct ueb_test ueb_core_tests[] =
 	{ "tick_and_frame_writes_use_the_trusted_layout_not_the_header", tick_and_frame_writes_use_the_trusted_layout_not_the_header },
 	{ "hold_ends_exactly_at_the_cap", hold_ends_exactly_at_the_cap },
 	{ "hold_ends_at_once_when_the_renderer_process_exits", hold_ends_at_once_when_the_renderer_process_exits },
+	{ "epochs_are_the_games_own_not_read_back_from_the_header", epochs_are_the_games_own_not_read_back_from_the_header },
+	{ "load_end_and_append_follow_the_games_epoch_not_the_headers", load_end_and_append_follow_the_games_epoch_not_the_headers },
+	{ "hold_ready_means_the_games_epoch_not_the_headers", hold_ready_means_the_games_epoch_not_the_headers },
 	{ 0, 0 }
 };
