@@ -21,6 +21,9 @@ static struct
 	uint64_t session_id;
 	uint32_t section_size;
 	struct ue_bridge_layout layout;
+	/* the epochs as the game counted them: the header's copies sit in memory UE can write */
+	uint32_t load_epoch;
+	uint32_t state_epoch;
 	struct ue_bridge_load_writer load_writer;
 	int load_live;
 	uint32_t load_live_epoch;
@@ -291,7 +294,7 @@ void ue_bridge_tick_end(int16_t active_bsp)
 
 	if (!header || !bridge.tick_slot)
 		return;
-	ue_bridge_tick_writer_end(&bridge.tick_writer, header->load_epoch, header->state_epoch, active_bsp);
+	ue_bridge_tick_writer_end(&bridge.tick_writer, bridge.load_epoch, bridge.state_epoch, active_bsp);
 	/* stamped as it is published: 10.1 measures from here */
 	bridge.tick_slot->publish_qpc = bridge.os->qpc();
 	ue_bridge_ring_end_write(&header->tick_ring, bridge.tick_slot);
@@ -366,7 +369,12 @@ void ue_bridge_bump_load_epoch(void)
 	volatile struct ue_bridge_header *header = bridge_header();
 
 	if (header)
-		ueb_store_u32(&header->load_epoch, header->load_epoch + 1u);
+		ueb_store_u32(&header->load_epoch, ++bridge.load_epoch);
+}
+
+uint32_t ue_bridge_load_epoch(void)
+{
+	return bridge.section_view ? bridge.load_epoch : 0u;
 }
 
 void ue_bridge_bump_state_epoch(void)
@@ -374,7 +382,7 @@ void ue_bridge_bump_state_epoch(void)
 	volatile struct ue_bridge_header *header = bridge_header();
 
 	if (header)
-		ueb_store_u32(&header->state_epoch, header->state_epoch + 1u);
+		ueb_store_u32(&header->state_epoch, ++bridge.state_epoch);
 }
 
 struct ue_bridge_load_writer *ue_bridge_load_begin(void)
@@ -406,18 +414,18 @@ void ue_bridge_load_end(int complete)
 	if (!header)
 		return;
 	ueb_store_u32(&header->export_complete, complete ? 1u : 0u);
-	ueb_store_u32(&header->export_epoch, header->load_epoch);
+	ueb_store_u32(&header->export_epoch, bridge.load_epoch);
 	ueb_fence();
 	ueb_store_u32(&header->load_sequence, (ueb_load_u32(&header->load_sequence) | 1u) + 1u);
 	bridge.load_live = 1;
-	bridge.load_live_epoch = header->load_epoch;
+	bridge.load_live_epoch = bridge.load_epoch;
 }
 
 struct ue_bridge_load_writer *ue_bridge_load_append(void)
 {
 	volatile struct ue_bridge_header *header = bridge_header();
 
-	if (!header || !bridge.load_live || bridge.load_live_epoch != header->load_epoch)
+	if (!header || !bridge.load_live || bridge.load_live_epoch != bridge.load_epoch)
 		return NULL;
 	return &bridge.load_writer;
 }
@@ -526,7 +534,7 @@ enum ue_bridge_hold ue_bridge_hold_poll(uint32_t *held_ms)
 	if (!header || !bridge.holding)
 		return UE_BRIDGE_HOLD_NONE;
 	*held_ms = elapsed_ms(bridge.hold_started);
-	if (ueb_load_u32(&header->ue_ready) == header->load_epoch)
+	if (ueb_load_u32(&header->ue_ready) == bridge.load_epoch)
 		state = UE_BRIDGE_HOLD_READY;
 	else if (!ue_bridge_reader_present())
 		state = UE_BRIDGE_HOLD_READER_GONE;

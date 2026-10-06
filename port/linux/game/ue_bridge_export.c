@@ -516,7 +516,7 @@ int ue_bridge_world_export_map(void)
 	/* the root sits at the region's start */
 	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
 	root->magic = UE_BRIDGE_LOAD_MAGIC;
-	root->load_epoch = ue_bridge_header()->load_epoch;
+	root->load_epoch = ue_bridge_load_epoch();
 	csstrncpy(root->map_name, tag_get_name(global_scenario_index), sizeof(root->map_name) - 1);
 	/* the game's limits, so UE validates against this game and not a copy of its constants */
 	root->max_nodes_per_model = MAXIMUM_NODES_PER_MODEL;

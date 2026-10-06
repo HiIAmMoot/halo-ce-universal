@@ -132,6 +132,8 @@ void ue_bridge_publish_frame_rate(uint32_t refresh_hz, uint32_t target_hz);
 void ue_bridge_heartbeat(void);
 void ue_bridge_bump_load_epoch(void);
 void ue_bridge_bump_state_epoch(void);
+/* the game's own load_epoch, never the header's copy (UE can write it); 0 when inactive */
+uint32_t ue_bridge_load_epoch(void);
 /* game_busy: 1 while the main loop is legitimately stalled (a map load), so
 the renderer doesn't take the silence for a hang */
 void ue_bridge_set_busy(int busy);

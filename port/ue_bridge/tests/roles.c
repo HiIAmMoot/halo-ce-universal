@@ -587,7 +587,7 @@ static int fake_world_export(void)
 		return 0;
 	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
 	root->magic = UE_BRIDGE_LOAD_MAGIC;
-	root->load_epoch = ue_bridge_header()->load_epoch;
+	root->load_epoch = ue_bridge_load_epoch();
 	strcpy(root->map_name, "fake_world");
 	root->max_nodes_per_model = WORLD_MAX_NODES_PER_MODEL;
 	root->max_regions_per_model = WORLD_MAX_REGIONS_PER_MODEL;
