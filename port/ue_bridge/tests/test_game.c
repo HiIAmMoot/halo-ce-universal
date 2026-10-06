@@ -102,13 +102,27 @@ static int world_time_stops;
 static int world_time_starts;
 static struct ue_bridge_camera world_fake_camera;
 
-void ue_bridge_world_publish_tick(uint64_t tick) { (void)tick; world_tick_publishes++; }
+static volatile struct ue_bridge_header *section_header(void);
+static uint32_t world_sequence_at_tick;
+
+void ue_bridge_world_publish_tick(uint64_t tick)
+{
+	(void)tick;
+	world_tick_publishes++;
+	world_sequence_at_tick = section_header()->load_sequence;
+}
 int ue_bridge_world_camera(const struct render_camera *camera, struct ue_bridge_camera *out) { (void)camera; *out = world_fake_camera; return 1; }
 int ue_bridge_world_hold_allowed(void) { return world_hold_allowed; }
 void ue_bridge_world_stop_time(void) { world_time_stops++; }
 void ue_bridge_world_start_time(void) { world_time_starts++; }
 
-int ue_bridge_world_export_map(void) { world_map_exports++; return 1; }
+/* as the real export: it opens the load sequence and leaves it open, for the adapter to end after the first tick */
+int ue_bridge_world_export_map(void)
+{
+	world_map_exports++;
+	ue_bridge_load_begin();
+	return 1;
+}
 void ue_bridge_world_export_bsp(short structure_bsp_index) { world_bsp_exports++; world_last_bsp = structure_bsp_index; }
 void ue_bridge_world_set_start_map(const char *scenario_name)
 {
@@ -610,6 +624,20 @@ static void game_map_ready_publishes_a_tick_and_holds_for_a_present_reader(void)
 	UEB_CHECK(strstr(log_lines, "hold ended: ready") != 0);
 }
 
+/* UE reads a map as soon as its load sequence is even: the placed objects' tick must be in the ring by then */
+static void game_map_ready_publishes_the_first_tick_before_the_export_ends(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_map_loaded();
+	ue_bridge_game_map_ready();
+	UEB_CHECK(world_tick_publishes == 1);
+	UEB_CHECK((world_sequence_at_tick & 1u) == 1u);
+	UEB_CHECK((section_header()->load_sequence & 1u) == 0u);
+	UEB_CHECK(section_header()->export_epoch == section_header()->load_epoch && section_header()->export_epoch != 0);
+	UEB_CHECK(section_header()->export_complete == 1);
+}
+
 static void game_map_ready_without_a_reader_does_not_hold(void)
 {
 	game_reset();
@@ -707,6 +735,7 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_console_started_applies_the_start_map", game_console_started_applies_the_start_map },
 	{ "game_console_started_without_a_start_map_does_nothing", game_console_started_without_a_start_map_does_nothing },
 	{ "game_map_ready_publishes_a_tick_and_holds_for_a_present_reader", game_map_ready_publishes_a_tick_and_holds_for_a_present_reader },
+	{ "game_map_ready_publishes_the_first_tick_before_the_export_ends", game_map_ready_publishes_the_first_tick_before_the_export_ends },
 	{ "game_map_ready_without_a_reader_does_not_hold", game_map_ready_without_a_reader_does_not_hold },
 	{ "game_map_ready_in_a_network_game_does_not_hold", game_map_ready_in_a_network_game_does_not_hold },
 	{ "game_hold_times_out_and_starts_time", game_hold_times_out_and_starts_time },
