@@ -57,6 +57,11 @@ fake-ue: a renderer that attaches through the directory.
                       then sets ue_dump_done (without it, ignores the crash)
   It exits when the game's process does.
 
+fake-world: fake-game's start-up, then a synthetic map exported through the shared
+  writers (one quad model, two definitions, one BSP), a tick every 33 ms with two
+  objects (one moving along X), and a frame every 16 ms with a camera at (-3, 0, 1)
+  looking along +X. Options: --log, --ready-file, --run-ms (default 60000), --continue.
+
 probe-directory: exits 0 when no bridge directory exists, 1 when one does.
   --print             also prints the entry as key=value lines (game_pid,
                       session_id, section, game_log_path)
@@ -77,6 +82,9 @@ counts, limits, per-BSP figures and winding agreement); tools/test_ue_bridge_map
 
 #include "../../linux/src/ue_bridge_platform.h"
 #include "ue_bridge_ring.h"
+#include "ue_bridge_bsp.h"
+#include "ue_bridge_model.h"
+#include "ue_bridge_tick.h"
 
 #include <windows.h>
 #include <dbghelp.h>
@@ -416,6 +424,284 @@ static int fake_game(int argc, char **argv)
 	return 0;
 }
 
+/* ---------- fake-world */
+
+/* The limits the real game publishes (model_definitions.h, object_definitions.h); roles.c is
+built without the game's headers, so they are named once here, as FHaloFakeWorld's GameMax* are. */
+#define WORLD_MAX_NODES_PER_MODEL 64u
+#define WORLD_MAX_REGIONS_PER_MODEL 32u
+#define WORLD_MAX_PERMUTATIONS_PER_REGION 32u
+#define WORLD_MAX_REGIONS_PER_OBJECT 8u
+
+#define WORLD_PACKED_UP (511u << 22)
+
+static struct ue_bridge_matrix world_matrix(float x, float y, float z)
+{
+	struct ue_bridge_matrix matrix;
+
+	memset(&matrix, 0, sizeof(matrix));
+	matrix.scale = 1.0f;
+	matrix.forward[0] = 1.0f;
+	matrix.left[1] = 1.0f;
+	matrix.up[2] = 1.0f;
+	matrix.position[0] = x;
+	matrix.position[1] = y;
+	matrix.position[2] = z;
+	return matrix;
+}
+
+/* FHaloFakeModel (HaloFakeWorld.h): region 0 has two permutations, 0 a unit quad at every detail
+level, 1 a smaller quad at levels 3 and 4 */
+struct world_model
+{
+	struct ue_bridge_compressed_model_vertex quad_vertices[4];
+	struct ue_bridge_compressed_model_vertex small_vertices[4];
+	uint16_t strip[4];
+	struct ue_bridge_model_source_part parts[2];
+	struct ue_bridge_model_source_geometry geometries[2];
+	int16_t permutations[2][UE_BRIDGE_DETAIL_LEVELS];
+	struct ue_bridge_model_source_region region;
+	struct ue_bridge_model_source_node node;
+	int32_t shader;
+	struct ue_bridge_model_source source;
+};
+
+static void world_model_build(struct world_model *model)
+{
+	static const float corners[4][2] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f }, { 1.0f, 1.0f } };
+	static const int16_t permutations[2][UE_BRIDGE_DETAIL_LEVELS] = { { 0, 0, 0, 0, 0 }, { -1, -1, -1, 1, 1 } };
+	static const float cutoffs[UE_BRIDGE_DETAIL_LEVELS] = { 0.0f, 10.0f, 40.0f, 120.0f, 300.0f };
+	uint32_t index;
+
+	memset(model, 0, sizeof(*model));
+	for (index = 0; index < 4; index++)
+	{
+		model->strip[index] = (uint16_t)index;
+		model->quad_vertices[index].position[0] = corners[index][0];
+		model->quad_vertices[index].position[1] = corners[index][1];
+		model->quad_vertices[index].normal = WORLD_PACKED_UP;
+		model->quad_vertices[index].node_weight = 32767;
+		model->small_vertices[index] = model->quad_vertices[index];
+		model->small_vertices[index].position[0] *= 0.5f;
+		model->small_vertices[index].position[1] *= 0.5f;
+	}
+	model->parts[0].vertices = model->quad_vertices;
+	model->parts[0].vertex_count = 4;
+	model->parts[0].strip = model->strip;
+	model->parts[0].strip_length = 4;
+	model->parts[1] = model->parts[0];
+	model->parts[1].vertices = model->small_vertices;
+	model->geometries[0].parts = &model->parts[0];
+	model->geometries[0].part_count = 1;
+	model->geometries[1].parts = &model->parts[1];
+	model->geometries[1].part_count = 1;
+	memcpy(model->permutations, permutations, sizeof(permutations));
+	model->region.permutations = model->permutations;
+	model->region.permutation_count = 2;
+	model->node.parent = -1;
+	model->node.default_local = world_matrix(0.0f, 0.0f, 0.0f);
+	model->node.default_inverse = world_matrix(0.0f, 0.0f, 0.0f);
+	model->shader = 0x00AA00AA;
+	model->source.tag_index = 0x00110011;
+	for (index = 0; index < UE_BRIDGE_DETAIL_LEVELS; index++)
+	{
+		model->source.detail_cutoff_pixels[index] = cutoffs[index];
+		model->source.node_counts[index] = 1;
+	}
+	model->source.nodes = &model->node;
+	model->source.node_count = 1;
+	model->source.regions = &model->region;
+	model->source.region_count = 1;
+	model->source.geometries = model->geometries;
+	model->source.geometry_count = 2;
+	model->source.shader_tags = &model->shader;
+	model->source.shader_count = 1;
+}
+
+/* FHaloFakeBsp (HaloFakeWorld.h): 4 surfaces in 2 clusters, one shader, every normal +Z */
+struct world_bsp
+{
+	struct ue_bridge_compressed_environment_vertex vertices[6];
+	uint16_t surfaces[4][3];
+	struct ue_bridge_bsp_source_material material;
+	int32_t cluster0[2];
+	int32_t cluster1[2];
+	const int32_t *clusters[2];
+	uint32_t counts[2];
+	struct ue_bridge_bsp_source source;
+};
+
+static void world_bsp_build(struct world_bsp *bsp)
+{
+	static const uint16_t surfaces[4][3] = { { 0, 1, 2 }, { 2, 1, 3 }, { 2, 3, 4 }, { 4, 3, 5 } };
+	uint32_t index;
+
+	memset(bsp, 0, sizeof(*bsp));
+	for (index = 0; index < 6; index++)
+	{
+		bsp->vertices[index].position[0] = (float)(index % 2);
+		bsp->vertices[index].position[1] = (float)(index / 2);
+		bsp->vertices[index].normal = WORLD_PACKED_UP;
+	}
+	memcpy(bsp->surfaces, surfaces, sizeof(surfaces));
+	bsp->material.shader_tag = 0x00BB00BB;
+	bsp->material.first_surface = 0;
+	bsp->material.surface_count = 4;
+	bsp->material.vertices = bsp->vertices;
+	bsp->material.vertex_count = 6;
+	bsp->cluster0[1] = 1;
+	bsp->cluster1[0] = 2;
+	bsp->cluster1[1] = 3;
+	bsp->clusters[0] = bsp->cluster0;
+	bsp->clusters[1] = bsp->cluster1;
+	bsp->counts[0] = 2;
+	bsp->counts[1] = 2;
+	bsp->source.surfaces = &bsp->surfaces[0][0];
+	bsp->source.surface_count = 4;
+	bsp->source.materials = &bsp->material;
+	bsp->source.material_count = 1;
+	bsp->source.cluster_surfaces = bsp->clusters;
+	bsp->source.cluster_surface_counts = bsp->counts;
+	bsp->source.cluster_count = 2;
+}
+
+/* The map export, laid out as ue_bridge_world_export_map lays it out: the root, a one-entry BSP
+table right after it (a later BSP appends into its entry), then the definitions and the model. */
+static int fake_world_export(void)
+{
+	static struct world_model model;
+	static struct world_bsp bsp;
+	struct ue_bridge_load_writer *writer;
+	struct ue_bridge_load_root *root;
+	struct ue_bridge_definition definitions[2];
+	struct ue_bridge_model exported_model;
+	struct ue_bridge_bsp_entry *entry;
+	uint32_t bsps_offset, definitions_offset, models_offset;
+
+	world_model_build(&model);
+	world_bsp_build(&bsp);
+	ue_bridge_bump_load_epoch();
+	writer = ue_bridge_load_begin();
+	root = ue_bridge_load_root();
+	if (!writer || !root)
+		return 0;
+	ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_load_root));
+	root->magic = UE_BRIDGE_LOAD_MAGIC;
+	root->load_epoch = ue_bridge_header()->load_epoch;
+	strcpy(root->map_name, "fake_world");
+	root->max_nodes_per_model = WORLD_MAX_NODES_PER_MODEL;
+	root->max_regions_per_model = WORLD_MAX_REGIONS_PER_MODEL;
+	root->max_permutations_per_region = WORLD_MAX_PERMUTATIONS_PER_REGION;
+	root->max_regions_per_object = WORLD_MAX_REGIONS_PER_OBJECT;
+	bsps_offset = ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_bsp_entry));
+	memset(ue_bridge_load_pointer(writer, bsps_offset), 0, sizeof(struct ue_bridge_bsp_entry));
+	root->bsps.offset = bsps_offset;
+	root->bsps.count = 1;
+	ue_bridge_load_set_bsp_table(bsps_offset, 1);
+	definitions_offset = ue_bridge_load_reserve(writer, 2, sizeof(struct ue_bridge_definition));
+	models_offset = ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_model));
+	if (writer->overflow || !ue_bridge_model_export(writer, &model.source, &exported_model))
+		return 0;
+	memset(definitions, 0, sizeof(definitions));
+	definitions[0].tag_index = 0x00010000;
+	definitions[0].model = 0;
+	definitions[0].animation_graph_tag = -1;
+	definitions[0].bounding_radius = 1.0f;
+	definitions[1] = definitions[0];
+	definitions[1].tag_index = 0x00010001;
+	definitions[1].animation_graph_tag = 0x00330033;
+	memcpy(ue_bridge_load_pointer(writer, definitions_offset), definitions, sizeof(definitions));
+	memcpy(ue_bridge_load_pointer(writer, models_offset), &exported_model, sizeof(exported_model));
+	root->definitions.offset = definitions_offset;
+	root->definitions.count = 2;
+	root->models.offset = models_offset;
+	root->models.count = 1;
+	entry = ue_bridge_load_bsp_slot(0);
+	entry->tag_index = 0x00220022;
+	if (!ue_bridge_bsp_export(writer, &bsp.source, entry))
+		return 0;
+	ue_bridge_load_publish_bsp(0, 1);
+	ue_bridge_load_end(1);
+	return 1;
+}
+
+/* One node and one region at permutation 0: an empty permutation list would not match the
+default combination, and the static mesh would not be placed. */
+static void fake_world_add_object(struct ue_bridge_tick_writer *writer, uint32_t datum_index, uint16_t definition, float x)
+{
+	static const uint8_t permutation = 0;
+	struct ue_bridge_matrix node = world_matrix(x, 0.0f, 0.0f);
+
+	ue_bridge_tick_writer_add(writer, datum_index, definition, 0, &permutation, 1, &node, 1);
+}
+
+static int fake_world(int argc, char **argv)
+{
+	struct ue_bridge_settings settings;
+	struct ue_bridge_watch_config watch;
+	const char *log = option_text(argc, argv, "--log");
+	long run_ms = option_number(argc, argv, "--run-ms", 60000);
+	DWORD start = GetTickCount();
+	DWORD last_tick = 0;
+	uint64_t tick = 0;
+	uint64_t frame = 0;
+	int have_tick = 0;
+
+	if (log)
+		role_log = fopen(log, "w");
+	settings.enabled = 1;
+	settings.log_path = log;
+	settings.max_objects = 8192;
+	settings.section_size = ROLE_SECTION_SIZE;
+	settings.tick_slot_size = ROLE_TICK_SLOT_SIZE;
+	if (!ue_bridge_start(&settings, ue_bridge_platform_os()))
+		return 3;
+	ue_bridge_platform_install_crash_hook();
+	watch.request_quit = fake_game_request_quit;
+	watch.continue_on_peer_exit = option_flag(argc, argv, "--continue");
+	if (!ue_bridge_platform_start_watcher(&watch))
+		return 4;
+	ue_bridge_publish_frame_rate(0, 0);
+	ue_bridge_bump_state_epoch();
+	if (!fake_world_export())
+		return 5;
+	write_ready_file(option_text(argc, argv, "--ready-file"));
+	while (!quit_requested && (long)(GetTickCount() - start) < run_ms)
+	{
+		DWORD now = GetTickCount();
+		struct ue_bridge_camera camera;
+
+		ue_bridge_heartbeat();
+		if (!have_tick || now - last_tick >= 33)
+		{
+			struct ue_bridge_tick_writer *writer = ue_bridge_tick_begin(++tick);
+
+			if (writer)
+			{
+				fake_world_add_object(writer, 0x00010002, 0, (float)(now - start) / 1000.0f);
+				fake_world_add_object(writer, 0x00010004, 1, 0.0f);
+				ue_bridge_tick_end(0);
+			}
+			last_tick = now;
+			have_tick = 1;
+		}
+		memset(&camera, 0, sizeof(camera));
+		camera.position[0] = -3.0f;
+		camera.position[2] = 1.0f;
+		camera.forward[0] = 1.0f;
+		camera.up[2] = 1.0f;
+		camera.vertical_fov = 1.0f;
+		camera.z_near = 0.0625f;
+		camera.z_far = 1024.0f;
+		ue_bridge_publish_frame_camera(++frame, 0.5f, tick, &camera);
+		Sleep(16);
+	}
+	ue_bridge_platform_stop_watcher();
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+	game_debug_line("fake-world: exiting (%s)", quit_requested ? "quit requested" : "run time over");
+	return 0;
+}
+
 /* ---------- fake-ue */
 
 static void dump_process(HANDLE process, DWORD pid, const char *directory, const char *name)
@@ -737,8 +1023,8 @@ static int role_read_world(void)
 		ueb_fence();
 	} while ((before & 1u) || ueb_load_u32(&header->load_sequence) != before);
 	root = (const struct ue_bridge_load_root *)region;
-	printf("{\"load_epoch\": %lu, \"export_epoch\": %lu, \"export_complete\": %lu, \"missing\": %lu, \"map\": ",
-		(unsigned long)header->load_epoch, (unsigned long)header->export_epoch, (unsigned long)header->export_complete,
+	printf("{\"load_epoch\": %lu, \"ue_ready\": %lu, \"export_epoch\": %lu, \"export_complete\": %lu, \"missing\": %lu, \"map\": ",
+		(unsigned long)header->load_epoch, (unsigned long)header->ue_ready,(unsigned long)header->export_epoch, (unsigned long)header->export_complete,
 		(unsigned long)root->missing);
 	print_json_string(root->magic == UE_BRIDGE_LOAD_MAGIC ? root->map_name : "");
 	printf(", \"limits\": [%lu, %lu, %lu, %lu]", (unsigned long)root->max_nodes_per_model, (unsigned long)root->max_regions_per_model,
@@ -870,12 +1156,14 @@ int main(int argc, char **argv)
 	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 	if (strcmp(role, "fake-game") == 0)
 		return fake_game(argc, argv);
+	if (strcmp(role, "fake-world") == 0)
+		return fake_world(argc, argv);
 	if (strcmp(role, "fake-ue") == 0)
 		return fake_ue(argc, argv);
 	if (strcmp(role, "probe-directory") == 0)
 		return probe_directory(argc, argv);
 	if (strcmp(role, "read-world") == 0)
 		return role_read_world();
-	fprintf(stderr, "usage: ue_bridge_roles.exe --role=fake-game|fake-ue|probe-directory|read-world [options]\n");
+	fprintf(stderr, "usage: ue_bridge_roles.exe --role=fake-game|fake-world|fake-ue|probe-directory|read-world [options]\n");
 	return 2;
 }

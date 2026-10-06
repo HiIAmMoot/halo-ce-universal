@@ -575,3 +575,28 @@ def test_hang_when_file_appears_the_heartbeat_stops_and_the_game_stays_alive(spa
     time.sleep(1.0)
     assert (view.u64(GAME_HEARTBEAT_OFFSET), view.u32(FRAME_RING_PUBLISHED_OFFSET), view.u32(TICK_RING_PUBLISHED_OFFSET)) == stalled
     assert game.poll() is None
+
+
+def test_a_fake_world_exports_a_map_ticks_and_a_camera_and_is_readied_by_a_renderer(spawn, roles_exe, tmp_path):
+    import json
+
+    game = spawn("fake-world", "--run-ms", 20000)
+    ue = spawn("fake-ue", "--session-dir", tmp_path / "session", "--ready-after-ms", 0)
+    world = None
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        result = subprocess.run([str(roles_exe), "--role=read-world"], capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            world = json.loads(result.stdout)
+            if world["load_epoch"] and world["ue_ready"] == world["load_epoch"] and world["tick"]["objects"] == 2 and world["frame"]["camera_valid"]:
+                break
+        time.sleep(0.2)
+    assert world and world["ue_ready"] == world["load_epoch"] != 0, world
+    assert world["export_complete"] == 1 and world["missing"] == 0
+    assert world["definitions"] == 2 and world["static_definitions"] == 1 and world["models"] == 1
+    assert world["limits"] == [64, 32, 32, 8]
+    assert len(world["bsps"]) == 1 and world["bsps"][0]["ready"] == 1 and world["bsps"][0]["batches"] == 2
+    assert world["tick"]["objects"] == 2 and world["tick"]["ascending"] == 1 and world["tick"]["active_bsp"] == 0
+    assert world["frame"]["position"] == [-3.0, 0.0, 1.0] and abs(world["frame"]["vertical_fov"] - 1.0) < 1e-6
+    ue.kill()
+    assert game.poll() is None
