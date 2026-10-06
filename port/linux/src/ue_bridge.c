@@ -29,6 +29,8 @@ static struct
 	uint32_t truncated_ticks;
 	uint32_t truncation_logged_epoch;
 	int truncation_logged;
+	/* the load sequence as the game counted it, for the same reason */
+	uint32_t load_sequence;
 	struct ue_bridge_load_writer load_writer;
 	int load_live;
 	uint32_t load_live_epoch;
@@ -418,7 +420,8 @@ struct ue_bridge_load_writer *ue_bridge_load_begin(void)
 	if (!header)
 		return NULL;
 	/* odd before the first byte changes: a UE copying the region throws its copy away */
-	ueb_store_u32(&header->load_sequence, ueb_load_u32(&header->load_sequence) | 1u);
+	bridge.load_sequence |= 1u;
+	ueb_store_u32(&header->load_sequence, bridge.load_sequence);
 	ueb_store_u32(&header->export_epoch, 0);
 	ueb_fence();
 	/* the game's own layout, never the header's copy: UE can write the header,
@@ -441,7 +444,8 @@ void ue_bridge_load_end(int complete)
 	ueb_store_u32(&header->export_complete, complete ? 1u : 0u);
 	ueb_store_u32(&header->export_epoch, bridge.load_epoch);
 	ueb_fence();
-	ueb_store_u32(&header->load_sequence, (ueb_load_u32(&header->load_sequence) | 1u) + 1u);
+	bridge.load_sequence = (bridge.load_sequence | 1u) + 1u;
+	ueb_store_u32(&header->load_sequence, bridge.load_sequence);
 	bridge.load_live = 1;
 	bridge.load_live_epoch = bridge.load_epoch;
 }

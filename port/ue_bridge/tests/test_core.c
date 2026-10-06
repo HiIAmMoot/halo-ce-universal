@@ -1410,6 +1410,29 @@ static void load_end_and_append_follow_the_games_epoch_not_the_headers(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+/* UE can write the header, so a reader that rewrites load_sequence must not steer the game's own count:
+a tampered even value would otherwise open the region to readers while the export is half written */
+static void load_sequence_is_the_games_own_not_read_back_from_the_header(void)
+{
+	volatile struct ue_bridge_header *header;
+
+	start_bridge();
+	header = fake_bridge_section();
+	header->load_sequence = 100;
+	ue_bridge_load_begin();
+	UEB_CHECK(header->load_sequence == 1);
+	header->load_sequence = 0x1000;
+	ue_bridge_load_end(1);
+	UEB_CHECK(header->load_sequence == 2);
+	header->load_sequence = 0x5000;
+	ue_bridge_load_begin();
+	UEB_CHECK(header->load_sequence == 3);
+	header->load_sequence = 0x7000;
+	ue_bridge_load_end(1);
+	UEB_CHECK(header->load_sequence == 4);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 static void hold_ready_means_the_games_epoch_not_the_headers(void)
 {
 	volatile struct ue_bridge_header *header;
@@ -1572,6 +1595,7 @@ const struct ueb_test ueb_core_tests[] =
 	{ "hold_ends_at_once_when_the_renderer_process_exits", hold_ends_at_once_when_the_renderer_process_exits },
 	{ "epochs_are_the_games_own_not_read_back_from_the_header", epochs_are_the_games_own_not_read_back_from_the_header },
 	{ "load_end_and_append_follow_the_games_epoch_not_the_headers", load_end_and_append_follow_the_games_epoch_not_the_headers },
+	{ "load_sequence_is_the_games_own_not_read_back_from_the_header", load_sequence_is_the_games_own_not_read_back_from_the_header },
 	{ "hold_ready_means_the_games_epoch_not_the_headers", hold_ready_means_the_games_epoch_not_the_headers },
 	{ "truncated_ticks_are_counted_and_logged_once_per_epoch", truncated_ticks_are_counted_and_logged_once_per_epoch },
 	{ "load_discard_closes_appends_until_the_next_export_ends", load_discard_closes_appends_until_the_next_export_ends },
