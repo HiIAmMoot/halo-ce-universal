@@ -38,6 +38,20 @@ The bridge's log lines go to stderr and also to the game's `debug.txt`.
 
 The bridge section's name carries the game's PID and a random session id. If a section of that name already exists, another process made it: the bridge doesn't start, a line in `debug.txt` says so, and the game runs without it. For the same reason, don't run the renderer elevated: it trusts the sections the directory names, and an elevated renderer would act on whatever process a lower-privileged squatter pointed it at.
 
+## Version 3 (M2a)
+
+Format 3 adds the world: the loaded map's geometry in a load region, the objects in the tick slots, and the game's camera in the frame slots.
+
+- **Section size.** `ue_bridge.section_mb` (`HALO_UE_BRIDGE_SECTION_MB`, default 96, 16 to 1024) sizes the whole section. The geometry of the loaded map must fit in it; when it doesn't, the export is marked incomplete (`export_complete` 0, the root's `missing` bits) and the game's log says to raise the setting.
+- **Layout.** The header (4 KB), then the tick ring (4 slots of 2 MB), the frame ring (8 slots of 4 KB), and the load region, which takes the rest. `ue_bridge_layout_compute` lays it out; the game uses its own copy and never reads the layout back from the header.
+- **The load region.** It starts with the root: the map name, the game's own limits (nodes per model, regions per model, permutations per region, regions per object), and tables by offset and count: definitions, models and one entry per scenario BSP. Models hold nodes, regions, geometries and the shader tags; a BSP entry holds one batch per cluster and shader. Every table is validated by offset on the renderer's side.
+- **Export.** The map's definitions and models are exported when the map starts, with the first BSP. Every other BSP is appended into its entry the first time the game loads it, and its `ready` flag is set last. The load sequence is odd while the game writes, and the renderer copies the region under it.
+- **Tick records.** One record per object, in ascending absolute index: definition, flags (at rest, hidden), the permutation of each region, and one matrix per node (scale, forward, left, up, position, in world units). `active_bsp` is the scenario's BSP index, -1 for none.
+- **The frame camera.** The frame slot carries window 0's render camera: position, forward, up, vertical field of view in radians, near and far planes, and `camera_valid` (0 when no window camera was drawn).
+- **The load hold.** For a local game with a renderer attached, the game holds at a map start until the renderer writes `ue_ready` equal to `load_epoch`, at most 10 s (`UE_BRIDGE_LOAD_HOLD_MS`). A reader that exits or hangs ends the hold at once. The log says `hold ended: ready after N ms`.
+- **Start map.** `ue_bridge.start_map` (`HALO_UE_BRIDGE_START_MAP`) names the scenario to start instead of the main menu, as the `map_name` command takes it (`levels\a10\a10`). It overrides what `init.txt` did, and nothing is written to `init.txt`.
+- **Roles for the tests.** `read-world` prints the live bridge's export and latest tick and frame as JSON, including `ue_ready` (`tools/test_ue_bridge_maps.py`). `fake-world` is `fake-game` with a synthetic map exported through the shared writers (one quad model, two definitions, one BSP), a tick every 33 ms with two objects, and a camera frame every 16 ms; HaloCEUE's `Scripts/world_test.py` runs UE against it. `fake-ue --ready-after-ms N` writes `ue_ready` for each load epoch once the export for it is complete.
+
 ## Files
 
 | File | |
