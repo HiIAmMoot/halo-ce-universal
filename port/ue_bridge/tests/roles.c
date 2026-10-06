@@ -601,7 +601,11 @@ static int fake_world_export(void)
 	definitions_offset = ue_bridge_load_reserve(writer, 2, sizeof(struct ue_bridge_definition));
 	models_offset = ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_model));
 	if (writer->overflow || !ue_bridge_model_export(writer, &model.source, &exported_model))
+	{
+		/* an odd load sequence would hold every reader for ever */
+		ue_bridge_load_end(0);
 		return 0;
+	}
 	memset(definitions, 0, sizeof(definitions));
 	definitions[0].tag_index = 0x00010000;
 	definitions[0].model = 0;
@@ -619,7 +623,10 @@ static int fake_world_export(void)
 	entry = ue_bridge_load_bsp_slot(0);
 	entry->tag_index = 0x00220022;
 	if (!ue_bridge_bsp_export(writer, &bsp.source, entry))
+	{
+		ue_bridge_load_end(0);
 		return 0;
+	}
 	ue_bridge_load_publish_bsp(0, 1);
 	ue_bridge_load_end(1);
 	return 1;
