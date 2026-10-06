@@ -19,8 +19,7 @@ static void *model_allocate(uint64_t count, size_t element_size)
 }
 
 /* named for the file: every shared file is compiled into one translation unit */
-static int model_write_part(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source_part *source, uint32_t node_count,
-	struct ue_bridge_part *part, uint32_t *repaired)
+static int model_write_part(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source_part *source, struct ue_bridge_part *part)
 {
 	uint32_t index;
 	/* in 64 bits: three indices a triangle can pass 2^32 on a damaged strip length */
@@ -39,10 +38,6 @@ static int model_write_part(struct ue_bridge_load_writer *writer, const struct u
 		struct ue_bridge_model_vertex vertex;
 
 		ue_bridge_decode_model_vertex(&source->vertices[index], &vertex);
-		/* the renderer's rule: the second node only carries weight while the first doesn't take all of it,
-		and a weight that is not a number counts as not all (the comparison is false for NaN) */
-		if (vertex.node[0] >= node_count || (!(vertex.weight >= 1.0f) && vertex.node[1] >= node_count))
-			(*repaired)++;
 		memcpy((struct ue_bridge_model_vertex *)ue_bridge_load_pointer(writer, part->vertices.offset) + index, &vertex, sizeof(vertex));
 	}
 	if (list_capacity > UINT32_MAX)
@@ -68,8 +63,7 @@ static int model_write_part(struct ue_bridge_load_writer *writer, const struct u
 	return !writer->overflow;
 }
 
-static int model_write_geometry(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source_geometry *source, uint32_t node_count,
-	struct ue_bridge_geometry *geometry, uint32_t *repaired)
+static int model_write_geometry(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source_geometry *source, struct ue_bridge_geometry *geometry)
 {
 	uint32_t index, kept = 0, written = 0;
 
@@ -83,17 +77,15 @@ static int model_write_geometry(struct ue_bridge_load_writer *writer, const stru
 
 		if (source->parts[index].skip)
 			continue;
-		if (!model_write_part(writer, &source->parts[index], node_count, &part, repaired))
+		if (!model_write_part(writer, &source->parts[index], &part))
 			return 0;
 		memcpy((struct ue_bridge_part *)ue_bridge_load_pointer(writer, geometry->parts.offset) + written++, &part, sizeof(part));
 	}
 	return !writer->overflow;
 }
 
-int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source *source, struct ue_bridge_model *model,
-	struct ue_bridge_model_counts *counts)
+int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source *source, struct ue_bridge_model *model)
 {
-	uint32_t repaired = 0, clamped = 0;
 	uint32_t start = writer->used;
 	struct ue_bridge_model result;
 	/* Halo geometry index -> exported index, -1 while unused */
@@ -106,11 +98,6 @@ int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue
 	result.tag_index = source->tag_index;
 	memcpy(result.detail_cutoff_pixels, source->detail_cutoff_pixels, sizeof(result.detail_cutoff_pixels));
 	memcpy(result.node_counts, source->node_counts, sizeof(result.node_counts));
-	for (level = 0; level < (int)UE_BRIDGE_DETAIL_LEVELS; level++)
-	{
-		if (source->node_counts[level] < 0 || (uint32_t)source->node_counts[level] > source->node_count)
-			clamped++;
-	}
 	if (source->geometry_count)
 	{
 		remap = (int16_t *)model_allocate(source->geometry_count, sizeof(int16_t));
@@ -174,7 +161,7 @@ int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue
 
 		if (remap[geometry_index] < 0)
 			continue;
-		if (!model_write_geometry(writer, &source->geometries[geometry_index], source->node_count, &geometry, &repaired))
+		if (!model_write_geometry(writer, &source->geometries[geometry_index], &geometry))
 			break;
 		memcpy((struct ue_bridge_geometry *)ue_bridge_load_pointer(writer, result.geometries.offset) + remap[geometry_index], &geometry, sizeof(geometry));
 	}
@@ -188,11 +175,6 @@ int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue
 		goto failed;
 	free(remap);
 	*model = result;
-	if (counts)
-	{
-		counts->repaired_vertices += repaired;
-		counts->clamped_node_counts += clamped;
-	}
 	return 1;
 
 failed:

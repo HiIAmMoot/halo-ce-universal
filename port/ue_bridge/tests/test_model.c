@@ -91,7 +91,7 @@ static void model_export_writes_nodes_regions_and_shaders(void)
 
 	build_source();
 	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, 0));
+	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model));
 	UEB_CHECK(model.tag_index == 0x00420042);
 	UEB_CHECK(model.detail_cutoff_pixels[4] == 300.0f);
 	UEB_CHECK(model.node_counts[4] == 2);
@@ -114,7 +114,7 @@ static void model_export_keeps_each_used_geometry_once(void)
 
 	build_source();
 	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, 0));
+	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model));
 	/* geometries 1 and 0 are used, in that order of first use; 2 is unused; 7 is out of range */
 	UEB_CHECK(model.geometries.count == 2);
 	exported_regions = AT(struct ue_bridge_region, model.regions.offset);
@@ -138,7 +138,7 @@ static void model_export_decodes_parts_and_skips_stripped_ones(void)
 
 	build_source();
 	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, 0));
+	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model));
 	exported_geometries = AT(struct ue_bridge_geometry, model.geometries.offset);
 	/* exported geometry 1 is Halo geometry 0: two parts, one stripped */
 	UEB_CHECK(exported_geometries[1].parts.count == 1);
@@ -161,7 +161,7 @@ static void model_export_decodes_parts_and_skips_stripped_ones(void)
 
 		geometries[0].part_count = 1;
 		ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-		UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, 0));
+		UEB_CHECK(ue_bridge_model_export(&writer, &source, &model));
 		UEB_CHECK(writer.used == with_stripped);
 	}
 }
@@ -174,7 +174,7 @@ static void model_export_into_a_full_region_writes_nothing(void)
 	build_source();
 	memset(&model, 0x5A, sizeof(model));
 	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, 600, 40);
-	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model, 0));
+	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model));
 	UEB_CHECK(writer.used == 40);
 	UEB_CHECK(writer.overflow);
 	UEB_CHECK(model.tag_index == 0x5A5A5A5A);
@@ -194,7 +194,7 @@ static void model_export_refuses_a_geometry_count_whose_remap_would_wrap(void)
 		build_source();
 		source.geometry_count = counts[index];
 		ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 24);
-		UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model, 0));
+		UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model));
 		UEB_CHECK(writer.used == 24);
 	}
 }
@@ -208,52 +208,8 @@ static void model_export_refuses_a_strip_whose_triangle_list_would_wrap(void)
 	build_source();
 	parts_b[0].strip_length = 0x55555558u;
 	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 24);
-	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model, 0));
+	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model));
 	UEB_CHECK(writer.used == 24);
-}
-
-/* The renderer repairs a vertex whose node bytes name a node the model lacks, and clamps a detail level's
-node count into the model's nodes; the export counts both, for the load root. A part left out is not counted,
-and neither is a geometry no permutation uses. */
-static void model_export_counts_repaired_vertices_and_clamped_node_counts(void)
-{
-	struct ue_bridge_load_writer writer;
-	struct ue_bridge_model model;
-	struct ue_bridge_model_counts counts;
-
-	build_source();
-	/* the quad has a stripped twin, so it is written once: its first node out of range */
-	quad[1].nodes[0] = 3 * 5;
-	/* weight 1: the second node carries nothing, so its bad byte is left alone */
-	quad[0].nodes[1] = 3 * 9;
-	/* weight 0: the second node carries it all, and it is out of range */
-	single[2].nodes[1] = 3 * 7;
-	source.node_counts[1] = -1;
-	source.node_counts[2] = 3;
-	memset(&counts, 0, sizeof(counts));
-	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, &counts));
-	UEB_CHECK(counts.repaired_vertices == 2);
-	UEB_CHECK(counts.clamped_node_counts == 2);
-	/* the counts add up across models */
-	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 0);
-	UEB_CHECK(ue_bridge_model_export(&writer, &source, &model, &counts));
-	UEB_CHECK(counts.repaired_vertices == 4 && counts.clamped_node_counts == 4);
-}
-
-static void model_export_counts_nothing_for_a_model_that_does_not_fit(void)
-{
-	struct ue_bridge_load_writer writer;
-	struct ue_bridge_model model;
-	struct ue_bridge_model_counts counts;
-
-	build_source();
-	quad[1].nodes[0] = 3 * 5;
-	source.node_counts[2] = 3;
-	memset(&counts, 0, sizeof(counts));
-	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, 600, 40);
-	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model, &counts));
-	UEB_CHECK(counts.repaired_vertices == 0 && counts.clamped_node_counts == 0);
 }
 
 const struct ueb_test ueb_model_tests[] =
@@ -264,7 +220,5 @@ const struct ueb_test ueb_model_tests[] =
 	{ "model_export_into_a_full_region_writes_nothing", model_export_into_a_full_region_writes_nothing },
 	{ "model_export_refuses_a_geometry_count_whose_remap_would_wrap", model_export_refuses_a_geometry_count_whose_remap_would_wrap },
 	{ "model_export_refuses_a_strip_whose_triangle_list_would_wrap", model_export_refuses_a_strip_whose_triangle_list_would_wrap },
-	{ "model_export_counts_repaired_vertices_and_clamped_node_counts", model_export_counts_repaired_vertices_and_clamped_node_counts },
-	{ "model_export_counts_nothing_for_a_model_that_does_not_fit", model_export_counts_nothing_for_a_model_that_does_not_fit },
 	{ 0, 0 }
 };

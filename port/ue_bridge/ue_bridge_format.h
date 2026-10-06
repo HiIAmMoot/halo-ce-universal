@@ -44,8 +44,7 @@ near MAX_PATH doesn't fit, and is then published empty (and logged) */
 /* The section's size comes from the game's settings (ue_bridge.section_mb);
 the layout is ue_bridge_layout_compute's (ue_bridge_load.h). Version 3 adds
 the load region and the tick and frame payloads (Phase 0 design, sections
-4.4 to 4.6, milestone M2). Version 4 adds the header's game_truncated_ticks
-and the root's repaired_vertices and clamped_node_counts. */
+4.4 to 4.6, milestone M2). Version 4 adds the header's game_truncated_ticks. */
 #define UE_BRIDGE_MIN_SECTION_MB 16u
 #define UE_BRIDGE_DEFAULT_SECTION_MB 96u
 #define UE_BRIDGE_MAX_SECTION_SIZE 0x40000000u
@@ -333,13 +332,6 @@ struct ue_bridge_load_root
 	uint32_t max_regions_per_model;
 	uint32_t max_permutations_per_region;
 	uint32_t max_regions_per_object;
-	/* version 4. What the export saw in the exported models that the renderer
-	repairs on its side, for its load report: vertices whose node bytes name a
-	node the model lacks (node 0 reset, or the second node dropped), and detail
-	levels whose node count is outside the model's nodes. Counted by the game
-	from its own data; the renderer's own repair counts are the ones it acts on. */
-	uint32_t repaired_vertices;
-	uint32_t clamped_node_counts;
 	uint32_t reserved;
 };
 
@@ -594,10 +586,8 @@ UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_nodes_per_model) == 1
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_regions_per_model) == 104, "load root max_regions_per_model");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_permutations_per_region) == 108, "load root max_permutations_per_region");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, max_regions_per_object) == 112, "load root max_regions_per_object");
-UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, repaired_vertices) == 116, "load root repaired_vertices");
-UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, clamped_node_counts) == 120, "load root clamped_node_counts");
-UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, reserved) == 124, "load root reserved");
-UEB_STATIC_ASSERT(sizeof(struct ue_bridge_load_root) == 128, "load root size");
+UEB_STATIC_ASSERT(offsetof(struct ue_bridge_load_root, reserved) == 116, "load root reserved");
+UEB_STATIC_ASSERT(sizeof(struct ue_bridge_load_root) == 120, "load root size");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, tag_index) == 0, "definition tag_index");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, object_type) == 4, "definition object_type");
 UEB_STATIC_ASSERT(offsetof(struct ue_bridge_definition, model) == 6, "definition model");

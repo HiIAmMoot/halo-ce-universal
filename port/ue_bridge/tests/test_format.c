@@ -78,12 +78,10 @@ static void format_payload_sizes(void)
 	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 88);
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, camera_position) == 32);
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, tick_id) == 80);
-	UEB_CHECK(sizeof(struct ue_bridge_load_root) == 128);
+	UEB_CHECK(sizeof(struct ue_bridge_load_root) == 120);
 	UEB_CHECK(offsetof(struct ue_bridge_load_root, bsps) == 88);
 	UEB_CHECK(offsetof(struct ue_bridge_load_root, max_nodes_per_model) == 100);
-	UEB_CHECK(offsetof(struct ue_bridge_load_root, repaired_vertices) == 116);
-	UEB_CHECK(offsetof(struct ue_bridge_load_root, clamped_node_counts) == 120);
-	UEB_CHECK(offsetof(struct ue_bridge_load_root, reserved) == 124);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, reserved) == 116);
 	UEB_CHECK(sizeof(struct ue_bridge_definition) == 16);
 	UEB_CHECK(sizeof(struct ue_bridge_model) == 68);
 	UEB_CHECK(sizeof(struct ue_bridge_node) == 108);

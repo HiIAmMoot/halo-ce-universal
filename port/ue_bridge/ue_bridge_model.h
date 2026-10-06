@@ -65,23 +65,10 @@ struct ue_bridge_model_source
 	uint32_t shader_count;
 };
 
-/* what an export saw that the renderer repairs on its side, summed over
-models (the load root's repaired_vertices and clamped_node_counts) */
-struct ue_bridge_model_counts
-{
-	/* written vertices whose first node, or whose second while it carries
-	weight (a weight under 1, or not a number), is not one of the model's nodes */
-	uint32_t repaired_vertices;
-	/* detail levels whose node count is negative or past the model's nodes */
-	uint32_t clamped_node_counts;
-};
-
 /* 1 when the whole model fit in the region and *model describes it; 0 when
 it didn't, with *model untouched and the writer's used size as it was (its
-overflow stays set). On success the model's counts are added to *counts (NULL:
-not wanted); a model that fails adds nothing. */
-int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source *source, struct ue_bridge_model *model,
-	struct ue_bridge_model_counts *counts);
+overflow stays set) */
+int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source *source, struct ue_bridge_model *model);
 
 #ifdef __cplusplus
 }

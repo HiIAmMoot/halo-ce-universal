@@ -55,7 +55,6 @@ Format 3 adds the world: the loaded map's geometry in a load region, the objects
 ## Version 4 (M2a fix wave)
 
 - **Header.** `game_truncated_ticks` counts ticks published with `UE_BRIDGE_TICK_TRUNCATED` since the game started (the objects past the cut are not written). The game logs the first one of each load epoch.
-- **Load root.** `repaired_vertices` and `clamped_node_counts` are what the export saw in the exported models that the renderer repairs on its side, summed over models.
 - **Order.** The map's first tick (the placed objects) is published before the load sequence goes even, so a renderer that reads the map always finds a tick of its epoch.
 - **Limits.** A map with more definitions than a 16-bit record holds, or more models than a definition's 16-bit model index holds, gets no definition or model table: the export is incomplete, counted and logged. Every shared allocation is sized by `ue_bridge_padded_array_bytes`, which fails instead of wrapping.
 

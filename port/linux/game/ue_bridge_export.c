@@ -194,7 +194,7 @@ static boolean part_shader_is_drawable(struct model *model, short shader_index)
 		shader_type_is_valid_for_model(shader_definition_get(reference->shader.index)->base.type);
 }
 
-static int export_model(struct ue_bridge_load_writer *writer, long model_tag_index, struct ue_bridge_model *out, struct ue_bridge_model_counts *counts)
+static int export_model(struct ue_bridge_load_writer *writer, long model_tag_index, struct ue_bridge_model *out)
 {
 	struct model *model = model_definition_get(model_tag_index);
 	struct ue_bridge_model_source source;
@@ -330,7 +330,7 @@ static int export_model(struct ue_bridge_load_writer *writer, long model_tag_ind
 	source.geometry_count = model->geometries.count;
 	source.shader_tags = shader_tags;
 	source.shader_count = model->shaders.count;
-	result = ue_bridge_model_export(writer, &source, out, counts);
+	result = ue_bridge_model_export(writer, &source, out);
 
 done:
 	free(nodes);
@@ -537,14 +537,12 @@ int ue_bridge_world_export_map(void)
 	uint32_t definition_count = 0, model_count = 0, exported_models = 0, index;
 	unsigned long started_ms = system_milliseconds();
 	uint32_t definitions_offset, models_offset, bsps_offset, bsp_count, published_definitions = 0;
-	struct ue_bridge_model_counts model_counts;
 	int complete;
 
 	if (!writer)
 		return 0;
 	export_state.exported = 0;
 	export_state.normal_mismatches = 0;
-	memset(&model_counts, 0, sizeof(model_counts));
 	export_state.missing = 0;
 	memset(export_state.bsp_published, 0, sizeof(export_state.bsp_published));
 	memset(export_state.map_name, 0, sizeof(export_state.map_name));
@@ -634,14 +632,12 @@ int ue_bridge_world_export_map(void)
 	models_offset = ue_bridge_load_reserve(writer, model_count, sizeof(struct ue_bridge_model));
 	for (index = 0; index < model_count && !writer->overflow; index++)
 	{
-		if (!export_model(writer, model_tags[index], &models[index], &model_counts))
+		if (!export_model(writer, model_tags[index], &models[index]))
 			break;
 		exported_models++;
 	}
 	if (exported_models < model_count)
 		export_set_missing(root, UE_BRIDGE_MISSING_MODELS);
-	root->repaired_vertices = model_counts.repaired_vertices;
-	root->clamped_node_counts = model_counts.clamped_node_counts;
 	if (!(export_state.missing & UE_BRIDGE_MISSING_DEFINITIONS))
 	{
 		index = 0;
@@ -678,11 +674,10 @@ int ue_bridge_world_export_map(void)
 		export_loaded_bsp(writer, global_structure_bsp_index);
 	complete = export_state.missing == 0;
 	export_state.exported = 1;
-	ue_bridge_log("ue bridge: exported %s: %lu definitions, %lu of %lu models, %lu of %lu KB in %lu ms; %lu normal decode mismatches; %lu vertices and %lu node counts the renderer repairs%s",
+	ue_bridge_log("ue bridge: exported %s: %lu definitions, %lu of %lu models, %lu of %lu KB in %lu ms; %lu normal decode mismatches%s",
 		export_state.map_name, (unsigned long)published_definitions, (unsigned long)exported_models, (unsigned long)model_count,
 		(unsigned long)(writer->used >> 10), (unsigned long)(writer->capacity >> 10),
 		(unsigned long)(system_milliseconds() - started_ms), export_state.normal_mismatches,
-		(unsigned long)model_counts.repaired_vertices, (unsigned long)model_counts.clamped_node_counts,
 		complete ? "" : "; INCOMPLETE (raise ue_bridge.section_mb)");
 	return complete;
 }
