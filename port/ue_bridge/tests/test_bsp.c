@@ -314,6 +314,30 @@ static void bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product(v
 	UEB_CHECK(entry.batches.count == 4);
 }
 
+/* The scratch arrays are (surface_count + 1) elements: counts whose product wraps a 32-bit
+size_t (or whose own +1 wraps) must fail the export, never size a block the loops outrun. */
+static void bsp_export_refuses_a_surface_count_whose_arrays_would_wrap(void)
+{
+	static const uint32_t counts[] = { 0x3FFFFFFFu, 0x40000000u, 0x80000000u, 0xFFFFFFFFu };
+	uint32_t index;
+
+	for (index = 0; index < sizeof(counts) / sizeof(counts[0]); index++)
+	{
+		struct ue_bridge_load_writer writer;
+		struct ue_bridge_bsp_entry entry;
+
+		build_source();
+		memset(&entry, 0, sizeof(entry));
+		source.surface_count = counts[index];
+		source.material_count = 0;
+		source.cluster_count = 0;
+		ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 16);
+		UEB_CHECK(!ue_bridge_bsp_export(&writer, &source, &entry));
+		UEB_CHECK(writer.used == 16);
+		UEB_CHECK(entry.ready == 0 && entry.batches.count == 0);
+	}
+}
+
 static void bsp_export_drops_a_surface_naming_a_missing_vertex(void)
 {
 	static uint16_t damaged[6][3];
@@ -354,6 +378,7 @@ const struct ueb_test ueb_bsp_tests[] =
 	{ "bsp_export_skips_surfaces_out_of_range", bsp_export_skips_surfaces_out_of_range },
 	{ "bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold", bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold },
 	{ "bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product", bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product },
+	{ "bsp_export_refuses_a_surface_count_whose_arrays_would_wrap", bsp_export_refuses_a_surface_count_whose_arrays_would_wrap },
 	{ "bsp_export_drops_a_surface_naming_a_missing_vertex", bsp_export_drops_a_surface_naming_a_missing_vertex },
 	{ "bsp_export_into_a_full_region_leaves_the_entry_unready", bsp_export_into_a_full_region_leaves_the_entry_unready },
 	{ 0, 0 }

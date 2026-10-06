@@ -180,11 +180,45 @@ static void model_export_into_a_full_region_writes_nothing(void)
 	UEB_CHECK(model.tag_index == 0x5A5A5A5A);
 }
 
+/* the remap is geometry_count int16s: a count that wraps a 32-bit size_t must fail the export */
+static void model_export_refuses_a_geometry_count_whose_remap_would_wrap(void)
+{
+	static const uint32_t counts[] = { 0x80000000u, 0x80000002u };
+	uint32_t index;
+
+	for (index = 0; index < sizeof(counts) / sizeof(counts[0]); index++)
+	{
+		struct ue_bridge_load_writer writer;
+		struct ue_bridge_model model;
+
+		build_source();
+		source.geometry_count = counts[index];
+		ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 24);
+		UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model));
+		UEB_CHECK(writer.used == 24);
+	}
+}
+
+/* a strip of 0x55555558 words lists 3 * 0x55555556 indices, which is 2 in 32 bits */
+static void model_export_refuses_a_strip_whose_triangle_list_would_wrap(void)
+{
+	struct ue_bridge_load_writer writer;
+	struct ue_bridge_model model;
+
+	build_source();
+	parts_b[0].strip_length = 0x55555558u;
+	ue_bridge_load_writer_init(&writer, (volatile uint8_t *)region, sizeof(region), 24);
+	UEB_CHECK(!ue_bridge_model_export(&writer, &source, &model));
+	UEB_CHECK(writer.used == 24);
+}
+
 const struct ueb_test ueb_model_tests[] =
 {
 	{ "model_export_writes_nodes_regions_and_shaders", model_export_writes_nodes_regions_and_shaders },
 	{ "model_export_keeps_each_used_geometry_once", model_export_keeps_each_used_geometry_once },
 	{ "model_export_decodes_parts_and_skips_stripped_ones", model_export_decodes_parts_and_skips_stripped_ones },
 	{ "model_export_into_a_full_region_writes_nothing", model_export_into_a_full_region_writes_nothing },
+	{ "model_export_refuses_a_geometry_count_whose_remap_would_wrap", model_export_refuses_a_geometry_count_whose_remap_would_wrap },
+	{ "model_export_refuses_a_strip_whose_triangle_list_would_wrap", model_export_refuses_a_strip_whose_triangle_list_would_wrap },
 	{ 0, 0 }
 };
