@@ -599,4 +599,5 @@ def test_a_fake_world_exports_a_map_ticks_and_a_camera_and_is_readied_by_a_rende
     assert world["tick"]["objects"] == 2 and world["tick"]["ascending"] == 1 and world["tick"]["active_bsp"] == 0
     assert world["frame"]["position"] == [-3.0, 0.0, 1.0] and abs(world["frame"]["vertical_fov"] - 1.0) < 1e-6
     ue.kill()
-    assert game.poll() is None
+    # the renderer is gone for good: the game's own shutdown policy ends it, cleanly and soon, not instantly
+    assert finish(game, 10) == 0
