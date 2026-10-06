@@ -600,7 +600,7 @@ static int fake_world_export(void)
 	ue_bridge_load_set_bsp_table(bsps_offset, 1);
 	definitions_offset = ue_bridge_load_reserve(writer, 2, sizeof(struct ue_bridge_definition));
 	models_offset = ue_bridge_load_reserve(writer, 1, sizeof(struct ue_bridge_model));
-	if (writer->overflow || !ue_bridge_model_export(writer, &model.source, &exported_model))
+	if (writer->overflow || !ue_bridge_model_export(writer, &model.source, &exported_model, 0))
 	{
 		/* an odd load sequence would hold every reader for ever */
 		ue_bridge_load_end(0);

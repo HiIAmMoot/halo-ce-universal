@@ -22,7 +22,7 @@ static void format_directory_layout(void)
 
 static void format_header_layout(void)
 {
-	UEB_CHECK(sizeof(struct ue_bridge_header) == 1248);
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1256);
 	UEB_CHECK(offsetof(struct ue_bridge_header, session_id) == 16);
 	UEB_CHECK(offsetof(struct ue_bridge_header, qpc_frequency) == 24);
 	UEB_CHECK(offsetof(struct ue_bridge_header, max_objects) == 36);
@@ -52,9 +52,9 @@ static void format_slot_layout(void)
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, interpolation_fraction) == 24);
 }
 
-static void format_version_is_three(void)
+static void format_version_is_four(void)
 {
-	UEB_CHECK(UE_BRIDGE_VERSION == 3u);
+	UEB_CHECK(UE_BRIDGE_VERSION == 4u);
 }
 
 static void format_header_tail_offsets(void)
@@ -64,7 +64,9 @@ static void format_header_tail_offsets(void)
 	UEB_CHECK(offsetof(struct ue_bridge_header, export_epoch) == 1236);
 	UEB_CHECK(offsetof(struct ue_bridge_header, export_complete) == 1240);
 	UEB_CHECK(offsetof(struct ue_bridge_header, game_holding) == 1244);
-	UEB_CHECK(sizeof(struct ue_bridge_header) == 1248);
+	UEB_CHECK(offsetof(struct ue_bridge_header, game_truncated_ticks) == 1248);
+	UEB_CHECK(offsetof(struct ue_bridge_header, reserved2) == 1252);
+	UEB_CHECK(sizeof(struct ue_bridge_header) == 1256);
 }
 
 static void format_payload_sizes(void)
@@ -76,9 +78,12 @@ static void format_payload_sizes(void)
 	UEB_CHECK(sizeof(struct ue_bridge_frame_slot) == 88);
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, camera_position) == 32);
 	UEB_CHECK(offsetof(struct ue_bridge_frame_slot, tick_id) == 80);
-	UEB_CHECK(sizeof(struct ue_bridge_load_root) == 120);
+	UEB_CHECK(sizeof(struct ue_bridge_load_root) == 128);
 	UEB_CHECK(offsetof(struct ue_bridge_load_root, bsps) == 88);
 	UEB_CHECK(offsetof(struct ue_bridge_load_root, max_nodes_per_model) == 100);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, repaired_vertices) == 116);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, clamped_node_counts) == 120);
+	UEB_CHECK(offsetof(struct ue_bridge_load_root, reserved) == 124);
 	UEB_CHECK(sizeof(struct ue_bridge_definition) == 16);
 	UEB_CHECK(sizeof(struct ue_bridge_model) == 68);
 	UEB_CHECK(sizeof(struct ue_bridge_node) == 108);
@@ -94,7 +99,7 @@ const struct ueb_test ueb_format_tests[] =
 {
 	{ "format_directory_layout", format_directory_layout },
 	{ "format_header_layout", format_header_layout },
-	{ "format_version_is_three", format_version_is_three },
+	{ "format_version_is_four", format_version_is_four },
 	{ "format_header_tail_offsets", format_header_tail_offsets },
 	{ "format_payload_sizes", format_payload_sizes },
 	{ "format_slot_layout", format_slot_layout },
