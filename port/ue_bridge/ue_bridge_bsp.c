@@ -32,6 +32,28 @@ uint32_t ue_bridge_bsp_unpack_cluster_list(const int32_t *packed, uint32_t packe
 	return written;
 }
 
+uint32_t ue_bridge_bsp_capacity_add(uint32_t capacity, uint32_t count, uint32_t limit)
+{
+	uint64_t sum = (uint64_t)capacity + count;
+
+	return sum > limit ? limit : (uint32_t)sum;
+}
+
+/* count + 1 elements, zeroed when asked, through the shared overflow-checked sizing; NULL when it doesn't fit.
+(Named for the file: every shared file is compiled into one translation unit.) */
+static void *bsp_allocate(uint64_t count, size_t element_size, int zeroed)
+{
+	size_t bytes;
+	void *block;
+
+	if (!ue_bridge_padded_array_bytes(count, element_size, &bytes))
+		return 0;
+	block = malloc(bytes);
+	if (block && zeroed)
+		memset(block, 0, bytes);
+	return block;
+}
+
 /* the material holding the surface, by binary search; -1 for none */
 static int32_t material_of(const struct ue_bridge_bsp_source *source, uint32_t surface)
 {
@@ -199,7 +221,8 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 	struct ue_bridge_bsp_entry result;
 	uint32_t surface, cluster_index, index;
 	uint64_t stamp = 1;
-	uint32_t batch_count = 0, batch_capacity, cluster_count;
+	uint32_t batch_count = 0, cluster_count;
+	uint64_t batch_capacity;
 	struct ue_bridge_bsp_batch *batches = 0;
 	uint32_t *run = 0;
 	struct shader_key *keys = 0;
@@ -219,15 +242,16 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 		if (source->materials[index].vertex_count > scratch.largest_material)
 			scratch.largest_material = source->materials[index].vertex_count;
 	}
-	scratch.owner = (int32_t *)malloc((source->surface_count + 1u) * sizeof(int32_t));
-	scratch.material = (int32_t *)malloc((source->surface_count + 1u) * sizeof(int32_t));
-	scratch.order = (uint32_t *)malloc((source->surface_count + 1u) * sizeof(uint32_t));
-	scratch.cluster_start = (uint32_t *)calloc(cluster_count + 2u, sizeof(uint32_t));
-	scratch.stamp = (uint64_t *)calloc(scratch.largest_material + 1u, sizeof(uint64_t));
-	scratch.batch_index = (ue_bridge_bsp_index *)malloc((scratch.largest_material + 1u) * sizeof(ue_bridge_bsp_index));
-	run = (uint32_t *)malloc((source->surface_count + 1u) * sizeof(uint32_t));
-	keys = (struct shader_key *)malloc((source->surface_count + 1u) * sizeof(struct shader_key));
-	groups = (struct shader_group *)malloc((source->surface_count + 1u) * sizeof(struct shader_group));
+	scratch.owner = (int32_t *)bsp_allocate(source->surface_count, sizeof(int32_t), 0);
+	scratch.material = (int32_t *)bsp_allocate(source->surface_count, sizeof(int32_t), 0);
+	scratch.order = (uint32_t *)bsp_allocate(source->surface_count, sizeof(uint32_t), 0);
+	/* (the spare element plus one: cluster -1's bucket and the end slot) */
+	scratch.cluster_start = (uint32_t *)bsp_allocate((uint64_t)cluster_count + 1u, sizeof(uint32_t), 1);
+	scratch.stamp = (uint64_t *)bsp_allocate(scratch.largest_material, sizeof(uint64_t), 1);
+	scratch.batch_index = (ue_bridge_bsp_index *)bsp_allocate(scratch.largest_material, sizeof(ue_bridge_bsp_index), 0);
+	run = (uint32_t *)bsp_allocate(source->surface_count, sizeof(uint32_t), 0);
+	keys = (struct shader_key *)bsp_allocate(source->surface_count, sizeof(struct shader_key), 0);
+	groups = (struct shader_group *)bsp_allocate(source->surface_count, sizeof(struct shader_group), 0);
 	if (!keys || !groups)
 		goto failed;
 	if (!scratch.owner || !scratch.material || !scratch.order || !scratch.cluster_start || !scratch.stamp || !scratch.batch_index || !run)
@@ -288,8 +312,8 @@ int ue_bridge_bsp_export(struct ue_bridge_load_writer *writer, const struct ue_b
 
 	/* every batch holds at least one surface, so surfaces bound the batches;
 	a clusters x materials product could wrap in 32 bits on damaged counts */
-	batch_capacity = source->surface_count + 1u;
-	batches = (struct ue_bridge_bsp_batch *)malloc(batch_capacity * sizeof(struct ue_bridge_bsp_batch));
+	batch_capacity = (uint64_t)source->surface_count + 1u;
+	batches = (struct ue_bridge_bsp_batch *)bsp_allocate(source->surface_count, sizeof(struct ue_bridge_bsp_batch), 0);
 	if (!batches)
 		goto failed;
 	for (cluster = -1; cluster < (int32_t)cluster_count; cluster++)

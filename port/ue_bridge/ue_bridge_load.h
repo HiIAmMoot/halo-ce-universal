@@ -50,6 +50,13 @@ copies it under the load sequence, so the writers (ue_bridge_model.c,
 ue_bridge_bsp.c) need no volatile. One definition here, because the game and
 the plugin compile every shared file into one translation unit. */
 void *ue_bridge_load_pointer(const struct ue_bridge_load_writer *writer, uint32_t offset);
+/* The bytes of an array of count elements plus one spare (so a zero count
+never asks for a zero-size block), in *bytes; 0 when they don't fit a size_t,
+or when count itself is -1 as an unsigned: a count read from a tag or a source
+description is attacker-sized on a 32-bit size_t. The one sizing every shared
+allocation goes through, and the game's exporter too. *bytes is untouched on
+failure. */
+int ue_bridge_padded_array_bytes(uint64_t count, size_t element_size, size_t *bytes);
 /* 1 when count elements of element_size at offset lie inside capacity bytes
 and offset is aligned to the element (to 4 at most); an empty table is
 always valid */

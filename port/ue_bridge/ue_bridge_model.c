@@ -9,11 +9,21 @@ See ue_bridge_model.h.
 #include <stdlib.h>
 #include <string.h>
 
+/* count + 1 elements through the shared overflow-checked sizing; NULL when it doesn't fit.
+(Named for the file: every shared file is compiled into one translation unit.) */
+static void *model_allocate(uint64_t count, size_t element_size)
+{
+	size_t bytes;
+
+	return ue_bridge_padded_array_bytes(count, element_size, &bytes) ? malloc(bytes) : 0;
+}
+
 /* named for the file: every shared file is compiled into one translation unit */
 static int model_write_part(struct ue_bridge_load_writer *writer, const struct ue_bridge_model_source_part *source, struct ue_bridge_part *part)
 {
 	uint32_t index;
-	uint32_t list_capacity = source->strip_length >= 3u ? 3u * (source->strip_length - 2u) : 0u;
+	/* in 64 bits: three indices a triangle can pass 2^32 on a damaged strip length */
+	uint64_t list_capacity = source->strip_length >= 3u ? 3u * (uint64_t)(source->strip_length - 2u) : 0u;
 	ue_bridge_model_index *list = 0;
 	uint32_t list_count = 0;
 
@@ -30,9 +40,14 @@ static int model_write_part(struct ue_bridge_load_writer *writer, const struct u
 		ue_bridge_decode_model_vertex(&source->vertices[index], &vertex);
 		memcpy((struct ue_bridge_model_vertex *)ue_bridge_load_pointer(writer, part->vertices.offset) + index, &vertex, sizeof(vertex));
 	}
+	if (list_capacity > UINT32_MAX)
+	{
+		writer->overflow = 1;
+		return 0;
+	}
 	if (list_capacity)
 	{
-		list = (ue_bridge_model_index *)malloc(list_capacity * sizeof(*list));
+		list = (ue_bridge_model_index *)model_allocate(list_capacity, sizeof(*list));
 		if (!list)
 		{
 			writer->overflow = 1;
@@ -85,7 +100,7 @@ int ue_bridge_model_export(struct ue_bridge_load_writer *writer, const struct ue
 	memcpy(result.node_counts, source->node_counts, sizeof(result.node_counts));
 	if (source->geometry_count)
 	{
-		remap = (int16_t *)malloc(source->geometry_count * sizeof(int16_t));
+		remap = (int16_t *)model_allocate(source->geometry_count, sizeof(int16_t));
 		if (!remap)
 			goto failed;
 		memset(remap, 0xFF, source->geometry_count * sizeof(int16_t));

@@ -43,6 +43,11 @@ struct ue_bridge_bsp_source
 	uint32_t cluster_count;
 };
 
+/* capacity + count, held at limit: a cluster's subclusters can list more
+surfaces than the BSP has, and the sum of their counts can wrap 32 bits. A
+cluster's surfaces are listed once each, so the BSP's surface count bounds it. */
+uint32_t ue_bridge_bsp_capacity_add(uint32_t capacity, uint32_t count, uint32_t limit);
+
 /* a cluster's packed surface list ([lightmap, material, count, surfaces...]
 groups) as its surfaces; stops at a group that runs past packed_count or
 past capacity; returns the surfaces written */

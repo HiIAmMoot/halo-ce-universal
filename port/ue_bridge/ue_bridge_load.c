@@ -66,6 +66,19 @@ void *ue_bridge_load_pointer(const struct ue_bridge_load_writer *writer, uint32_
 	return (void *)(uintptr_t)(writer->base + offset);
 }
 
+int ue_bridge_padded_array_bytes(uint64_t count, size_t element_size, size_t *bytes)
+{
+	uint64_t elements;
+
+	if (count == UINT64_MAX)
+		return 0;
+	elements = count + 1u;
+	if (element_size && elements > (uint64_t)SIZE_MAX / element_size)
+		return 0;
+	*bytes = (size_t)(elements * element_size);
+	return 1;
+}
+
 int ue_bridge_table_valid(uint32_t offset, uint32_t count, uint32_t element_size, uint32_t capacity)
 {
 	uint32_t alignment = element_size >= 4u ? 4u : element_size;

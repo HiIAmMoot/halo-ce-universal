@@ -142,18 +142,21 @@ unsigned short ue_bridge_export_definition_index(long definition_tag_index)
 	return export_state.definition_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(definition_tag_index)];
 }
 
-/* The game's cseries.h redefines malloc and free as its tracked allocator and
+/* count + 1 zeroed elements, sized by the shared overflow-checked helper; NULL
+when they don't fit a size_t (a crafted map's block counts reach it unchecked).
+The game's cseries.h redefines malloc and free as its tracked allocator and
 leaves calloc alone, so a calloc block freed here halts the game on a bad
 header: allocate through malloc, as the game does. */
-static void *export_zeroed_allocate(size_t count, size_t size)
+static void *export_zeroed_allocate(uint64_t count, size_t size)
 {
+	size_t bytes;
 	void *block;
 
-	if (size && count > (size_t)-1 / size)
+	if (!ue_bridge_padded_array_bytes(count, size, &bytes))
 		return 0;
-	block = malloc(count * size);
+	block = malloc(bytes);
 	if (block)
-		memset(block, 0, count * size);
+		memset(block, 0, bytes);
 	return block;
 }
 
@@ -178,20 +181,43 @@ static int export_model(struct ue_bridge_load_writer *writer, long model_tag_ind
 	struct ue_bridge_model_source_geometry *geometries;
 	struct ue_bridge_model_source_part *parts;
 	int32_t *shader_tags;
-	long index, inner, permutation_total = 0, part_total = 0, cursor;
+	long index, inner, cursor;
+	uint64_t permutation_total = 0, part_total = 0;
 	int result = 0;
 
+	nodes = 0;
+	regions = 0;
+	permutations = 0;
+	geometries = 0;
+	parts = 0;
+	shader_tags = 0;
+	/* A negative count would become a huge unsigned one in the source's
+	fields, and one in a sum would hide a later block's real size: the model
+	is damaged, so it isn't exported. */
+	if (model->nodes.count < 0 || model->regions.count < 0 || model->geometries.count < 0 || model->shaders.count < 0)
+		goto done;
 	for (index = 0; index < model->regions.count; index++)
-		permutation_total += TAG_BLOCK_GET_ELEMENT(&model->regions, index, struct model_region)->permutations.count;
+	{
+		long count = TAG_BLOCK_GET_ELEMENT(&model->regions, index, struct model_region)->permutations.count;
+
+		if (count < 0)
+			goto done;
+		permutation_total += (uint64_t)count;
+	}
 	for (index = 0; index < model->geometries.count; index++)
-		part_total += TAG_BLOCK_GET_ELEMENT(&model->geometries, index, struct export_geometry)->parts.count;
-	/* (+1: no zero-size allocations) */
-	nodes = (struct ue_bridge_model_source_node *)export_zeroed_allocate(model->nodes.count + 1, sizeof(*nodes));
-	regions = (struct ue_bridge_model_source_region *)export_zeroed_allocate(model->regions.count + 1, sizeof(*regions));
-	permutations = (int16_t (*)[UE_BRIDGE_DETAIL_LEVELS])export_zeroed_allocate(permutation_total + 1, sizeof(*permutations));
-	geometries = (struct ue_bridge_model_source_geometry *)export_zeroed_allocate(model->geometries.count + 1, sizeof(*geometries));
-	parts = (struct ue_bridge_model_source_part *)export_zeroed_allocate(part_total + 1, sizeof(*parts));
-	shader_tags = (int32_t *)export_zeroed_allocate(model->shaders.count + 1, sizeof(*shader_tags));
+	{
+		long count = TAG_BLOCK_GET_ELEMENT(&model->geometries, index, struct export_geometry)->parts.count;
+
+		if (count < 0)
+			goto done;
+		part_total += (uint64_t)count;
+	}
+	nodes = (struct ue_bridge_model_source_node *)export_zeroed_allocate((uint64_t)model->nodes.count, sizeof(*nodes));
+	regions = (struct ue_bridge_model_source_region *)export_zeroed_allocate((uint64_t)model->regions.count, sizeof(*regions));
+	permutations = (int16_t (*)[UE_BRIDGE_DETAIL_LEVELS])export_zeroed_allocate(permutation_total, sizeof(*permutations));
+	geometries = (struct ue_bridge_model_source_geometry *)export_zeroed_allocate((uint64_t)model->geometries.count, sizeof(*geometries));
+	parts = (struct ue_bridge_model_source_part *)export_zeroed_allocate(part_total, sizeof(*parts));
+	shader_tags = (int32_t *)export_zeroed_allocate((uint64_t)model->shaders.count, sizeof(*shader_tags));
 	if (!nodes || !regions || !permutations || !geometries || !parts || !shader_tags)
 		goto done;
 
@@ -319,7 +345,8 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	uint32_t *cluster_counts = 0;
 	/* per surface: the last cluster whose subclusters listed it */
 	long *last_cluster_listing = 0;
-	long lightmap_index, material_index, cluster_index, material_total = 0, cursor = 0;
+	long lightmap_index, material_index, cluster_index, cursor = 0;
+	uint64_t material_total = 0;
 	unsigned long started_ms = system_milliseconds();
 	int result = 0;
 
@@ -332,12 +359,21 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	/* global_structure_bsp has no extern; its getter asserts it is set, which
 	the index check above guarantees */
 	bsp = global_structure_bsp_get();
+	/* a negative count would become a huge unsigned one in the source below */
+	if (bsp->lightmaps.count < 0 || bsp->clusters.count < 0 || bsp->surfaces.count < 0)
+		goto done;
 	for (lightmap_index = 0; lightmap_index < bsp->lightmaps.count; lightmap_index++)
-		material_total += TAG_BLOCK_GET_ELEMENT(&bsp->lightmaps, lightmap_index, struct structure_lightmap)->materials.count;
-	materials = (struct ue_bridge_bsp_source_material *)export_zeroed_allocate(material_total + 1, sizeof(*materials));
-	cluster_surfaces = (int32_t **)export_zeroed_allocate(bsp->clusters.count + 1, sizeof(*cluster_surfaces));
-	cluster_counts = (uint32_t *)export_zeroed_allocate(bsp->clusters.count + 1, sizeof(*cluster_counts));
-	last_cluster_listing = (long *)export_zeroed_allocate(bsp->surfaces.count + 1, sizeof(*last_cluster_listing));
+	{
+		long count = TAG_BLOCK_GET_ELEMENT(&bsp->lightmaps, lightmap_index, struct structure_lightmap)->materials.count;
+
+		if (count < 0)
+			goto done;
+		material_total += (uint64_t)count;
+	}
+	materials = (struct ue_bridge_bsp_source_material *)export_zeroed_allocate(material_total, sizeof(*materials));
+	cluster_surfaces = (int32_t **)export_zeroed_allocate((uint64_t)bsp->clusters.count, sizeof(*cluster_surfaces));
+	cluster_counts = (uint32_t *)export_zeroed_allocate((uint64_t)bsp->clusters.count, sizeof(*cluster_counts));
+	last_cluster_listing = (long *)export_zeroed_allocate((uint64_t)bsp->surfaces.count, sizeof(*last_cluster_listing));
 	if (!materials || !cluster_surfaces || !cluster_counts || !last_cluster_listing)
 		goto done;
 	for (cluster_index = 0; cluster_index < bsp->surfaces.count; cluster_index++)
@@ -365,16 +401,30 @@ static int export_loaded_bsp(struct ue_bridge_load_writer *writer, short structu
 	for (cluster_index = 0; cluster_index < bsp->clusters.count; cluster_index++)
 	{
 		struct export_cluster *cluster = TAG_BLOCK_GET_ELEMENT(&bsp->clusters, cluster_index, struct export_cluster);
-		uint32_t packed_count = (uint32_t)cluster->surface_indices.count;
-		uint32_t capacity = packed_count;
+		uint32_t packed_count;
+		uint32_t capacity;
 		long subcluster_index;
+		size_t list_bytes;
 
+		if (cluster->surface_indices.count < 0 || cluster->subclusters.count < 0)
+			goto done;
+		packed_count = (uint32_t)cluster->surface_indices.count;
+		capacity = packed_count;
 		if (!packed_count)
 		{
+			/* the dedup below writes each surface at most once, so the BSP's surface count bounds the sum */
 			for (subcluster_index = 0; subcluster_index < cluster->subclusters.count; subcluster_index++)
-				capacity += (uint32_t)TAG_BLOCK_GET_ELEMENT(&cluster->subclusters, subcluster_index, struct export_subcluster)->surface_indices.count;
+			{
+				long listed_count = TAG_BLOCK_GET_ELEMENT(&cluster->subclusters, subcluster_index, struct export_subcluster)->surface_indices.count;
+
+				if (listed_count < 0)
+					goto done;
+				capacity = ue_bridge_bsp_capacity_add(capacity, (uint32_t)listed_count, (uint32_t)bsp->surfaces.count);
+			}
 		}
-		cluster_surfaces[cluster_index] = (int32_t *)malloc((capacity + 1) * sizeof(int32_t));
+		if (!ue_bridge_padded_array_bytes(capacity, sizeof(int32_t), &list_bytes))
+			goto done;
+		cluster_surfaces[cluster_index] = (int32_t *)malloc(list_bytes);
 		if (!cluster_surfaces[cluster_index])
 			goto done;
 		if (packed_count)
@@ -500,9 +550,9 @@ int ue_bridge_world_export_map(void)
 		if (model_tag != NONE && export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] < 0)
 			export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] = (short)model_count++;
 	}
-	model_tags = (long *)export_zeroed_allocate(model_count + 1, sizeof(long));
-	models = (struct ue_bridge_model *)export_zeroed_allocate(model_count + 1, sizeof(*models));
-	definitions = (struct ue_bridge_definition *)export_zeroed_allocate(definition_count + 1, sizeof(*definitions));
+	model_tags = (long *)export_zeroed_allocate(model_count, sizeof(long));
+	models = (struct ue_bridge_model *)export_zeroed_allocate(model_count, sizeof(*models));
+	definitions = (struct ue_bridge_definition *)export_zeroed_allocate(definition_count, sizeof(*definitions));
 	if (!model_tags || !models || !definitions)
 	{
 		writer->overflow = 1;
