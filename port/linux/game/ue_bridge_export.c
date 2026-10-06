@@ -118,6 +118,7 @@ typedef char export_permutation_levels[sizeof(((struct model_region_permutation 
 doesn't fit; this says the game never needs it to) */
 typedef char export_cluster_limit[MAXIMUM_CLUSTERS_PER_STRUCTURE <= UE_BRIDGE_MAX_CLUSTERS ? 1 : -1];
 typedef char export_datum_limit[(UNSIGNED_SHORT_MAX + 1) == UE_BRIDGE_DATUM_ABSOLUTE_LIMIT ? 1 : -1];
+typedef char export_definition_limit[UE_BRIDGE_NO_DEFINITION == UE_BRIDGE_MAX_DEFINITIONS ? 1 : -1];
 /* the format's field widths hold the game's limits: a vertex's node index is
 a byte, a tick record's region_count is a byte, and tag and datum absolute
 indices stay below UE_BRIDGE_DATUM_ABSOLUTE_LIMIT. A port that raises a
@@ -130,6 +131,8 @@ static struct
 	int exported;
 	/* parts whose first normal the shared decode reads differently from the game */
 	unsigned long normal_mismatches;
+	/* map exports whose definition or model count passed what the format's 16-bit indices hold, since the game started */
+	unsigned long refused_exports;
 	/* by tag absolute index */
 	unsigned short definition_of_tag[UE_BRIDGE_DATUM_ABSOLUTE_LIMIT];
 	short model_of_tag[UE_BRIDGE_DATUM_ABSOLUTE_LIMIT];
@@ -546,9 +549,28 @@ int ue_bridge_world_export_map(void)
 	{
 		long model_tag = object_definition_get(tag_index)->object.model.index;
 
-		export_state.definition_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(tag_index)] = (unsigned short)definition_count++;
+		/* past the limit the counts keep growing (the check below refuses the tables) but no index is stored, so none can wrap */
+		if (definition_count < UE_BRIDGE_MAX_DEFINITIONS)
+			export_state.definition_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(tag_index)] = (unsigned short)definition_count;
+		definition_count++;
 		if (model_tag != NONE && export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] < 0)
-			export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] = (short)model_count++;
+		{
+			if (model_count < UE_BRIDGE_MAX_MODELS)
+				export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] = (short)model_count;
+			model_count++;
+		}
+	}
+	if (!ue_bridge_index_counts_fit(definition_count, model_count))
+	{
+		export_state.refused_exports++;
+		ue_bridge_log("ue bridge: export of %s refused (%lu so far): %lu definitions and %lu models, past what the format's 16-bit indices hold (%lu and %lu); no definition or model table is written",
+			root->map_name, export_state.refused_exports, (unsigned long)definition_count, (unsigned long)model_count,
+			(unsigned long)UE_BRIDGE_MAX_DEFINITIONS, (unsigned long)UE_BRIDGE_MAX_MODELS);
+		root->missing |= UE_BRIDGE_MISSING_DEFINITIONS | UE_BRIDGE_MISSING_MODELS;
+		memset(export_state.definition_of_tag, 0xFF, sizeof(export_state.definition_of_tag));
+		memset(export_state.model_of_tag, 0xFF, sizeof(export_state.model_of_tag));
+		definition_count = 0;
+		model_count = 0;
 	}
 	model_tags = (long *)export_zeroed_allocate(model_count, sizeof(long));
 	models = (struct ue_bridge_model *)export_zeroed_allocate(model_count, sizeof(*models));
@@ -564,7 +586,8 @@ int ue_bridge_world_export_map(void)
 		{
 			long model_tag = object_definition_get(tag_index)->object.model.index;
 
-			if (model_tag != NONE)
+			/* (a refused export left every model unnumbered) */
+			if (model_tag != NONE && export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)] >= 0)
 				model_tags[export_state.model_of_tag[DATUM_INDEX_TO_ABSOLUTE_INDEX(model_tag)]] = model_tag;
 		}
 	}

@@ -57,6 +57,10 @@ description is attacker-sized on a 32-bit size_t. The one sizing every shared
 allocation goes through, and the game's exporter too. *bytes is untouched on
 failure. */
 int ue_bridge_padded_array_bytes(uint64_t count, size_t element_size, size_t *bytes);
+/* 1 when a map's definition and model counts fit the format's 16-bit indices
+(UE_BRIDGE_MAX_DEFINITIONS, UE_BRIDGE_MAX_MODELS); past either, an index would
+wrap into another definition or model, so the export refuses the map's tables */
+int ue_bridge_index_counts_fit(uint32_t definition_count, uint32_t model_count);
 /* 1 when count elements of element_size at offset lie inside capacity bytes
 and offset is aligned to the element (to 4 at most); an empty table is
 always valid */

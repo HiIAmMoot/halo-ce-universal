@@ -79,6 +79,11 @@ int ue_bridge_padded_array_bytes(uint64_t count, size_t element_size, size_t *by
 	return 1;
 }
 
+int ue_bridge_index_counts_fit(uint32_t definition_count, uint32_t model_count)
+{
+	return definition_count <= UE_BRIDGE_MAX_DEFINITIONS && model_count <= UE_BRIDGE_MAX_MODELS;
+}
+
 int ue_bridge_table_valid(uint32_t offset, uint32_t count, uint32_t element_size, uint32_t capacity)
 {
 	uint32_t alignment = element_size >= 4u ? 4u : element_size;

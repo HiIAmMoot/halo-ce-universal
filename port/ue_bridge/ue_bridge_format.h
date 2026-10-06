@@ -72,6 +72,11 @@ hold must never be stored (it would wrap into -1 or another cluster) */
 typedef int16_t ue_bridge_cluster_index;
 /* clusters the type holds: indices 0 through its maximum */
 #define UE_BRIDGE_MAX_CLUSTERS ((uint32_t)INT16_MAX + 1u)
+/* a definition's model is an int16 with -1 for none: models the type holds */
+#define UE_BRIDGE_MAX_MODELS ((uint32_t)INT16_MAX + 1u)
+/* a tick record's definition is a uint16 with 0xFFFF (ue_bridge_world.h's
+UE_BRIDGE_NO_DEFINITION) for none: definitions the field holds */
+#define UE_BRIDGE_MAX_DEFINITIONS 0xFFFFu
 
 struct ue_bridge_region_desc
 {
