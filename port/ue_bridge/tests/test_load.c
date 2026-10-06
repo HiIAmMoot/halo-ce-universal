@@ -109,6 +109,35 @@ static void load_bsp_entry_indexes_the_counted_table(void)
 	UEB_CHECK(ue_bridge_load_bsp_entry((volatile uint8_t *)region, 3) == 0);
 }
 
+/* count + 1 elements: the one spare keeps a zero count from asking for zero bytes */
+static void padded_array_bytes_counts_one_spare_element(void)
+{
+	size_t bytes = 0;
+
+	UEB_CHECK(ue_bridge_padded_array_bytes(3, 4, &bytes) && bytes == 16);
+	UEB_CHECK(ue_bridge_padded_array_bytes(0, 12, &bytes) && bytes == 12);
+}
+
+static void padded_array_bytes_refuses_what_wraps_size_t(void)
+{
+	size_t bytes = 0x1234;
+
+	/* the largest count whose padded array still fits, then one more */
+	if (sizeof(size_t) == 4)
+	{
+		UEB_CHECK(ue_bridge_padded_array_bytes(0x3FFFFFFEu, 4, &bytes) && bytes == 0xFFFFFFFCu);
+		bytes = 0x1234;
+		UEB_CHECK(!ue_bridge_padded_array_bytes(0x3FFFFFFFu, 4, &bytes));
+		UEB_CHECK(!ue_bridge_padded_array_bytes(0xFFFFFFFFu, 1, &bytes));
+		UEB_CHECK(!ue_bridge_padded_array_bytes(0x80000000u, 2, &bytes));
+	}
+	/* a count that is -1 as a long: its own +1 would wrap to 0 */
+	UEB_CHECK(!ue_bridge_padded_array_bytes(UINT64_MAX, 1, &bytes));
+	UEB_CHECK(!ue_bridge_padded_array_bytes((uint64_t)(int64_t)-2, 4, &bytes));
+	/* a failure leaves the result alone */
+	UEB_CHECK(bytes == 0x1234);
+}
+
 const struct ueb_test ueb_load_tests[] =
 {
 	{ "layout_default_section", layout_default_section },
@@ -119,5 +148,7 @@ const struct ueb_test ueb_load_tests[] =
 	{ "load_reserve_rejects_a_size_that_overflows_32_bits", load_reserve_rejects_a_size_that_overflows_32_bits },
 	{ "table_valid_checks_bounds_in_64_bits", table_valid_checks_bounds_in_64_bits },
 	{ "load_bsp_entry_indexes_the_counted_table", load_bsp_entry_indexes_the_counted_table },
+	{ "padded_array_bytes_counts_one_spare_element", padded_array_bytes_counts_one_spare_element },
+	{ "padded_array_bytes_refuses_what_wraps_size_t", padded_array_bytes_refuses_what_wraps_size_t },
 	{ 0, 0 }
 };

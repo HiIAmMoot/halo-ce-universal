@@ -338,6 +338,16 @@ static void bsp_export_refuses_a_surface_count_whose_arrays_would_wrap(void)
 	}
 }
 
+static void bsp_capacity_add_sums_and_saturates_at_the_limit(void)
+{
+	UEB_CHECK(ue_bridge_bsp_capacity_add(3, 4, 100) == 7);
+	UEB_CHECK(ue_bridge_bsp_capacity_add(90, 20, 100) == 100);
+	UEB_CHECK(ue_bridge_bsp_capacity_add(5, 5, 3) == 3);
+	/* the 32-bit sum wraps to 0x10, which is under the limit */
+	UEB_CHECK(ue_bridge_bsp_capacity_add(0xFFFFFFF0u, 0x20u, 0xFFFFFFFFu) == 0xFFFFFFFFu);
+	UEB_CHECK(ue_bridge_bsp_capacity_add(0xFFFFFFFFu, 0xFFFFFFFFu, 1000) == 1000);
+}
+
 static void bsp_export_drops_a_surface_naming_a_missing_vertex(void)
 {
 	static uint16_t damaged[6][3];
@@ -379,6 +389,7 @@ const struct ueb_test ueb_bsp_tests[] =
 	{ "bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold", bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold },
 	{ "bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product", bsp_export_sizes_its_batches_by_surfaces_not_by_a_wrapping_product },
 	{ "bsp_export_refuses_a_surface_count_whose_arrays_would_wrap", bsp_export_refuses_a_surface_count_whose_arrays_would_wrap },
+	{ "bsp_capacity_add_sums_and_saturates_at_the_limit", bsp_capacity_add_sums_and_saturates_at_the_limit },
 	{ "bsp_export_drops_a_surface_naming_a_missing_vertex", bsp_export_drops_a_surface_naming_a_missing_vertex },
 	{ "bsp_export_into_a_full_region_leaves_the_entry_unready", bsp_export_into_a_full_region_leaves_the_entry_unready },
 	{ 0, 0 }
