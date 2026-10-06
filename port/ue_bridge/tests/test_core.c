@@ -1507,6 +1507,8 @@ static void at_rest_compare_runs_only_while_the_bridge_is_active(void)
 	fake_reset();
 	UEB_CHECK(!ue_bridge_active());
 	UEB_CHECK(ue_bridge_snapshot_at_rest(0, 0, 16, 1) == 0);
+	/* and identical snapshots are not at rest when nothing compares them */
+	UEB_CHECK(ue_bridge_snapshot_at_rest(same, same, 16, 1) == 0);
 	start_bridge();
 	UEB_CHECK(ue_bridge_snapshot_at_rest(same, copy, 16, 1) == 1);
 	UEB_CHECK(ue_bridge_snapshot_at_rest(same, copy, 16, 0) == 0);
