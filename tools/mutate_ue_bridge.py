@@ -489,7 +489,7 @@ MUTANTS = [
            "cluster_count = source->cluster_count < UE_BRIDGE_MAX_CLUSTERS ? source->cluster_count : UE_BRIDGE_MAX_CLUSTERS;", "cluster_count = source->cluster_count;",
            "bsp_export_does_not_store_a_cluster_the_index_type_cannot_hold"),
     Mutant("m2a-5", "port/linux/src/ue_bridge.c",
-           "ueb_store_u32(&header->load_sequence, ueb_load_u32(&header->load_sequence) | 1u);", ";",
+           "bridge.load_sequence |= 1u;", ";",
            "load_begin_marks_the_sequence_odd_and_clears_the_root"),
     Mutant("m2a-5", "port/linux/src/ue_bridge.c",
            "ue_bridge_load_writer_init(&bridge.load_writer, region, bridge.layout.load_region.size, 0);",
