@@ -1475,6 +1475,28 @@ static void truncated_ticks_are_counted_and_logged_once_per_epoch(void)
 	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
 }
 
+/* A map's own first BSP is loaded before the load epoch bumps, so an epoch check alone would let a
+restart of the same map append into the previous export: only the end of this map start's export reopens appends */
+static void load_discard_closes_appends_until_the_next_export_ends(void)
+{
+	struct ue_bridge_load_writer *writer;
+
+	start_bridge();
+	ue_bridge_bump_load_epoch();
+	writer = ue_bridge_load_begin();
+	ue_bridge_load_end(1);
+	UEB_CHECK(ue_bridge_load_append() == writer);
+	ue_bridge_load_discard();
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	/* the same epoch still: a restart has not bumped it yet */
+	UEB_CHECK(ue_bridge_load_epoch() == 1);
+	ue_bridge_load_begin();
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	ue_bridge_load_end(1);
+	UEB_CHECK(ue_bridge_load_append() == writer);
+	ue_bridge_stop(UE_BRIDGE_STOP_EXIT);
+}
+
 const struct ueb_test ueb_core_tests[] =
 {
 	{ "core_disabled_maps_nothing", core_disabled_maps_nothing },
@@ -1531,5 +1553,6 @@ const struct ueb_test ueb_core_tests[] =
 	{ "load_end_and_append_follow_the_games_epoch_not_the_headers", load_end_and_append_follow_the_games_epoch_not_the_headers },
 	{ "hold_ready_means_the_games_epoch_not_the_headers", hold_ready_means_the_games_epoch_not_the_headers },
 	{ "truncated_ticks_are_counted_and_logged_once_per_epoch", truncated_ticks_are_counted_and_logged_once_per_epoch },
+	{ "load_discard_closes_appends_until_the_next_export_ends", load_discard_closes_appends_until_the_next_export_ends },
 	{ 0, 0 }
 };

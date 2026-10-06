@@ -638,6 +638,24 @@ static void game_map_ready_publishes_the_first_tick_before_the_export_ends(void)
 	UEB_CHECK(section_header()->export_complete == 1);
 }
 
+/* main_new_map's loading hook comes before the map's first BSP load: a BSP appended then, on a restart of
+the same map, would land in the previous export's region */
+static void game_loading_closes_the_previous_export_to_appends(void)
+{
+	game_reset();
+	ue_bridge_game_pump();
+	ue_bridge_game_map_loaded();
+	ue_bridge_game_map_ready();
+	UEB_CHECK(ue_bridge_load_append() != 0);
+	ue_bridge_game_loading(1);
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	ue_bridge_game_loading(0);
+	UEB_CHECK(ue_bridge_load_append() == 0);
+	ue_bridge_game_map_loaded();
+	ue_bridge_game_map_ready();
+	UEB_CHECK(ue_bridge_load_append() != 0);
+}
+
 static void game_map_ready_without_a_reader_does_not_hold(void)
 {
 	game_reset();
@@ -736,6 +754,7 @@ const struct ueb_test ueb_game_tests[] =
 	{ "game_console_started_without_a_start_map_does_nothing", game_console_started_without_a_start_map_does_nothing },
 	{ "game_map_ready_publishes_a_tick_and_holds_for_a_present_reader", game_map_ready_publishes_a_tick_and_holds_for_a_present_reader },
 	{ "game_map_ready_publishes_the_first_tick_before_the_export_ends", game_map_ready_publishes_the_first_tick_before_the_export_ends },
+	{ "game_loading_closes_the_previous_export_to_appends", game_loading_closes_the_previous_export_to_appends },
 	{ "game_map_ready_without_a_reader_does_not_hold", game_map_ready_without_a_reader_does_not_hold },
 	{ "game_map_ready_in_a_network_game_does_not_hold", game_map_ready_in_a_network_game_does_not_hold },
 	{ "game_hold_times_out_and_starts_time", game_hold_times_out_and_starts_time },
