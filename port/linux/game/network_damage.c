@@ -2365,3 +2365,55 @@ void network_damage_new_game(
 	for (player_index = 0; player_index < DAMAGE_RATE_CACHE_SIZE; player_index++)
 		damage_rate_cache[player_index].source_index = NONE;
 }
+
+#ifdef HALO_PROFILE
+/* the file's entries' layouts, for the profiling build's bytes per field:
+every member in order, a key's kind */
+#define DISTRIBUTED_DAMAGE_EVENT_LAYOUT(M) \
+	M(struct distributed_damage_event, kind, _profile_net_key_none) \
+	M(struct distributed_damage_event, player_index, _profile_net_key_none) \
+	M(struct distributed_damage_event, kill_flags, _profile_net_key_none) \
+	M(struct distributed_damage_event, pad, _profile_net_key_none) \
+	M(struct distributed_damage_event, object_index, _profile_net_key_datum) \
+	M(struct distributed_damage_event, damage, _profile_net_key_none) \
+	M(struct distributed_damage_event, being_damaged_flags, _profile_net_key_none) \
+	M(struct distributed_damage_event, shield_damage, _profile_net_key_none) \
+	M(struct distributed_damage_event, body_damage, _profile_net_key_none) \
+	M(struct distributed_damage_event, body_damage_multiplier, _profile_net_key_none) \
+	M(struct distributed_damage_event, total_damage, _profile_net_key_none) \
+	M(struct distributed_damage_event, body_part, _profile_net_key_none) \
+	M(struct distributed_damage_event, node_index, _profile_net_key_none) \
+	M(struct distributed_damage_event, region_index, _profile_net_key_none) \
+	M(struct distributed_damage_event, material_index, _profile_net_key_none) \
+	M(struct distributed_damage_event, killer_score, _profile_net_key_none)
+#define DISTRIBUTED_HIT_REPORT_LAYOUT(M) \
+	M(struct distributed_hit_report, object_index, _profile_net_key_datum) \
+	M(struct distributed_hit_report, damage, _profile_net_key_none) \
+	M(struct distributed_hit_report, target_position, _profile_net_key_none) \
+	M(struct distributed_hit_report, object_normal, _profile_net_key_none) \
+	M(struct distributed_hit_report, node_index, _profile_net_key_none) \
+	M(struct distributed_hit_report, region_index, _profile_net_key_none) \
+	M(struct distributed_hit_report, material_index, _profile_net_key_none) \
+	M(struct distributed_hit_report, has_normal, _profile_net_key_none) \
+	M(struct distributed_hit_report, pad, _profile_net_key_none) \
+	M(struct distributed_hit_report, host_time, _profile_net_key_none)
+
+static struct profile_net_layout_member const distributed_damage_event_layout[] =
+	{ DISTRIBUTED_DAMAGE_EVENT_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_hit_report_layout[] =
+	{ DISTRIBUTED_HIT_REPORT_LAYOUT(PROFILE_NET_MEMBER) };
+
+typedef char distributed_damage_event_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_DAMAGE_EVENT_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_damage_event, killer_score) ? 1 : -1];
+typedef char distributed_hit_report_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_HIT_REPORT_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_hit_report, host_time) ? 1 : -1];
+
+void network_damage_profile_register(
+	void)
+{
+	profile_net_layout(_distributed_message_damage_events, distributed_damage_event_layout,
+		NUMBEROF(distributed_damage_event_layout), sizeof(struct distributed_damage_event));
+	profile_net_layout(_distributed_message_hit_reports, distributed_hit_report_layout,
+		NUMBEROF(distributed_hit_report_layout), sizeof(struct distributed_hit_report));
+}
+#endif

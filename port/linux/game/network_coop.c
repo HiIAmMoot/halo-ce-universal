@@ -595,6 +595,12 @@ static void send_to_clients(
 		_distributed_to_clients);
 }
 
+#ifdef HALO_PROFILE
+/* (its caller decided the send: the site is the caller's) */
+#define send_to_clients(message, type, count, entry_size) \
+	PROFILE_NET_SITE((send_to_clients)(message, type, count, entry_size))
+#endif
+
 /* host, each tick: whether a client machine joined since the last, and so
 whether to resend this tick (host_resend) */
 static void host_resend_update(
@@ -3111,3 +3117,173 @@ static void client_play_presentation(
 	if (presentation)
 		client_presentation_apply(presentation);
 }
+
+#ifdef HALO_PROFILE
+/* the file's entries' layouts, for the profiling build's bytes per field:
+every member in order, a key's kind */
+#define DISTRIBUTED_COOP_PRESENTATION_LAYOUT(M) \
+	M(struct distributed_coop_presentation, flags, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, fade_color, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, fade_ticks, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, fade_elapsed, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, fade_start_time, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_position, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_forward, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_up, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_field_of_view, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, skip_votes, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, skip_voters, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, unit_hud_flags, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, weapon_hud_flags, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_reference_time, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_ticks, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_flash_cutoff, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_x, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_y, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, timer_corner, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_scripted, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, input_disabled, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_object_index, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, camera_object_offset, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, scripted_shake, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, players_vitality_set, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, activating_cluster, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, players_maximum_body_vitality, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, players_maximum_shield_vitality, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, ally_teams, _profile_net_key_none) \
+	M(struct distributed_coop_presentation, friendly_teams, _profile_net_key_none)
+#define DISTRIBUTED_COOP_EVENT_LAYOUT(M) \
+	M(struct distributed_coop_event, kind, _profile_net_key_none) \
+	M(struct distributed_coop_event, type, _profile_net_key_none) \
+	M(struct distributed_coop_event, number, _profile_net_key_none) \
+	M(struct distributed_coop_event, value, _profile_net_key_none) \
+	M(struct distributed_coop_event, frame, _profile_net_key_none) \
+	M(struct distributed_coop_event, name_index, _profile_net_key_none) \
+	M(struct distributed_coop_event, interpolate, _profile_net_key_none) \
+	M(struct distributed_coop_event, pad, _profile_net_key_none) \
+	M(struct distributed_coop_event, object_index, _profile_net_key_datum) \
+	M(struct distributed_coop_event, target, _profile_net_key_none) \
+	M(struct distributed_coop_event, tag_index, _profile_net_key_none) \
+	M(struct distributed_coop_event, definition_index, _profile_net_key_none) \
+	M(struct distributed_coop_event, reals, _profile_net_key_none)
+#define DISTRIBUTED_COOP_DEVICE_GROUP_LAYOUT(M) \
+	M(struct distributed_coop_device_group, group_index, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, name_index, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, object_index, _profile_net_key_datum) \
+	M(struct distributed_coop_device_group, definition_index, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, role, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, flags, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, snaps, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, changed, _profile_net_key_none) \
+	M(struct distributed_coop_device_group, value, _profile_net_key_none)
+#define DISTRIBUTED_COOP_DEVICE_STATE_LAYOUT(M) \
+	M(struct distributed_coop_device_state, name_index, _profile_net_key_none) \
+	M(struct distributed_coop_device_state, moving, _profile_net_key_none) \
+	M(struct distributed_coop_device_state, pad, _profile_net_key_none) \
+	M(struct distributed_coop_device_state, object_index, _profile_net_key_datum) \
+	M(struct distributed_coop_device_state, definition_index, _profile_net_key_none) \
+	M(struct distributed_coop_device_state, position, _profile_net_key_none) \
+	M(struct distributed_coop_device_state, power, _profile_net_key_none)
+#define DISTRIBUTED_COOP_OBJECT_TRANSFORM_LAYOUT(M) \
+	M(struct distributed_coop_object_transform, name_index, _profile_net_key_none) \
+	M(struct distributed_coop_object_transform, pad, _profile_net_key_none) \
+	M(struct distributed_coop_object_transform, object_index, _profile_net_key_datum) \
+	M(struct distributed_coop_object_transform, definition_index, _profile_net_key_none) \
+	M(struct distributed_coop_object_transform, position, _profile_net_key_none) \
+	M(struct distributed_coop_object_transform, forward, _profile_net_key_none) \
+	M(struct distributed_coop_object_transform, up, _profile_net_key_none)
+#define DISTRIBUTED_COOP_OBJECT_LOOK_LAYOUT(M) \
+	M(struct distributed_coop_object_look, name_index, _profile_net_key_none) \
+	M(struct distributed_coop_object_look, pad, _profile_net_key_none) \
+	M(struct distributed_coop_object_look, object_index, _profile_net_key_datum) \
+	M(struct distributed_coop_object_look, definition_index, _profile_net_key_none) \
+	M(struct distributed_coop_object_look, region_permutations, _profile_net_key_none) \
+	M(struct distributed_coop_object_look, scale, _profile_net_key_none)
+#define DISTRIBUTED_COOP_OBJECT_NAMES_LAYOUT(M) \
+	M(struct distributed_coop_object_names, structure_bsp_index, _profile_net_key_none) \
+	M(struct distributed_coop_object_names, name_count, _profile_net_key_none) \
+	M(struct distributed_coop_object_names, present, _profile_net_key_none)
+#define DISTRIBUTED_COOP_SKIP_VOTE_LAYOUT(M) \
+	M(struct distributed_coop_skip_vote, voted, _profile_net_key_none) \
+	M(struct distributed_coop_skip_vote, pad, _profile_net_key_none)
+#define RASTERIZER_SCREEN_EFFECT_PORT_STATE_LAYOUT(M) \
+	M(struct rasterizer_screen_effect_port_state, has_control, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, initialized, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, video_on, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_desaturation_is_additive, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_light_enhancement_uses_convolution_mask, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_desaturation_uses_convolution_mask, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, convolution_extra_passes, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, convolution_type, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, video_overbright_mode, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_desaturation_tint, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, video_noise_intensity, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, convolution_radius, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, convolution_time, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_light_enhancement_intensity, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_desaturation_intensity, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, filter_time, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, script_values, _profile_net_key_none) \
+	M(struct rasterizer_screen_effect_port_state, near_clip_distance, _profile_net_key_none)
+
+static struct profile_net_layout_member const distributed_coop_presentation_layout[] =
+	{ DISTRIBUTED_COOP_PRESENTATION_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_event_layout[] =
+	{ DISTRIBUTED_COOP_EVENT_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_device_group_layout[] =
+	{ DISTRIBUTED_COOP_DEVICE_GROUP_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_device_state_layout[] =
+	{ DISTRIBUTED_COOP_DEVICE_STATE_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_object_transform_layout[] =
+	{ DISTRIBUTED_COOP_OBJECT_TRANSFORM_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_object_look_layout[] =
+	{ DISTRIBUTED_COOP_OBJECT_LOOK_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_object_names_layout[] =
+	{ DISTRIBUTED_COOP_OBJECT_NAMES_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_coop_skip_vote_layout[] =
+	{ DISTRIBUTED_COOP_SKIP_VOTE_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const rasterizer_screen_effect_port_state_layout[] =
+	{ RASTERIZER_SCREEN_EFFECT_PORT_STATE_LAYOUT(PROFILE_NET_MEMBER) };
+
+typedef char distributed_coop_presentation_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_PRESENTATION_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_presentation, friendly_teams) ? 1 : -1];
+typedef char distributed_coop_event_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_EVENT_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_event, reals) ? 1 : -1];
+typedef char distributed_coop_device_group_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_DEVICE_GROUP_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_device_group, value) ? 1 : -1];
+typedef char distributed_coop_device_state_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_DEVICE_STATE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_device_state, power) ? 1 : -1];
+typedef char distributed_coop_object_transform_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_OBJECT_TRANSFORM_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_object_transform, up) ? 1 : -1];
+typedef char distributed_coop_object_look_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_OBJECT_LOOK_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_object_look, scale) ? 1 : -1];
+typedef char distributed_coop_object_names_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_OBJECT_NAMES_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_object_names, present) ? 1 : -1];
+typedef char distributed_coop_skip_vote_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_COOP_SKIP_VOTE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_coop_skip_vote, pad) ? 1 : -1];
+typedef char rasterizer_screen_effect_port_state_layout_assert[PROFILE_NET_LAYOUT_OK(0 RASTERIZER_SCREEN_EFFECT_PORT_STATE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct rasterizer_screen_effect_port_state, near_clip_distance) ? 1 : -1];
+
+void network_coop_profile_register(
+	void)
+{
+	profile_net_layout(_distributed_message_coop_presentation, distributed_coop_presentation_layout,
+		NUMBEROF(distributed_coop_presentation_layout), sizeof(struct distributed_coop_presentation));
+	profile_net_layout(_distributed_message_coop_events, distributed_coop_event_layout,
+		NUMBEROF(distributed_coop_event_layout), sizeof(struct distributed_coop_event));
+	profile_net_layout(_distributed_message_coop_device_groups, distributed_coop_device_group_layout,
+		NUMBEROF(distributed_coop_device_group_layout), sizeof(struct distributed_coop_device_group));
+	profile_net_layout(_distributed_message_coop_device_states, distributed_coop_device_state_layout,
+		NUMBEROF(distributed_coop_device_state_layout), sizeof(struct distributed_coop_device_state));
+	profile_net_layout(_distributed_message_coop_object_transforms, distributed_coop_object_transform_layout,
+		NUMBEROF(distributed_coop_object_transform_layout), sizeof(struct distributed_coop_object_transform));
+	profile_net_layout(_distributed_message_coop_object_looks, distributed_coop_object_look_layout,
+		NUMBEROF(distributed_coop_object_look_layout), sizeof(struct distributed_coop_object_look));
+	profile_net_layout(_distributed_message_coop_object_names, distributed_coop_object_names_layout,
+		NUMBEROF(distributed_coop_object_names_layout), sizeof(struct distributed_coop_object_names));
+	profile_net_layout(_distributed_message_coop_skip_vote, distributed_coop_skip_vote_layout,
+		NUMBEROF(distributed_coop_skip_vote_layout), sizeof(struct distributed_coop_skip_vote));
+	profile_net_layout(_distributed_message_coop_screen_effect, rasterizer_screen_effect_port_state_layout,
+		NUMBEROF(rasterizer_screen_effect_port_state_layout), sizeof(struct rasterizer_screen_effect_port_state));
+}
+#endif

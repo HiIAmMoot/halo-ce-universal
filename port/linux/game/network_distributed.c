@@ -72,6 +72,7 @@ machine (their datum identifiers need not be).
 #include "units/bipeds.h"
 #include "network_coop.h"
 #include "network_distributed.h"
+#include "cseries/profile_sections.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -446,6 +447,11 @@ struct distributed_packer
 	word prefix_size;
 	word size;
 	word room;
+#ifdef HALO_PROFILE
+	/* the site of distributed_packer_begin's caller: the messages are
+	flushed later, from distributed_packer_add or another flush */
+	int profile_site;
+#endif
 	struct
 	{
 		struct distributed_message_header header;
@@ -456,6 +462,28 @@ struct distributed_packer
 /* ---------- globals */
 
 static long distributed_last_sent_time = NONE;
+
+/* the tick's steps, timed in the profiling build */
+PROFILE_SECTION(distributed_tick_apply_predictions_section, "network_distributed_tick.apply_predictions")
+PROFILE_SECTION(distributed_tick_apply_vehicle_predictions_section, "network_distributed_tick.apply_vehicle_predictions")
+PROFILE_SECTION(distributed_tick_objects_host_tick_section, "network_distributed_tick.objects_host_tick")
+PROFILE_SECTION(distributed_tick_plan_players_section, "network_distributed_tick.plan_players")
+PROFILE_SECTION(distributed_tick_damage_host_tick_section, "network_distributed_tick.damage_host_tick")
+PROFILE_SECTION(distributed_tick_send_statistics_section, "network_distributed_tick.send_statistics")
+PROFILE_SECTION(distributed_tick_send_pings_section, "network_distributed_tick.send_pings")
+PROFILE_SECTION(distributed_tick_send_structure_bsp_section, "network_distributed_tick.send_structure_bsp")
+PROFILE_SECTION(distributed_tick_send_players_section, "network_distributed_tick.send_players")
+PROFILE_SECTION(distributed_tick_actors_host_tick_section, "network_distributed_tick.actors_host_tick")
+PROFILE_SECTION(distributed_tick_coop_host_tick_section, "network_distributed_tick.coop_host_tick")
+PROFILE_SECTION(distributed_tick_send_pickups_section, "network_distributed_tick.send_pickups")
+PROFILE_SECTION(distributed_tick_send_game_state_section, "network_distributed_tick.send_game_state")
+PROFILE_SECTION(distributed_tick_note_own_positions_section, "network_distributed_tick.note_own_positions")
+PROFILE_SECTION(distributed_tick_send_inputs_section, "network_distributed_tick.send_inputs")
+PROFILE_SECTION(distributed_tick_send_predictions_section, "network_distributed_tick.send_predictions")
+PROFILE_SECTION(distributed_tick_objects_client_tick_section, "network_distributed_tick.objects_client_tick")
+PROFILE_SECTION(distributed_tick_damage_client_tick_section, "network_distributed_tick.damage_client_tick")
+PROFILE_SECTION(distributed_tick_coop_client_tick_section, "network_distributed_tick.coop_client_tick")
+PROFILE_SECTION(distributed_tick_batches_flush_section, "network_distributed_tick.batches_flush")
 
 /* how each player last died, by absolute index: the host's own, which it
 sends its clients, and a client's copy of the host's */
@@ -852,10 +880,22 @@ static void distributed_batch_flush(
 	header->game_time = game_time_get();
 	header->header = 0;
 	build_message_header(&header->header, batch->size, 2, 0);
+#ifdef HALO_PROFILE
+	{
+		/* (the batch's messages count as sent only when it reached the
+		connection layer) */
+		boolean sent = sender == HOST_SENDER ? network_distributed_client_send(batch->data, batch->size) :
+			network_distributed_server_send_to_machine(sender, batch->data, batch->size);
+
+		if (profile_net_recording)
+			profile_net_batch_flush(sender, sender == HOST_SENDER ? PROFILE_NET_HOST : sender, batch->size, sent);
+	}
+#else
 	if (sender == HOST_SENDER)
 		network_distributed_client_send(batch->data, batch->size);
 	else
 		network_distributed_server_send_to_machine(sender, batch->data, batch->size);
+#endif
 	batch->size = 0;
 }
 
@@ -895,6 +935,13 @@ static void distributed_batch_append(
 		sizeof(*header) - sizeof(message_header));
 	csmemcpy(batch->data + batch->size + BATCH_MESSAGE_OVERHEAD, entries, entries_size);
 	batch->size += (word)(BATCH_MESSAGE_OVERHEAD + entries_size);
+#ifdef HALO_PROFILE
+	if (profile_net_recording)
+	{
+		profile_net_batch_append(sender, sender == HOST_SENDER ? PROFILE_NET_HOST : sender, header->type,
+			BATCH_MESSAGE_OVERHEAD + entries_size, header->count);
+	}
+#endif
 }
 
 /* where a message's bytes past its message header go: a machine's batch,
@@ -942,6 +989,10 @@ static void distributed_batch_add(
 		}
 		header.count = (byte)fit;
 		distributed_batch_append(sender, &header, entries, (word)(fit * entry_size));
+#ifdef HALO_PROFILE
+		if (profile_net_recording)
+			profile_net_entries(sender == HOST_SENDER ? PROFILE_NET_HOST : sender, header.type, entries, fit, entry_size);
+#endif
 		entries += fit * entry_size;
 		count -= fit;
 	}
@@ -973,6 +1024,11 @@ static void distributed_fill_header(
 	header->header = 0;
 	build_message_header(&header->header, size, 2, 0);
 	distributed_statistics.sent++;
+#ifdef HALO_PROFILE
+	/* (once a message, before its fan-out to machines) */
+	if (profile_net_recording)
+		profile_net_built(type);
+#endif
 }
 
 /* the size of each of a message's entries, when they are alike, else 0 */
@@ -987,7 +1043,7 @@ static word distributed_entry_size(
 	return (word)(entries_size / count);
 }
 
-void distributed_send(
+void PROFILE_FUNCTION_NAME(distributed_send)(
 	void *message,
 	byte type,
 	short count,
@@ -1015,7 +1071,7 @@ void distributed_send(
 	}
 }
 
-void distributed_send_to_machine(
+void PROFILE_FUNCTION_NAME(distributed_send_to_machine)(
 	long machine_index,
 	void *message,
 	byte type,
@@ -1028,7 +1084,7 @@ void distributed_send_to_machine(
 	distributed_batch_add((short)machine_index, message, size, distributed_entry_size(count, size));
 }
 
-void distributed_send_to_machine_reliably(
+void PROFILE_FUNCTION_NAME(distributed_send_to_machine_reliably)(
 	long machine_index,
 	void *message,
 	byte type,
@@ -1058,6 +1114,17 @@ static void distributed_packer_begin(
 		csmemcpy(packer->message.data, prefix, prefix_size);
 }
 
+#ifdef HALO_PROFILE
+#define distributed_packer_begin(packer, sender, type, prefix, prefix_size) \
+	({ \
+		static int profile_net_site_id = -1; \
+		if (profile_net_site_id < 0) \
+			profile_net_site_id = profile_net_site(__FUNCTION__, __LINE__); \
+		struct distributed_packer *profile_packer = (packer); \
+		(distributed_packer_begin)(profile_packer, sender, type, prefix, prefix_size); \
+		profile_packer->profile_site = profile_net_site_id; \
+	})
+#endif
 /* the message packed so far, into the batch */
 static void distributed_packer_flush(
 	struct distributed_packer *packer)
@@ -1066,8 +1133,14 @@ static void distributed_packer_flush(
 
 	if (!packer->count)
 		return;
+#ifdef HALO_PROFILE
+	profile_net_site_push(packer->profile_site);
+#endif
 	distributed_fill_header(&packer->message, packer->type, packer->count, size);
 	distributed_batch_add(packer->sender, &packer->message, size, 0);
+#ifdef HALO_PROFILE
+	profile_net_site_pop();
+#endif
 	packer->count = 0;
 	packer->size = packer->prefix_size;
 }
@@ -1084,11 +1157,28 @@ static void distributed_packer_add(
 	if (!packer->count)
 		packer->room = MIN(distributed_batch_room(packer->sender, (word)(packer->prefix_size + entry_size)),
 			(word)sizeof(packer->message.data));
+#ifdef HALO_PROFILE
+	/* (an entry that does not fit is dropped, and so are the fields its
+	writer put) */
+	if (profile_net_recording && packer->size + entry_size > packer->room)
+	{
+		profile_net_packed_entry(packer->sender == HOST_SENDER ? PROFILE_NET_HOST : packer->sender, packer->type, 0,
+			entry_size, FALSE);
+	}
+#endif
 	if (packer->size + entry_size > packer->room)
 		return;
 	csmemcpy(packer->message.data + packer->size, entry, entry_size);
 	packer->size += entry_size;
 	packer->count++;
+#ifdef HALO_PROFILE
+	/* (a packed entry starts with its player's index) */
+	if (profile_net_recording)
+	{
+		profile_net_packed_entry(packer->sender == HOST_SENDER ? PROFILE_NET_HOST : packer->sender, packer->type,
+			((byte const *)entry)[0], entry_size, TRUE);
+	}
+#endif
 }
 
 /* the bytes of what a message says, in order: written, and read no further
@@ -1101,6 +1191,24 @@ static byte *distributed_put(
 	csmemcpy(cursor, data, size);
 	return cursor + size;
 }
+
+#ifdef HALO_PROFILE
+/* each field a packed entry's writer puts, named by its argument
+("&state->position": position), counted when the entry goes into its
+message (distributed_packer_add). The size is taken once: an argument of the
+call is never evaluated twice */
+#define distributed_put(cursor, data, size) \
+	({ \
+		static int profile_net_field_id = -1; \
+		void const *profile_net_field_data = (data); \
+		short profile_net_field_size = (size); \
+		if (profile_net_field_id < 0) \
+			profile_net_field_id = profile_net_field(#data); \
+		if (profile_net_recording) \
+			profile_net_field_put(profile_net_field_id, profile_net_field_size); \
+		(distributed_put)((cursor), profile_net_field_data, profile_net_field_size); \
+	})
+#endif
 
 static boolean distributed_take(
 	byte const **cursor,
@@ -3268,6 +3376,9 @@ void network_distributed_new_game(
 	for (sender = 0; sender < MAXIMUM_SENDERS; sender++)
 	{
 		distributed_batches[sender].size = 0;
+#ifdef HALO_PROFILE
+		profile_net_batch_discard(sender);
+#endif
 		for (type = 0; type < NUMBER_OF_DISTRIBUTED_MESSAGES; type++)
 			distributed_received_times[sender][type] = NONE;
 	}
@@ -3331,40 +3442,41 @@ void network_distributed_tick(
 		decided first: the damage goes where the players it hurt do), and a
 		kill's statistics before the kill, so that a client announcing it
 		counts it (a double kill, a killing spree) */
-		distributed_apply_predictions();
-		network_objects_apply_vehicle_predictions();
-		network_objects_host_tick();
-		distributed_host_plan_players();
-		network_damage_host_tick();
+		profile_scope(distributed_tick_apply_predictions_section, distributed_apply_predictions();)
+		profile_scope(distributed_tick_apply_vehicle_predictions_section, network_objects_apply_vehicle_predictions();)
+		profile_scope(distributed_tick_objects_host_tick_section, network_objects_host_tick();)
+		profile_scope(distributed_tick_plan_players_section, distributed_host_plan_players();)
+		profile_scope(distributed_tick_damage_host_tick_section, network_damage_host_tick();)
 		if (distributed_statistics_due || game_time_get() % STATISTICS_INTERVAL_TICKS == 0)
-			distributed_send_statistics(game_time_get() % STATISTICS_REFRESH_TICKS == 0);
+			profile_scope(distributed_tick_send_statistics_section,
+				distributed_send_statistics(game_time_get() % STATISTICS_REFRESH_TICKS == 0);)
 		distributed_statistics_due = FALSE;
 		if (game_time_get() % PING_INTERVAL_TICKS == 0)
-			distributed_send_pings();
+			profile_scope(distributed_tick_send_pings_section, distributed_send_pings();)
 		/* (before the players, so clients load a new BSP before they hear
 		where the host moved everyone into it) */
 		if (network_coop_active() && (global_structure_bsp_index_get() != distributed_sent_structure_bsp_index ||
 			game_time_get() % STRUCTURE_BSP_INTERVAL_TICKS == 0))
 		{
-			distributed_send_structure_bsp();
+			profile_scope(distributed_tick_send_structure_bsp_section, distributed_send_structure_bsp();)
 		}
-		distributed_host_send_players();
-		network_actors_host_tick();
-		network_coop_host_tick();
-		distributed_send_pickups();
+		profile_scope(distributed_tick_send_players_section, distributed_host_send_players();)
+		profile_scope(distributed_tick_actors_host_tick_section, network_actors_host_tick();)
+		profile_scope(distributed_tick_coop_host_tick_section, network_coop_host_tick();)
+		profile_scope(distributed_tick_send_pickups_section, distributed_send_pickups();)
 		if (game_time_get() % GAME_STATE_INTERVAL_TICKS == 0)
-			distributed_send_game_state(NONE);
+			profile_scope(distributed_tick_send_game_state_section, distributed_send_game_state(NONE);)
 	}
 	else if (connection == _game_connection_network_client)
 	{
-		distributed_note_own_positions();
-		distributed_client_send_inputs();
-		distributed_client_send_predictions();
-		network_objects_client_tick();
-		network_damage_client_tick();
-		network_coop_client_tick();
+		profile_scope(distributed_tick_note_own_positions_section, distributed_note_own_positions();)
+		profile_scope(distributed_tick_send_inputs_section, distributed_client_send_inputs();)
+		profile_scope(distributed_tick_send_predictions_section, distributed_client_send_predictions();)
+		profile_scope(distributed_tick_objects_client_tick_section, network_objects_client_tick();)
+		profile_scope(distributed_tick_damage_client_tick_section, network_damage_client_tick();)
+		profile_scope(distributed_tick_coop_client_tick_section, network_coop_client_tick();)
 	}
-	distributed_batches_flush();
+	profile_scope(distributed_tick_batches_flush_section, distributed_batches_flush();)
 	distributed_machines.in_tick = FALSE;
 	distributed_machines.valid = FALSE;
 }
@@ -3851,6 +3963,38 @@ not overtaken by the newer damage sent with the ticks since
 (distributed_message_stale) */
 static boolean distributed_handling_batch;
 
+#ifdef HALO_PROFILE
+/* how far network_distributed_handle_message got with the message it is
+handling: why it dropped it, or handled (the profiling build's received
+table) */
+static int distributed_receive_stage;
+static void distributed_handle_message(long machine_index, word const *message, word size);
+PROFILE_SECTION(distributed_receive_section, "network_distributed_receive")
+
+/* a top-level message, timed, and counted once it is handled or dropped;
+a batch's messages are counted where the batch takes them apart */
+void network_distributed_handle_message(
+	long machine_index,
+	word const *message,
+	word size)
+{
+	profile_scope_enter(distributed_receive_section)
+	distributed_handle_message(machine_index, message, size);
+	if (profile_net_recording)
+	{
+		profile_net_received(machine_index == NONE ? PROFILE_NET_HOST : machine_index, message, size,
+			size >= sizeof(struct distributed_message_header) &&
+				((struct distributed_message_header const *)message)->type == _distributed_message_batch ?
+				_profile_net_received_batch : _profile_net_received_message,
+			distributed_receive_stage);
+	}
+	profile_scope_exit(distributed_receive_section)
+}
+
+/* the batch-recursion alias bypasses the wrapper and ends at the #undef below */
+#define network_distributed_handle_message distributed_handle_message
+#endif
+
 /* a message of the distributed kind; machine_index is the sender's on the
 host, NONE on a client */
 void network_distributed_handle_message(
@@ -3864,6 +4008,9 @@ void network_distributed_handle_message(
 	word entry_size;
 
 	/* (none between games: loading, or in the menus) */
+#ifdef HALO_PROFILE
+	distributed_receive_stage = size < sizeof(header) ? _profile_net_drop_bad_size : _profile_net_drop_not_in_game;
+#endif
 	if (size < sizeof(header) || !game_in_progress())
 		return;
 	csmemcpy(&header, message, sizeof(header));
@@ -3871,6 +4018,9 @@ void network_distributed_handle_message(
 	if (header.type == _distributed_message_batch)
 	{
 		word offset = sizeof(header);
+#ifdef HALO_PROFILE
+		boolean batch_fits = 1;
+#endif
 
 		while (offset + sizeof(word) <= size)
 		{
@@ -3882,6 +4032,11 @@ void network_distributed_handle_message(
 			if (length > size - offset || length < sizeof(header) - sizeof(message_header) ||
 				sizeof(message_header) + length > sizeof(buffer))
 			{
+#ifdef HALO_PROFILE
+				/* (not offset against size after the loop: a length word at the
+				datagram's very end leaves nothing to measure) */
+				batch_fits = 0;
+#endif
 				break;
 			}
 			csmemcpy(buffer, message, sizeof(message_header));
@@ -3892,9 +4047,28 @@ void network_distributed_handle_message(
 			{
 				distributed_handling_batch = TRUE;
 				network_distributed_handle_message(machine_index, buffer, (word)(sizeof(message_header) + length));
+#ifdef HALO_PROFILE
+				/* (each inner message's share of the datagram) */
+				if (profile_net_recording)
+				{
+					profile_net_received(machine_index == NONE ? PROFILE_NET_HOST : machine_index, buffer,
+						sizeof(word) + length, _profile_net_received_inner, distributed_receive_stage);
+				}
+#endif
 				distributed_handling_batch = FALSE;
 			}
+#ifdef HALO_PROFILE
+			else if (profile_net_recording)
+			{
+				profile_net_received(machine_index == NONE ? PROFILE_NET_HOST : machine_index, buffer,
+					sizeof(word) + length, _profile_net_received_inner, _profile_net_drop_bad_type);
+			}
+#endif
 		}
+#ifdef HALO_PROFILE
+		/* (a length that does not fit: the rest of the datagram is dropped) */
+		distributed_receive_stage = batch_fits ? _profile_net_drop_handled : _profile_net_drop_bad_size;
+#endif
 		return;
 	}
 	/* (entries of a size of their own: their least here, and each read no
@@ -3930,6 +4104,10 @@ void network_distributed_handle_message(
 	case _distributed_message_hit_reports: entry_size = network_damage_entry_size(header.type); break;
 	default: entry_size = network_objects_entry_size(header.type); break;
 	}
+#ifdef HALO_PROFILE
+	distributed_receive_stage = header.type == 0 || header.type >= NUMBER_OF_DISTRIBUTED_MESSAGES ?
+		_profile_net_drop_bad_type : _profile_net_drop_bad_size;
+#endif
 	if (header.type == 0 || header.type >= NUMBER_OF_DISTRIBUTED_MESSAGES ||
 		size < sizeof(header) + header.count * entry_size)
 	{
@@ -3950,6 +4128,9 @@ void network_distributed_handle_message(
 	}
 	distributed_statistics.received++;
 
+#ifdef HALO_PROFILE
+	distributed_receive_stage = _profile_net_drop_wrong_direction;
+#endif
 	/* (each kind from the host, or from a client) */
 	switch (header.type)
 	{
@@ -3972,11 +4153,17 @@ void network_distributed_handle_message(
 			distributed_host_time = header.game_time;
 		break;
 	}
+#ifdef HALO_PROFILE
+	distributed_receive_stage = _profile_net_drop_stale;
+#endif
 	if ((distributed_handling_batch || header.type != _distributed_message_damage_events) &&
 		distributed_message_stale(machine_index, &header))
 	{
 		return;
 	}
+#ifdef HALO_PROFILE
+	distributed_receive_stage = _profile_net_drop_fast_clock;
+#endif
 	/* (the host: a client's clock, by its messages' ticks; and its players'
 	predictions not taken while its game runs fast) */
 	if (machine_index != NONE)
@@ -3990,6 +4177,9 @@ void network_distributed_handle_message(
 		}
 	}
 
+#ifdef HALO_PROFILE
+	distributed_receive_stage = _profile_net_drop_handled;
+#endif
 	switch (header.type)
 	{
 	case _distributed_message_player_prediction:
@@ -4168,6 +4358,10 @@ void network_distributed_handle_message(
 	}
 }
 
+#ifdef HALO_PROFILE
+#undef network_distributed_handle_message
+#endif
+
 /* (the host: network_server_message_handler.c) a client machine's message
 of the distributed kind that came over its stream, which no other machine
 can send as it: as network_distributed_handle_message */
@@ -4180,3 +4374,127 @@ void network_distributed_handle_stream_message(
 	network_distributed_handle_message(machine_index, message, size);
 	distributed_handling_stream_message = FALSE;
 }
+
+#ifdef HALO_PROFILE
+/* the messages' names and the functions that handle them, for the
+profiling build's traces (tools/test_profile.py holds them to the enum and
+to the receive switch above) */
+static struct profile_net_message_name const distributed_message_names[] =
+{
+	{ _distributed_message_player_prediction, "player_prediction", "distributed_handle_predictions" },
+	{ _distributed_message_unit_states, "unit_states", "distributed_handle_unit_states" },
+	{ _distributed_message_player_statistics, "player_statistics", "network_distributed_handle_message" },
+	{ _distributed_message_inventories, "inventories", "network_objects_handle_inventories" },
+	{ _distributed_message_object_changes, "object_changes", "network_objects_handle_changes" },
+	{ _distributed_message_object_states, "object_states", "network_objects_handle_states" },
+	{ _distributed_message_game_state, "game_state", "game_engine_read_network_state" },
+	{ _distributed_message_objects_synchronized, "objects_synchronized", "network_objects_handle_synchronized" },
+	{ _distributed_message_client_ready, "client_ready", "network_distributed_handle_message" },
+	{ _distributed_message_damage_events, "damage_events", "network_damage_handle_events" },
+	{ _distributed_message_hit_reports, "hit_reports", "network_damage_handle_reports" },
+	{ _distributed_message_vehicle_prediction, "vehicle_prediction", "network_objects_handle_vehicle_prediction" },
+	{ _distributed_message_pickups, "pickups", "network_distributed_handle_message" },
+	{ _distributed_message_player_inputs, "player_inputs", "distributed_handle_inputs" },
+	{ _distributed_message_relayed_actions, "relayed_actions", "distributed_handle_actions" },
+	{ _distributed_message_batch, "batch", "network_distributed_handle_message" },
+	{ _distributed_message_notice, "notice", "network_distributed_handle_message" },
+	{ _distributed_message_client_identity, "client_identity", "network_distributed_handle_message" },
+	{ _distributed_message_pings, "pings", "network_distributed_handle_message" },
+	{ _distributed_message_actor_states, "actor_states", "network_actors_handle_states" },
+	{ _distributed_message_structure_bsp, "structure_bsp", "distributed_handle_structure_bsp" },
+	{ _distributed_message_coop_presentation, "coop_presentation", "network_coop_handle_presentation" },
+	{ _distributed_message_coop_sounds_retired, "coop_sounds_retired", "" },
+	{ _distributed_message_coop_device_groups, "coop_device_groups", "network_coop_handle_device_groups" },
+	{ _distributed_message_coop_object_names, "coop_object_names", "network_coop_handle_object_names" },
+	{ _distributed_message_coop_skip_vote, "coop_skip_vote", "network_coop_handle_skip_vote" },
+	{ _distributed_message_coop_events, "coop_events", "network_coop_handle_events" },
+	{ _distributed_message_coop_object_transforms, "coop_object_transforms", "network_coop_handle_object_transforms" },
+	{ _distributed_message_actor_damage, "actor_damage", "network_actors_handle_damage" },
+	{ _distributed_message_coop_object_looks, "coop_object_looks", "network_coop_handle_object_looks" },
+	{ _distributed_message_damage_animations, "damage_animations", "network_objects_handle_damage_animations" },
+	{ _distributed_message_coop_screen_effect, "coop_screen_effect", "network_coop_handle_screen_effect" },
+	{ _distributed_message_coop_device_states, "coop_device_states", "network_coop_handle_device_states" },
+};
+
+/* (profile_net.c reads a message's type at this offset, in files that do
+not know the struct) */
+typedef char distributed_message_header_type_offset_assert[
+	offsetof(struct distributed_message_header, type) == PROFILE_NET_MESSAGE_TYPE_OFFSET ? 1 : -1];
+
+/* the file's entries' layouts: every member in order, a key's kind */
+#define DISTRIBUTED_PICKUP_LAYOUT(M) \
+	M(struct distributed_pickup, player_index, _profile_net_key_player) \
+	M(struct distributed_pickup, kind, _profile_net_key_none) \
+	M(struct distributed_pickup, count, _profile_net_key_none) \
+	M(struct distributed_pickup, definition_index, _profile_net_key_none)
+#define DISTRIBUTED_PLAYER_STATISTICS_LAYOUT(M) \
+	M(struct distributed_player_statistics, player_index, _profile_net_key_player) \
+	M(struct distributed_player_statistics, pad, _profile_net_key_none) \
+	M(struct distributed_player_statistics, statistics, _profile_net_key_none)
+#define DISTRIBUTED_PLAYER_PING_LAYOUT(M) \
+	M(struct distributed_player_ping, player_index, _profile_net_key_player) \
+	M(struct distributed_player_ping, pad, _profile_net_key_none) \
+	M(struct distributed_player_ping, milliseconds, _profile_net_key_none)
+#define DISTRIBUTED_PLAYER_INPUT_LAYOUT(M) \
+	M(struct distributed_player_input, player_index, _profile_net_key_player) \
+	M(struct distributed_player_input, structure_bsp_index, _profile_net_key_none) \
+	M(struct distributed_player_input, pad, _profile_net_key_none) \
+	M(struct distributed_player_input, tick, _profile_net_key_none) \
+	M(struct distributed_player_input, host_time, _profile_net_key_none) \
+	M(struct distributed_player_input, action, _profile_net_key_none) \
+	M(struct distributed_player_input, control_flags, _profile_net_key_none)
+#define DISTRIBUTED_STRUCTURE_BSP_LAYOUT(M) \
+	M(struct distributed_structure_bsp, structure_bsp_index, _profile_net_key_none) \
+	M(struct distributed_structure_bsp, pad, _profile_net_key_none)
+#define DISTRIBUTED_CLIENT_IDENTITY_LAYOUT(M) \
+	M(struct distributed_client_identity, discord_id, _profile_net_key_none) \
+	M(struct distributed_client_identity, discord_name, _profile_net_key_none)
+
+static struct profile_net_layout_member const distributed_pickup_layout[] =
+	{ DISTRIBUTED_PICKUP_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_player_statistics_layout[] =
+	{ DISTRIBUTED_PLAYER_STATISTICS_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_player_ping_layout[] =
+	{ DISTRIBUTED_PLAYER_PING_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_player_input_layout[] =
+	{ DISTRIBUTED_PLAYER_INPUT_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_structure_bsp_layout[] =
+	{ DISTRIBUTED_STRUCTURE_BSP_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_client_identity_layout[] =
+	{ DISTRIBUTED_CLIENT_IDENTITY_LAYOUT(PROFILE_NET_MEMBER) };
+
+typedef char distributed_pickup_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_PICKUP_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_pickup, definition_index) ? 1 : -1];
+typedef char distributed_player_statistics_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_PLAYER_STATISTICS_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_player_statistics, statistics) ? 1 : -1];
+typedef char distributed_player_ping_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_PLAYER_PING_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_player_ping, milliseconds) ? 1 : -1];
+typedef char distributed_player_input_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_PLAYER_INPUT_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_player_input, control_flags) ? 1 : -1];
+typedef char distributed_structure_bsp_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_STRUCTURE_BSP_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_structure_bsp, pad) ? 1 : -1];
+typedef char distributed_client_identity_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_CLIENT_IDENTITY_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_client_identity, discord_name) ? 1 : -1];
+
+void network_distributed_profile_register(
+	void)
+{
+	profile_net_message_names(distributed_message_names, NUMBEROF(distributed_message_names));
+	profile_net_layout(_distributed_message_pickups, distributed_pickup_layout, NUMBEROF(distributed_pickup_layout),
+		sizeof(struct distributed_pickup));
+	profile_net_layout(_distributed_message_player_statistics, distributed_player_statistics_layout,
+		NUMBEROF(distributed_player_statistics_layout), sizeof(struct distributed_player_statistics));
+	profile_net_layout(_distributed_message_pings, distributed_player_ping_layout,
+		NUMBEROF(distributed_player_ping_layout), sizeof(struct distributed_player_ping));
+	profile_net_layout(_distributed_message_player_inputs, distributed_player_input_layout,
+		NUMBEROF(distributed_player_input_layout), sizeof(struct distributed_player_input));
+	profile_net_layout(_distributed_message_structure_bsp, distributed_structure_bsp_layout,
+		NUMBEROF(distributed_structure_bsp_layout), sizeof(struct distributed_structure_bsp));
+	profile_net_layout(_distributed_message_client_identity, distributed_client_identity_layout,
+		NUMBEROF(distributed_client_identity_layout), sizeof(struct distributed_client_identity));
+	network_objects_profile_register();
+	network_actors_profile_register();
+	network_damage_profile_register();
+	network_coop_profile_register();
+}
+#endif

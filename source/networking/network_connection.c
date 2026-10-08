@@ -212,6 +212,9 @@ symbols in this file:
 #include "bungie_net/network/transport_endpoint_winsock.h"
 #include "memory/circular_queue.h"
 #include "network_connection.h"
+#ifdef HALO_PROFILE
+#include "profile_net.h"
+#endif
 
 /* ---------- constants */
 
@@ -358,6 +361,55 @@ boolean network_connection_connected(
 		(boolean)endpoint_connected(connection->reliable_endpoint);
 }
 
+#ifdef HALO_PROFILE
+/* port: the profiling build's connection layer: bytes, and datagrams or stream
+writes, by direction, channel and connection (profile_net.c) */
+static void network_connection_profile_traffic(
+	enum network_connection_traffic_event event,
+	long amount,
+	struct network_connection *connection)
+{
+	struct transport_address const *address = connection->reliable_address_valid ? &connection->reliable_address :
+		connection->unreliable_address_valid ? &connection->unreliable_address : NULL;
+	int direction;
+	int channel;
+
+	switch (event)
+	{
+	case _network_connection_traffic_event_datagram_sent:
+		direction = _profile_net_out;
+		channel = _profile_net_datagram;
+		break;
+	case _network_connection_traffic_event_datagram_received:
+		direction = _profile_net_in;
+		channel = _profile_net_datagram;
+		break;
+	case _network_connection_traffic_event_stream_bytes_sent:
+		direction = _profile_net_out;
+		channel = _profile_net_stream;
+		break;
+	case _network_connection_traffic_event_stream_bytes_received:
+		direction = _profile_net_in;
+		channel = _profile_net_stream;
+		break;
+	default:
+		return;
+	}
+	profile_net_traffic(connection, direction, channel, (unsigned long)amount,
+		address ? address->address.ipv4_address : 0, address ? address->port : 0);
+}
+
+/* port: the bytes waiting in a connection's reliable queue (profile_net.c reads
+them once a second) */
+long network_connection_profile_queued_bytes(
+	void const *connection)
+{
+	struct network_connection const *queued = (struct network_connection const *)connection;
+
+	return queued->reliable_outgoing_queue ? circular_queue_size(queued->reliable_outgoing_queue) : 0;
+}
+#endif
+
 static void network_connection_log_traffic_event(
 	enum network_connection_traffic_event event,
 	long amount,
@@ -368,6 +420,14 @@ static void network_connection_log_traffic_event(
 		0x4CC,
 		connection);
 
+#ifdef HALO_PROFILE
+	/* (a close is seen even while nothing is counted: profile_net.c keeps
+	the connection's pointer, which must not outlive it) */
+	if (event == _network_connection_traffic_event_close && profile_net_connections)
+		profile_net_connection_closed(connection);
+	if (profile_net_counting && amount > 0)
+		network_connection_profile_traffic(event, amount, connection);
+#endif
 	if (amount <= 0)
 	{
 		return;

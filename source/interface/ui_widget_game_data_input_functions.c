@@ -2025,7 +2025,12 @@ static void set_textbox_to_build_number(
 	if (!build_number_string[0])
 	{
 		ascii_to_wide(
+#ifdef HALO_PROFILE
+			/* (|n: the second line, in the version's colour and font; menu_tags.c makes its box tall enough) */
+			"01.01.14.2342|nprofiling enabled",
+#else
 			"01.01.14.2342",
+#endif
 			build_number_string,
 			sizeof(build_number_string));
 	}

@@ -900,3 +900,64 @@ void network_actors_drive(
 		}
 	}
 }
+
+#ifdef HALO_PROFILE
+/* the file's entries' layouts, for the profiling build's bytes per field:
+every member in order, a key's kind */
+#define DISTRIBUTED_ACTOR_STATE_LAYOUT(M) \
+	M(struct distributed_actor_state, unit_index, _profile_net_key_datum) \
+	M(struct distributed_actor_state, vehicle_index, _profile_net_key_none) \
+	M(struct distributed_actor_state, seat_index, _profile_net_key_none) \
+	M(struct distributed_actor_state, flags, _profile_net_key_none) \
+	M(struct distributed_actor_state, impulse_number, _profile_net_key_none) \
+	M(struct distributed_actor_state, impulse, _profile_net_key_none) \
+	M(struct distributed_actor_state, animation_state, _profile_net_key_none) \
+	M(struct distributed_actor_state, aiming_speed, _profile_net_key_none) \
+	M(struct distributed_actor_state, primary_trigger, _profile_net_key_none) \
+	M(struct distributed_actor_state, control_flags, _profile_net_key_none) \
+	M(struct distributed_actor_state, throttle, _profile_net_key_none) \
+	M(struct distributed_actor_state, active_camouflage, _profile_net_key_none) \
+	M(struct distributed_actor_state, speech_number, _profile_net_key_none) \
+	M(struct distributed_actor_state, team, _profile_net_key_none) \
+	M(struct distributed_actor_state, facing, _profile_net_key_none) \
+	M(struct distributed_actor_state, aiming, _profile_net_key_none) \
+	M(struct distributed_actor_state, looking, _profile_net_key_none) \
+	M(struct distributed_actor_state, impulse_alignment, _profile_net_key_none) \
+	M(struct distributed_actor_state, run_blindly_angle, _profile_net_key_none) \
+	M(struct distributed_actor_state, body_vitality, _profile_net_key_none) \
+	M(struct distributed_actor_state, shield_vitality, _profile_net_key_none) \
+	M(struct distributed_actor_state, speech_sound, _profile_net_key_none) \
+	M(struct distributed_actor_state, user_animation_graph, _profile_net_key_none) \
+	M(struct distributed_actor_state, user_animation, _profile_net_key_none) \
+	M(struct distributed_actor_state, user_animation_number, _profile_net_key_none) \
+	M(struct distributed_actor_state, user_animation_interpolate, _profile_net_key_none) \
+	M(struct distributed_actor_state, position, _profile_net_key_none) \
+	M(struct distributed_actor_state, velocity, _profile_net_key_none) \
+	M(struct distributed_actor_state, forward, _profile_net_key_none) \
+	M(struct distributed_actor_state, up, _profile_net_key_none)
+#define DISTRIBUTED_ACTOR_DAMAGE_LAYOUT(M) \
+	M(struct distributed_actor_damage, unit_index, _profile_net_key_datum) \
+	M(struct distributed_actor_damage, current_shield_damage, _profile_net_key_none) \
+	M(struct distributed_actor_damage, recent_shield_damage, _profile_net_key_none) \
+	M(struct distributed_actor_damage, current_body_damage, _profile_net_key_none) \
+	M(struct distributed_actor_damage, recent_body_damage, _profile_net_key_none)
+
+static struct profile_net_layout_member const distributed_actor_state_layout[] =
+	{ DISTRIBUTED_ACTOR_STATE_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_actor_damage_layout[] =
+	{ DISTRIBUTED_ACTOR_DAMAGE_LAYOUT(PROFILE_NET_MEMBER) };
+
+typedef char distributed_actor_state_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_ACTOR_STATE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_actor_state, up) ? 1 : -1];
+typedef char distributed_actor_damage_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_ACTOR_DAMAGE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_actor_damage, recent_body_damage) ? 1 : -1];
+
+void network_actors_profile_register(
+	void)
+{
+	profile_net_layout(_distributed_message_actor_states, distributed_actor_state_layout,
+		NUMBEROF(distributed_actor_state_layout), sizeof(struct distributed_actor_state));
+	profile_net_layout(_distributed_message_actor_damage, distributed_actor_damage_layout,
+		NUMBEROF(distributed_actor_damage_layout), sizeof(struct distributed_actor_damage));
+}
+#endif

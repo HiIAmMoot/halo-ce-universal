@@ -1043,7 +1043,7 @@ static void *widget_build(long widget_index)
 	definition->bounds.y0 = (short)source->top;
 	definition->bounds.x0 = (short)source->left;
 	definition->bounds.y1 = (short)(source->top + (source->has_height ? source->height : 480));
-	definition->bounds.x1 = (short)(source->left + (source->has_width ? source->width : 640));
+	HALO_PROFILE_WIDGET(definition->bounds.x1 = (short)(source->left + (source->has_width ? source->width : 640)));
 	definition->flags = flags_parse(source->flags, widget_flag_names, NUMBEROF(widget_flag_names),
 		source->file, source->line);
 	/* (in a network game the clock runs on) */
@@ -1931,3 +1931,19 @@ struct pc_menu_setting *pc_menu_setting_get(
 	}
 	return NULL;
 }
+
+#ifdef HALO_PROFILE
+/* at the end of the file: the normal build's debug_malloc and debug_free
+lines above must stay where they are (their __LINE__ reaches the binary).
+The main menu's version is one line (20) tall, and the bounds cut off the
+second line, "profiling enabled" (set_textbox_to_build_number) */
+void profile_menu_widget(
+	void *definition,
+	char const *name)
+{
+	struct ui_widget_definition *widget = definition;
+
+	if (!strcmp(name, "main_menu/build_number") && widget->bounds.y1 - widget->bounds.y0 < 40)
+		widget->bounds.y1 = (short)(widget->bounds.y0 + 40);
+}
+#endif

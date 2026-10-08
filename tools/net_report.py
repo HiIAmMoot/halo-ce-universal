@@ -1,0 +1,783 @@
+#!/usr/bin/env python3
+"""Tables and a summary of a profiling build's recording (configure.py
+--profile; README.md's profiling section).
+
+A recording is the parts the game wrote to the profiles folder of its data root,
+profile_<time>_<role>.part<n>.json, each a whole Chrome trace with two keys
+of its own, "halo" (the header and the network tables) and "cpu_summary".
+This reads those two keys of every part (never the events), treats the
+parts as one recording, prints the tables and writes <name>.summary.txt
+next to the joined file (or parts): plain ASCII, at most about 300 lines.
+
+    python tools/net_report.py RECORDING [RECORDING2 ...]
+        [--from S] [--to S] [--top N] [--machine M] [--csv DIR] [--no-summary]
+
+RECORDING is any of a recording's part files, or its name (the path without
+.part<n>.json). Given a host's recording and a client's of the same game,
+it also matches the client to the host's machine.
+"""
+
+import argparse
+import csv
+import json
+import re
+import sys
+from pathlib import Path
+
+FORMAT = 1
+BATCH_HEADER = 0
+SUMMARY_LINE_LIMIT = 300
+# (the summary file always uses this, so its length does not depend on --top)
+SUMMARY_TOP = 20
+REQUIRED_HEADER = ("part", "last_part", "role", "own_machine", "build", "platform", "map",
+                   "players", "start_utc",
+                   "stop_reason")
+DIRECTIONS = ("out", "in")
+PER_TICK_PREFIXES = ("game_tick", "network_distributed_tick")
+# (the packed messages whose entries are a player's)
+PACKED_PLAYER_TYPES = ("unit_states", "relayed_actions", "player_prediction")
+
+COLUMNS_GLOSSARY = """\
+scope        CPU scope name (a profile section or frame timer); nested names use "."
+count        times the scope ran in the recording
+total_ms     summed inclusive time (children included), milliseconds
+mean_ms      total_ms / count
+max_ms       longest single run
+per_frame    count / frames recorded
+per_tick_ms  total_ms / ticks recorded (game_tick.* and network_distributed_tick* only)
+frame        frame number in the recording
+at_s         seconds from the start of the recording to that frame
+frame_ms     that frame's duration
+ticks        game ticks that frame ran
+longest scopes (ms)  the frame's three scopes, at any depth, with the most time of their own (children not counted), name and that time
+direction    out = sent by this machine, in = received by it
+level        game = what the netcode wrote (a datagram whose batch began before the recording is missing from its first second); connection = what the socket layer sent; wire = tunnel packets incl. encryption and KCP
+B/s          bytes per second, mean over the selected seconds
+packets/s    datagrams (game, connection) or tunnel packets (wire) per second
+dir          out or in
+type         distributed message type (the netcode's message kind)
+msgs/s       messages per second (a message split across datagrams counts per piece)
+entries/s    entries (objects, players, events) per second
+bytes/msg    B/s / msgs/s
+share%       message types: share of that direction's B/s; fields: share of that message type's field B/s
+function:line  sending function and source line that decided to send
+built/s      messages built per second, before fan-out to machines
+sent/s       messages sent per second, summed over machines
+handler      receiving function that handles the type
+dropped/s    received messages discarded before their handler, per second (also counted in the received tables' msgs/s and B/s)
+reason       why a received message was discarded: not_in_game (loading or menus), bad_type, bad_size (shorter than its header or entries; on batch_header a batch cut short, its whole datagram counted), wrong_direction (a host message from a client or the reverse), stale (older than one already taken), fast_clock (a prediction from a machine whose game runs fast)
+machine      the game's machine index ("host" on a client)
+address      the machine's network address (virtual 100.64.x.x on internet play)
+out_B/s      bytes per second sent to the machine
+in_B/s       bytes per second received from the machine, discarded messages included
+ping_ms      game round trip as the scoreboard shows it (33 ms steps)
+wire_rtt_ms  tunnel round trip, milliseconds; 0 = not measured (LAN, no tunnel round trip, or the peer or machine was dropped: see problems)
+loss_in%     tunnel packets lost on the way in, percent; 0 = not measured (LAN, no tunnel packet counter, or the peer or machine was dropped: see problems)
+queue_max_B  most bytes waiting in the reliable queue in any second
+failed       sends that never reached the socket layer (a reliable send that fails early is not counted)
+object_type  biped, vehicle, weapon, equipment, ...; player = a player's entries, other = objects past the key limit, unknown = a handle with no object row (also object keys past the table, counted per interval: see problems)
+tag          the object type's definition's tag name
+field        part of an entry; header = bytes written outside the named fields
+source       measured = counted as written; layout = member size x entries
+item         overhead kind"""
+
+
+class ReportError(Exception):
+    pass
+
+
+# ---------- reading a recording
+
+
+def part_paths(recording):
+    """the recording's name, its part files by number, and the warnings"""
+    path = Path(recording)
+    match = re.match(r"^(.*)\.part(\d+)\.json$", path.name)
+    base = path.parent / (match.group(1) if match else re.sub(r"\.json$", "", path.name))
+    parts = {}
+    for candidate in base.parent.glob(base.name + ".part*.json"):
+        number = re.match(r"^.*\.part(\d+)\.json$", candidate.name)
+        if number and candidate.name.startswith(base.name + ".part"):
+            parts[int(number.group(1))] = candidate
+    if not parts:
+        raise ReportError(f"no parts of {base}")
+    warnings = [f"part {number} of {base.name} is missing" for number in range(1, max(parts) + 1)
+                if number not in parts]
+    return base, [parts[number] for number in sorted(parts)], warnings
+
+
+def read_head(path):
+    """the header and cpu tables, read before the event array"""
+    with open(path, "r", encoding="utf-8") as file:
+        return read_head_stream(file, path)
+
+
+def read_head_stream(file, path):
+    text = ""
+    marker = '"traceEvents"'
+    while marker not in text:
+        chunk = file.read(65536)
+        if not chunk:
+            raise ReportError(f"{path}: has no traceEvents")
+        text += chunk
+    text = text.split(marker, 1)[0].rstrip().rstrip(",") + "}"
+    try:
+        head = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ReportError(f"{path}: not a recording part ({error})") from None
+    if not isinstance(head, dict):
+        raise ReportError(f"{path}: not a recording part")
+    joined = isinstance(head.get("halo_parts"), list)
+    if joined:
+        if not isinstance(head.get("cpu_summary_parts"), list) or len(head["halo_parts"]) != len(head["cpu_summary_parts"]):
+            raise ReportError(f"{path}: joined part tables do not match")
+        result = [{"halo": halo, "cpu_summary": cpu} for halo, cpu in
+                  zip(head["halo_parts"], head["cpu_summary_parts"])]
+        for index, part in enumerate(result, 1):
+            _validate_head_part(part, path, index)
+        return result
+    for key in ("halo", "cpu_summary"):
+        if not isinstance(head.get(key), dict):
+            raise ReportError(f'{path}: has no "{key}"')
+    _validate_head_part(head, path)
+    return [head]
+
+
+def _validate_head_part(head, path, part_number=None):
+    where = f"{path} part {part_number}" if part_number is not None else str(path)
+    for key in ("halo", "cpu_summary"):
+        if not isinstance(head.get(key), dict):
+            raise ReportError(f'{where}: has no "{key}"')
+    header = head["halo"].get("header")
+    if not isinstance(header, dict):
+        raise ReportError(f'{where}: has no "header" in "halo"')
+    for key in REQUIRED_HEADER:
+        if key not in header:
+            raise ReportError(f'{where}: the header has no "{key}"')
+
+
+def table_dicts(table):
+    columns = table["columns"]
+    return [dict(zip(columns, row)) for row in table["rows"]]
+
+
+class Recording:
+    """a recording's parts as one: the network tables summed over their
+    intervals, the CPU summaries merged"""
+
+    def __init__(self, recording):
+        path = Path(recording)
+        if path.is_file() and path.suffix == ".json":
+            with path.open("rb") as file:
+                prefix = file.read(20)
+            if prefix.startswith(b'{"halo_parts":'):
+                self.base, self.warnings = path.with_suffix(""), []
+                with path.open("r", encoding="utf-8") as file:
+                    heads = read_head_stream(file, path)
+            else:
+                self.base, paths, self.warnings = part_paths(recording)
+                heads = [head for part in paths for head in read_head(part)]
+        else:
+            self.base, paths, self.warnings = part_paths(recording)
+            heads = [head for part in paths for head in read_head(part)]
+        self.name = self.base.name
+        self.headers = [head["halo"]["header"] for head in heads]
+        self.parts = [header["part"] for header in self.headers]
+        self.complete = any(header["last_part"] for header in self.headers)
+        if not self.complete:
+            self.warnings.append(f"{self.name} has no last part: the recording is incomplete")
+        self.header = self.headers[0]
+        self.tables = {}
+        self.metadata = {}
+        for head in heads:
+            for name, table in head["halo"].items():
+                if name == "header":
+                    continue
+                rows = table_dicts(table)
+                if name in ("message_types", "sites", "fields", "layouts", "machines", "connections", "objects"):
+                    self.metadata.setdefault(name, {})
+                    for row in rows:
+                        self.metadata[name][self.metadata_key(name, row)] = row
+                else:
+                    self.tables.setdefault(name, []).extend(rows)
+        self.cpu = self.merge_cpu([head["cpu_summary"] for head in heads])
+
+    @staticmethod
+    def metadata_key(name, row):
+        if name == "layouts":
+            return (row["type"], row["member"])
+        if name in ("message_types", "sites", "fields", "connections"):
+            return row["id"]
+        if name == "machines":
+            return row["machine"]
+        return row["key"]
+
+    @staticmethod
+    def merge_cpu(summaries):
+        names = {}
+        frames = sum(summary["frames"] for summary in summaries)
+        ticks = sum(summary["ticks"] for summary in summaries)
+        worst = []
+        for summary in summaries:
+            for row in table_dicts(summary):
+                totals = names.setdefault(row["name"], {"count": 0, "total_ms": 0.0, "max_ms": 0.0})
+                totals["count"] += row["count"]
+                totals["total_ms"] += row["total_ms"]
+                totals["max_ms"] = max(totals["max_ms"], row["max_ms"])
+            worst.extend(table_dicts(summary["worst_frames"]))
+        for name, totals in names.items():
+            totals["mean_ms"] = totals["total_ms"] / totals["count"] if totals["count"] else 0.0
+            totals["per_frame"] = totals["count"] / frames if frames else 0.0
+            totals["per_tick_ms"] = (totals["total_ms"] / ticks if ticks and name.startswith(PER_TICK_PREFIXES)
+                                     else None)
+        worst.sort(key=lambda row: -row["frame_ms"])
+        return {"frames": frames, "ticks": ticks, "names": names, "worst": worst[:10]}
+
+    def select(self, start=None, end=None):
+        """the intervals from start to end seconds, and their seconds"""
+        chosen = set()
+        seconds = 0.0
+        for row in self.tables.get("intervals", []):
+            if (start is None or row["start_s"] >= start) and (end is None or row["start_s"] < end):
+                chosen.add(row["interval"])
+                seconds += row["length_s"]
+        return chosen, seconds
+
+    def rows(self, table, intervals):
+        return [row for row in self.tables.get(table, []) if row["interval"] in intervals]
+
+    def type_name(self, type_id):
+        row = self.metadata.get("message_types", {}).get(type_id)
+        return row["name"] if row else f"type_{type_id}"
+
+    def handler(self, type_id):
+        row = self.metadata.get("message_types", {}).get(type_id)
+        return row["handler"] if row and row["handler"] else "-"
+
+    def site(self, site_id):
+        row = self.metadata.get("sites", {}).get(site_id)
+        return f"{row['function']}:{row['line']}" if row else "-"
+
+
+# ---------- the tables
+
+
+def rate(value, seconds):
+    return value / seconds if seconds > 0 else 0.0
+
+
+def machine_matches(machine, wanted):
+    return wanted is None or str(machine) == str(wanted)
+
+
+def traffic_table(recording, intervals, seconds):
+    rows = []
+    game = {direction: [0, 0] for direction in DIRECTIONS}
+    for row in recording.rows("messages", intervals):
+        if row["dir"] == "out":
+            game["out"][0] += row["bytes"]
+            if row["type"] == BATCH_HEADER or row["reliable"]:
+                game["out"][1] += row["messages"]
+    for row in recording.rows("received", intervals):
+        if row["dropped"] == "":
+            game["in"][0] += row["bytes"]
+            # (a batch's datagram is its header row; its messages are rows of
+            # their own)
+            if row["type"] == BATCH_HEADER:
+                game["in"][1] += row["messages"]
+    connection = {direction: [0, 0] for direction in DIRECTIONS}
+    for row in recording.rows("traffic", intervals):
+        connection[row["dir"]][0] += row["bytes"]
+        connection[row["dir"]][1] += row["packets"]
+    wire = {direction: [0, 0] for direction in DIRECTIONS}
+    for row in recording.rows("tunnel", intervals):
+        wire["out"][0] += row["bytes_out"]
+        wire["in"][0] += row["bytes_in"]
+        wire["out"][1] += row["packets_out"]
+        wire["in"][1] += row["packets_in"]
+    for direction in DIRECTIONS:
+        rows.append([direction, "game", rate(game[direction][0], seconds), rate(game[direction][1], seconds)])
+        rows.append([direction, "connection", rate(connection[direction][0], seconds),
+                     rate(connection[direction][1], seconds)])
+        rows.append([direction, "wire", rate(wire[direction][0], seconds), rate(wire[direction][1], seconds)])
+        rows.append([direction, "not_distributed",
+                     rate(max(0, connection[direction][0] - game[direction][0]), seconds),
+                     rate(max(0, connection[direction][1] - game[direction][1]), seconds)])
+    return ["direction", "level", "B/s", "packets/s"], rows
+
+
+def message_type_table(recording, intervals, seconds, machine=None):
+    totals = {}
+    for row in recording.rows("messages", intervals):
+        if machine_matches(row["machine"], machine):
+            entry = totals.setdefault(("out", row["type"]), [0, 0, 0])
+            entry[0] += row["messages"]
+            entry[1] += row["entries"]
+            entry[2] += row["bytes"]
+    for row in recording.rows("received", intervals):
+        if row["dropped"] == "" and machine_matches(row["machine"], machine):
+            entry = totals.setdefault(("in", row["type"]), [0, 0, 0])
+            entry[0] += row["messages"]
+            entry[1] += row["entries"]
+            entry[2] += row["bytes"]
+    direction_bytes = {direction: sum(value[2] for key, value in totals.items() if key[0] == direction)
+                       for direction in DIRECTIONS}
+    rows = []
+    for (direction, type_id), (messages, entries, size) in totals.items():
+        rows.append([direction, recording.type_name(type_id), rate(messages, seconds), rate(entries, seconds),
+                     rate(size, seconds), size / messages if messages else 0.0,
+                     100.0 * size / direction_bytes[direction] if direction_bytes[direction] else 0.0])
+    rows.sort(key=lambda row: (DIRECTIONS.index(row[0]), -row[4], row[1]))
+    return ["dir", "type", "msgs/s", "entries/s", "B/s", "bytes/msg", "share%"], rows
+
+
+def sending_function_table(recording, intervals, seconds, machine=None):
+    totals = {}
+    for row in recording.rows("messages", intervals):
+        if row["site"] >= 0 and machine_matches(row["machine"], machine):
+            entry = totals.setdefault((row["site"], row["type"]), [0, 0, 0])
+            entry[1] += row["messages"]
+            entry[2] += row["bytes"]
+    for row in recording.rows("built", intervals):
+        if row["site"] >= 0:
+            totals.setdefault((row["site"], row["type"]), [0, 0, 0])[0] += row["messages"]
+    rows = [[recording.site(site), recording.type_name(type_id), rate(built, seconds), rate(sent, seconds),
+             rate(size, seconds)] for (site, type_id), (built, sent, size) in totals.items()]
+    rows.sort(key=lambda row: (-row[4], row[0], row[1]))
+    return ["function:line", "type", "built/s", "sent/s", "B/s"], rows
+
+
+def handler_table(recording, intervals, seconds, machine=None):
+    totals = {}
+    for row in recording.rows("received", intervals):
+        if not machine_matches(row["machine"], machine) or row["type"] == BATCH_HEADER:
+            continue
+        entry = totals.setdefault(row["type"], [0, 0, 0])
+        if row["dropped"] == "":
+            entry[0] += row["messages"]
+            entry[1] += row["bytes"]
+        else:
+            entry[2] += row["messages"]
+    rows = [[recording.handler(type_id), recording.type_name(type_id), rate(messages, seconds), rate(size, seconds),
+             rate(dropped, seconds)] for type_id, (messages, size, dropped) in totals.items()]
+    rows.sort(key=lambda row: (-row[3], row[1]))
+    return ["handler", "type", "msgs/s", "B/s", "dropped/s"], rows
+
+
+def dropped_table(recording, intervals, seconds, machine=None):
+    totals = {}
+    for row in recording.rows("received", intervals):
+        if row["dropped"] != "" and machine_matches(row["machine"], machine):
+            key = (recording.type_name(row["type"]), row["dropped"])
+            totals[key] = totals.get(key, 0) + row["messages"]
+    rows = [[type_name, reason, rate(messages, seconds)] for (type_name, reason), messages in totals.items()]
+    rows.sort(key=lambda row: (-row[2], row[0], row[1]))
+    return ["type", "reason", "msgs/s"], rows
+
+
+def address_without_port(address):
+    return str(address).split(":")[0]
+
+
+def busiest_peer(recording, intervals):
+    """a client's host: its machines table has no host address, and its tunnel
+    may still hold a peer of the previous game, so the peer that sent the most"""
+    received = {}
+    for row in recording.rows("tunnel", intervals):
+        received[row["peer"]] = received.get(row["peer"], 0) + row["packets_in"]
+    return max(received, key=received.get) if received else None
+
+
+def machine_table(recording, intervals, seconds):
+    machines = {}
+
+    def entry(machine):
+        return machines.setdefault(str(machine), {"out": 0, "in": 0, "pings": [], "queue": 0, "failed": 0})
+
+    for row in recording.rows("messages", intervals):
+        entry(row["machine"])["out"] += row["bytes"]
+    for row in recording.rows("received", intervals):
+        if row["dropped"] == "":
+            entry(row["machine"])["in"] += row["bytes"]
+    for row in recording.rows("pings", intervals):
+        entry(row["machine"])["pings"].append(row["ping_ms"])
+    for row in recording.rows("send_failures", intervals):
+        entry(row["machine"])["failed"] += row["sends"]
+    connection_machine = {connection["id"]: str(connection["machine"])
+                          for connection in recording.metadata.get("connections", {}).values()}
+    for row in recording.rows("queues", intervals):
+        machine = connection_machine.get(row["connection"])
+        if machine in machines:
+            machines[machine]["queue"] = max(machines[machine]["queue"], row["bytes"])
+    peers = {}
+    for row in recording.rows("tunnel", intervals):
+        peer = peers.setdefault(row["peer"], {"rtt": [], "lost": 0, "received": 0})
+        peer["rtt"].append(row["round_trip_ms"])
+        peer["lost"] += row["lost_in"]
+        peer["received"] += row["packets_in"]
+    addresses = {str(machine["machine"]): machine["address"] for machine in recording.metadata.get("machines", {}).values()}
+    rows = []
+    for machine in sorted(machines, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else 0, value)):
+        values = machines[machine]
+        address = addresses.get(machine, "-")
+        peer = peers.get(address_without_port(address))
+        if peer is None and machine == "host" and peers:
+            peer = peers[busiest_peer(recording, intervals)]
+        rtt = sum(peer["rtt"]) / len(peer["rtt"]) if peer and peer["rtt"] else 0.0
+        loss = (100.0 * peer["lost"] / (peer["lost"] + peer["received"])
+                if peer and peer["lost"] + peer["received"] else 0.0)
+        ping = sum(values["pings"]) / len(values["pings"]) if values["pings"] else 0.0
+        rows.append([machine, address, rate(values["out"], seconds), rate(values["in"], seconds), ping, rtt, loss,
+                     values["queue"], values["failed"]])
+    return ["machine", "address", "out_B/s", "in_B/s", "ping_ms", "wire_rtt_ms", "loss_in%", "queue_max_B",
+            "failed"], rows
+
+
+def object_type_table(recording, intervals, seconds, machine=None):
+    objects = recording.metadata.get("objects", {})
+    # (the fixed-size messages say what their key is; the packed ones, which have no layout, are keyed by player)
+    player_keyed = {layout["type"] for layout in recording.metadata.get("layouts", {}).values()
+                    if layout["key"] == "player"}
+    player_keyed |= {type_id for type_id in recording.metadata.get("message_types", {})
+                     if recording.type_name(type_id) in PACKED_PLAYER_TYPES}
+    totals = {}
+    for row in recording.rows("entries", intervals):
+        if not machine_matches(row["machine"], machine) or row["key"] == "":
+            continue
+        if row["key"] == "other":
+            key = ("other", "-")
+        elif row["type"] in player_keyed:
+            key = ("player", "-")
+        else:
+            described = objects.get(row["key"])
+            key = (described["object_type"], described["tag"] or "-") if described else ("unknown", "-")
+        entry = totals.setdefault(key, [0, 0])
+        entry[0] += row["entries"]
+        entry[1] += row["bytes"]
+    rows = [[object_type, tag, rate(entries, seconds), rate(size, seconds)]
+            for (object_type, tag), (entries, size) in totals.items()]
+    rows.sort(key=lambda row: (-row[3], row[0], row[1]))
+    return ["object_type", "tag", "entries/s", "B/s"], rows
+
+
+def field_table(recording, intervals, seconds):
+    fields = {field["id"]: field["name"] for field in recording.metadata.get("fields", {}).values()}
+    by_type = {}
+    for row in recording.rows("field_bytes", intervals):
+        key = (recording.type_name(row["type"]), fields.get(row["field"], f"field_{row['field']}"), "measured")
+        by_type[key] = by_type.get(key, 0) + row["bytes"]
+    entries = {}
+    for row in recording.rows("entries", intervals):
+        if row["dir"] == "out":
+            entries[row["type"]] = entries.get(row["type"], 0) + row["entries"]
+    for layout in recording.metadata.get("layouts", {}).values():
+        count = entries.get(layout["type"], 0)
+        if count:
+            key = (recording.type_name(layout["type"]), layout["member"], "layout")
+            by_type[key] = by_type.get(key, 0) + layout["size"] * count
+    type_totals = {}
+    for (type_name, _, _), size in by_type.items():
+        type_totals[type_name] = type_totals.get(type_name, 0) + size
+    rows = [[type_name, field, source, rate(size, seconds),
+             100.0 * size / type_totals[type_name] if type_totals[type_name] else 0.0]
+            for (type_name, field, source), size in by_type.items()]
+    rows.sort(key=lambda row: (-type_totals[row[0]], row[0], -row[3], row[1]))
+    return ["type", "field", "source", "B/s", "share%"], rows
+
+
+def overhead_table(recording, intervals, seconds):
+    batch_header = sum(row["bytes"] for row in recording.rows("messages", intervals)
+                       if row["dir"] == "out" and row["type"] == BATCH_HEADER)
+    reliable = sum(row["bytes"] for row in recording.rows("messages", intervals) if row["reliable"])
+    stream_out = sum(row["bytes"] for row in recording.rows("traffic", intervals)
+                     if row["dir"] == "out" and row["channel"] == "stream")
+    connection_out = sum(row["bytes"] for row in recording.rows("traffic", intervals) if row["dir"] == "out")
+    tunnel = recording.rows("tunnel", intervals)
+    wire_out = sum(row["bytes_out"] for row in tunnel)
+    kcp = sum(row["kcp_output"] - row["kcp_payload"] for row in tunnel)
+    rows = [["batch_header", rate(batch_header, seconds)],
+            ["connection_framing", rate(max(0, stream_out - reliable), seconds)],
+            ["tunnel_overhead", rate(max(0, wire_out - connection_out) if tunnel else 0, seconds)],
+            ["kcp_overhead", rate(max(0, kcp), seconds)]]
+    return ["item", "B/s"], rows
+
+
+def cpu_table(recording):
+    rows = [[name, totals["count"], totals["total_ms"], totals["mean_ms"], totals["max_ms"], totals["per_frame"],
+             totals["per_tick_ms"]] for name, totals in recording.cpu["names"].items()]
+    rows.sort(key=lambda row: (-row[2], row[0]))
+    return ["scope", "count", "total_ms", "mean_ms", "max_ms", "per_frame", "per_tick_ms"], rows
+
+
+def worst_frame_table(recording):
+    rows = [[row["frame"], row["at_s"], row["frame_ms"], row["ticks"],
+             ", ".join(f"{name} {ms:.1f}" for name, ms in row["longest"])] for row in recording.cpu["worst"]]
+    return ["frame", "at_s", "frame_ms", "ticks", "longest scopes (ms)"], rows
+
+
+def batch_invariant(recording):
+    """per machine and interval, the unreliable bytes by type with the batch
+    headers, and the failed sends' bytes, against the datagrams handed on"""
+    expected = {}
+    for row in recording.tables.get("datagrams", []):
+        key = (row["interval"], str(row["machine"]))
+        expected[key] = expected.get(key, 0) + row["bytes"]
+    counted = {}
+    for row in recording.tables.get("messages", []):
+        if row["dir"] == "out" and not row["reliable"]:
+            key = (row["interval"], str(row["machine"]))
+            counted[key] = counted.get(key, 0) + row["bytes"]
+    for row in recording.tables.get("send_failures", []):
+        if row.get("reliable", False):
+            continue
+        key = (row["interval"], str(row["machine"]))
+        counted[key] = counted.get(key, 0) + row["bytes"]
+    return [(interval, machine, expected.get((interval, machine), 0), counted.get((interval, machine), 0))
+            for interval, machine in sorted(set(expected) | set(counted))
+            if expected.get((interval, machine), 0) != counted.get((interval, machine), 0)]
+
+
+# ---------- text
+
+
+NUMBER_FORMATS = {
+    "count": "{:.0f}", "total_ms": "{:.1f}", "mean_ms": "{:.3f}", "max_ms": "{:.3f}", "per_frame": "{:.2f}",
+    "per_tick_ms": "{:.3f}", "frame": "{:.0f}", "at_s": "{:.2f}", "frame_ms": "{:.2f}", "ticks": "{:.0f}",
+    "B/s": "{:.0f}", "packets/s": "{:.1f}", "msgs/s": "{:.1f}", "entries/s": "{:.1f}", "bytes/msg": "{:.1f}",
+    "share%": "{:.1f}", "built/s": "{:.1f}", "sent/s": "{:.1f}", "dropped/s": "{:.1f}", "out_B/s": "{:.0f}",
+    "in_B/s": "{:.0f}", "ping_ms": "{:.0f}", "wire_rtt_ms": "{:.0f}", "loss_in%": "{:.1f}", "queue_max_B": "{:.0f}",
+    "failed": "{:.0f}",
+}
+TEXT_WIDTH = {"scope": 40, "function:line": 46, "handler": 40, "type": 22, "tag": 38, "longest scopes (ms)": 72,
+              "address": 21}
+
+
+def cell(column, value):
+    if value is None:
+        return "-"
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and column in NUMBER_FORMATS:
+        return NUMBER_FORMATS[column].format(value)
+    text = str(value)
+    width = TEXT_WIDTH.get(column)
+    if width and len(text) > width:
+        text = text[:width - 1] + "~"
+    return text
+
+
+def format_table(columns, rows, limit=None):
+    """aligned lines: names left, numbers right; past the limit a line of
+    how many more"""
+    shown = rows if limit is None else rows[:limit]
+    if not shown:
+        return ["(none)"]
+    cells = [[cell(column, value) for column, value in zip(columns, row)] for row in shown]
+    numeric = [column in NUMBER_FORMATS for column in columns]
+    widths = [max([len(column)] + [len(line[index]) for line in cells]) for index, column in enumerate(columns)]
+
+    def line(values):
+        parts = [value.rjust(width) if is_number else value.ljust(width)
+                 for value, width, is_number in zip(values, widths, numeric)]
+        return "  ".join(parts).rstrip()
+
+    lines = [line(columns)] + [line(values) for values in cells]
+    if limit is not None and len(rows) > limit:
+        lines.append(f"... {len(rows) - limit} more rows (net_report.py --top N)")
+    return lines
+
+
+def problems(recording, invariant):
+    found = list(recording.warnings)
+    counters = (("entry_keys_overflowed", "entry keys overflowed"), ("unbalanced_scopes", "unbalanced scopes"),
+                ("deep_scopes", "deep scopes"), ("foreign_scopes", "foreign scopes"),
+                ("dropped_scopes", "dropped scopes"), ("foreign_net_events", "foreign net events"),
+                ("dropped_rows", "dropped rows"), ("peers_dropped", "tunnel peer samples dropped"),
+                ("machines_dropped", "machines dropped"), ("connections_overflowed", "connection events past the table"),
+                ("objects_overflowed", "object keys past the table, per interval"),
+                ("batches_unbooked", "batch flushes that did not add up (after the first second)"))
+    for key, text in counters:
+        total = sum(header.get(key, 0) for header in recording.headers)
+        if total:
+            found.append(f"{text} {total}")
+    # (the run's tables: every part says the count so far)
+    for key, text in (("sites_overflowed", "sending sites past the table"),
+                      ("fields_overflowed", "field names past the table"),
+                      ("layouts_overflowed", "layouts past the table")):
+        total = max(header.get(key, 0) for header in recording.headers)
+        if total:
+            found.append(f"{text} {total}")
+    wait = sum(header.get("writer_wait_ms", 0.0) for header in recording.headers[-1:])
+    if wait:
+        found.append(f"writer waited {wait:.0f} ms")
+    if invariant:
+        found.append(f"batch bytes do not add up in {len(invariant)} interval(s)")
+    return found
+
+
+def summary_lines(recording, start, end, top, machine):
+    intervals, seconds = recording.select(start, end)
+    windowed = start is not None or end is not None
+    whole = recording.select()[1]
+    header = recording.header
+    last = recording.headers[-1]
+    machines = len(recording.metadata.get("machines", {}))
+    parts = f"parts {min(recording.parts)}-{max(recording.parts)}" if len(recording.parts) > 1 else "part 1"
+    state = "complete" if recording.complete and not any("missing" in warning for warning in recording.warnings) \
+        else "incomplete"
+    invariant = batch_invariant(recording)
+    found = problems(recording, invariant)
+    own = header["own_machine"] if header["own_machine"] >= 0 else "-"
+    lines = [
+        f"# halo profile summary, format {FORMAT}",
+        f"# recording: {recording.name}, {parts} ({state})",
+        f"# build: {header['build']}, platform: {header['platform']}, role: {header['role']}, own_machine: {own}",
+        f"# map: {header['map']}, players: {header['players']} at start, "
+        f"{max(item.get('players_most', item['players']) for item in recording.headers)} most, machines: {machines}",
+        f"# recorded: {header['start_utc']} UTC, {whole:.1f} s, {recording.cpu['ticks']} ticks, "
+        f"{recording.cpu['frames']} frames, stopped: {last['stop_reason'] or '-'}",
+        *([f"# window: {seconds:.1f} s selected (seconds {start if start is not None else 0:g} to "
+           f"{f'{end:g}' if end is not None else 'end'}); the network tables cover it, the cpu tables, ticks and frames "
+           f"cover the whole recording"] if windowed else []),
+        f"# problems: {'; '.join(found) if found else 'none'}",
+        "# units: ms = milliseconds; B/s = bytes per second, mean over the recording (or the # window);",
+        "#        KB/s = 1000 B/s; % = share of a table's total (see share%)",
+        "",
+        "## columns",
+        *COLUMNS_GLOSSARY.splitlines(),
+    ]
+
+    def section(title, table, limit=None):
+        lines.append("")
+        lines.append(f"## {title}")
+        lines.extend(format_table(*table, limit))
+
+    whole_note = ", whole recording" if windowed else ""
+    section(f"cpu scopes (top 40 by total_ms{whole_note})", cpu_table(recording), 40)
+    section(f"worst frames (10{whole_note})", worst_frame_table(recording), 10)
+    section("traffic", traffic_table(recording, intervals, seconds))
+    section("message types", message_type_table(recording, intervals, seconds, machine), top)
+    section("sending functions", sending_function_table(recording, intervals, seconds, machine), top)
+    section("handlers (received)", handler_table(recording, intervals, seconds, machine), top)
+    section("dropped (received)", dropped_table(recording, intervals, seconds, machine), top)
+    section("machines", machine_table(recording, intervals, seconds), top)
+    section("object types (top 15)", object_type_table(recording, intervals, seconds, machine), 15)
+    section("fields (top 10 per type)", fields_top(field_table(recording, intervals, seconds), 10), 2 * top)
+    section("overhead", overhead_table(recording, intervals, seconds))
+    return lines, invariant
+
+
+def fields_top(table, per_type):
+    columns, rows = table
+    kept, seen = [], {}
+    for row in rows:
+        seen[row[0]] = seen.get(row[0], 0) + 1
+        if seen[row[0]] <= per_type:
+            kept.append(row)
+    return columns, kept
+
+
+def match_lines(host, client, intervals_host, seconds_host, intervals_client, seconds_client):
+    """the client against the host's machine of its own_machine"""
+    machine = client.header["own_machine"]
+    lines = [f"## {client.name} is machine {machine} of {host.name}"]
+    known = {str(row["machine"]) for row in host.metadata.get("machines", {}).values()}
+    if str(machine) not in known:
+        lines.append(f"warning: {host.name} has no machine {machine}")
+    sent = sum(row["bytes"] for row in host.rows("messages", intervals_host) if str(row["machine"]) == str(machine))
+    got = sum(row["bytes"] for row in client.rows("received", intervals_client) if row["dropped"] == "")
+    client_sent = sum(row["bytes"] for row in client.rows("messages", intervals_client))
+    host_got = sum(row["bytes"] for row in host.rows("received", intervals_host)
+                   if row["dropped"] == "" and str(row["machine"]) == str(machine))
+    host_peer = busiest_peer(client, intervals_client)
+    tunnel = [row for row in client.rows("tunnel", intervals_client) if row["peer"] == host_peer]
+    lost = sum(row["lost_in"] for row in tunnel)
+    received = sum(row["packets_in"] for row in tunnel)
+    loss = 100.0 * lost / (lost + received) if lost + received else 0.0
+
+    def share(a, b):
+        return 100.0 * (a - b) / a if a else 0.0
+
+    lines.append(f"host -> client: sent {rate(sent, seconds_host):.0f} B/s, received {rate(got, seconds_client):.0f} B/s, "
+                 f"difference {share(rate(sent, seconds_host), rate(got, seconds_client)):.1f}%, "
+                 f"client inbound loss {loss:.1f}%")
+    lines.append(f"client -> host: sent {rate(client_sent, seconds_client):.0f} B/s, received "
+                 f"{rate(host_got, seconds_host):.0f} B/s, difference "
+                 f"{share(rate(client_sent, seconds_client), rate(host_got, seconds_host)):.1f}%")
+    return lines
+
+
+def write_csv(recording, directory, start, end, machine):
+    intervals, seconds = recording.select(start, end)
+    directory.mkdir(parents=True, exist_ok=True)
+    tables = {
+        "cpu": cpu_table(recording), "worst_frames": worst_frame_table(recording),
+        "traffic": traffic_table(recording, intervals, seconds),
+        "message_types": message_type_table(recording, intervals, seconds, machine),
+        "sending_functions": sending_function_table(recording, intervals, seconds, machine),
+        "handlers": handler_table(recording, intervals, seconds, machine),
+        "dropped": dropped_table(recording, intervals, seconds, machine),
+        "machines": machine_table(recording, intervals, seconds),
+        "object_types": object_type_table(recording, intervals, seconds, machine),
+        "fields": field_table(recording, intervals, seconds),
+        "overhead": overhead_table(recording, intervals, seconds),
+    }
+    for name, (columns, rows) in tables.items():
+        with open(directory / f"{recording.name}.{name}.csv", "w", newline="", encoding="ascii", errors="replace") as file:
+            writer = csv.writer(file)
+            writer.writerow(columns)
+            # (numbers as the tables show them, names whole)
+            writer.writerows([[NUMBER_FORMATS[column].format(value)
+                               if column in NUMBER_FORMATS and isinstance(value, (int, float)) else
+                               ("-" if value is None else value) for column, value in zip(columns, row)]
+                              for row in rows])
+
+
+def main(arguments=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("recordings", nargs="+", metavar="RECORDING")
+    parser.add_argument("--from", dest="start", type=float, help="from this second of the recording")
+    parser.add_argument("--to", dest="end", type=float, help="to this second")
+    parser.add_argument("--top", type=int, default=20, help="rows of each table (default 20)")
+    parser.add_argument("--machine", help="only this machine's messages")
+    parser.add_argument("--csv", type=Path, metavar="DIR", help="every table as CSV in DIR")
+    parser.add_argument("--no-summary", action="store_true", help="do not write <name>.summary.txt")
+    options = parser.parse_args(arguments)
+    try:
+        recordings = [Recording(name) for name in options.recordings]
+    except (ReportError, OSError) as error:
+        print(f"net_report: {error}", file=sys.stderr)
+        return 1
+    status = 0
+    for recording in recordings:
+        try:
+            lines, invariant = summary_lines(recording, options.start, options.end, options.top, options.machine)
+            file_lines = lines if options.top == SUMMARY_TOP else summary_lines(
+                recording, options.start, options.end, SUMMARY_TOP, options.machine)[0]
+        except (KeyError, TypeError, IndexError, ValueError) as error:
+            print(f"net_report: {recording.name}: a table is not as the writer wrote it ({error!r})", file=sys.stderr)
+            return 1
+        for warning in recording.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
+        for interval, machine, expected, counted in invariant[:10]:
+            print(f"warning: interval {interval}, machine {machine}: datagrams {expected} B, messages {counted} B",
+                  file=sys.stderr)
+        if invariant:
+            status = 2
+        print("\n".join(lines))
+        print()
+        if not options.no_summary:
+            path = recording.base.parent / f"{recording.name}.summary.txt"
+            path.write_text("\n".join(file_lines) + "\n", encoding="ascii", errors="replace")
+        if options.csv:
+            write_csv(recording, options.csv, options.start, options.end, options.machine)
+    hosts = [recording for recording in recordings if recording.header["role"] == "host"]
+    clients = [recording for recording in recordings if recording.header["role"] == "client"]
+    for host in hosts:
+        intervals_host, seconds_host = host.select(options.start, options.end)
+        for client in clients:
+            intervals_client, seconds_client = client.select(options.start, options.end)
+            print("\n".join(match_lines(host, client, intervals_host, seconds_host, intervals_client, seconds_client)))
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

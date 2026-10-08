@@ -104,6 +104,9 @@ symbols in this file:
 #include "text/draw_string.h"
 #include "units/unit_definitions.h"
 #include "units/units.h"
+#ifdef HALO_PROFILE
+#include "profile_overlay.h"
+#endif
 
 /* ---------- constants */
 
@@ -384,6 +387,9 @@ void interface_draw_fullscreen_overlays(
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();
+#ifdef HALO_PROFILE
+	profile_overlay_render();
+#endif
 
 	return;
 }

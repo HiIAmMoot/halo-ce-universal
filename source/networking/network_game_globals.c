@@ -111,6 +111,9 @@ symbols in this file:
 #include "network_game_manager.h"
 #include "network_game_globals.h"
 #include "network_server_manager_internal.h"
+#ifdef HALO_PROFILE
+#include "profile_net.h"
+#endif
 
 /* ---------- constants */
 
@@ -289,6 +292,16 @@ boolean network_distributed_client_send_reliably(
 		return FALSE;
 	/* (the write swaps the header in place) */
 	csmemcpy(buffer, message, size);
+#ifdef HALO_PROFILE
+	{
+		boolean written = network_game_client_write(network_game_client_get_connection(global_network_game_client),
+			(message_header *)buffer, size, NULL, 1);
+
+		if (profile_net_recording)
+			profile_net_reliable(PROFILE_NET_HOST, message, size, written);
+		return written;
+	}
+#endif
 	return network_game_client_write(network_game_client_get_connection(global_network_game_client),
 		(message_header *)buffer, size, NULL, 1);
 }
