@@ -154,4 +154,13 @@ drawn for, until halo_menus_art_forget */
 void halo_menus_art_register(void const *texture, char const *png);
 void halo_menus_art_forget(void);
 
+#ifdef HALO_PROFILE
+/* menu_tags.c: a widget as it is built (the profiling build's "profiling enabled" line needs the version's box taller);
+the wrapper names widget_build's own definition and source, so it only works there */
+void profile_menu_widget(void *definition, char const *name);
+#define HALO_PROFILE_WIDGET(statement) ((statement), profile_menu_widget(definition, source->name))
+#else
+#define HALO_PROFILE_WIDGET(statement) statement
+#endif
+
 #endif

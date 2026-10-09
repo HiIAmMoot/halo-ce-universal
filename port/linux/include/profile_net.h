@@ -9,12 +9,17 @@ Expose profiling network accounting and layout registration.
 
 #ifdef HALO_PROFILE
 
+#include "halo_port_limits.h"
+
 /* ---------- constants */
 
 enum
 {
-	/* the machine of a client's messages to its host */
+	/* the machine of a client's messages to its host, and of the host's
+	server datagram connection */
 	PROFILE_NET_HOST = -2,
+	PROFILE_NET_SERVER_DATAGRAMS = -3,
+	PROFILE_NET_NO_MACHINE = -1,
 
 	/* the pseudo message type of a batch's 8-byte header */
 	PROFILE_NET_BATCH_HEADER = 0,
@@ -25,6 +30,11 @@ enum
 	MAXIMUM_PROFILE_NET_TYPES = 128,
 	MAXIMUM_PROFILE_NET_SITES = 1024,
 	MAXIMUM_PROFILE_NET_FIELDS = 256,
+	/* the netcode's machines, and the tunnel's peers (a host and the rest
+	of them: P2P_MAXIMUM_PEERS, which p2p.c asserts this holds) */
+	MAXIMUM_PROFILE_NET_MACHINES = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+	MAXIMUM_PROFILE_NET_PEERS = HALO_PORT_MAXIMUM_NETWORK_MACHINES - 1,
+	MAXIMUM_PROFILE_NET_CONNECTIONS = 256,
 	MAXIMUM_PROFILE_NET_OBJECTS = 8192,
 	/* an interval's distinct entry keys; past them entries go to an
 	"other" row, so totals stay exact */
@@ -38,6 +48,12 @@ enum profile_net_direction
 {
 	_profile_net_out = 0,
 	_profile_net_in,
+};
+
+enum profile_net_channel
+{
+	_profile_net_datagram = 0,
+	_profile_net_stream,
 };
 
 /* why network_distributed_handle_message dropped a message (0: handled) */
@@ -118,10 +134,41 @@ struct profile_net_message_name
 	const char *handler;
 };
 
+/* one peer of internet play's tunnel, its counts since it was made (p2p.c) */
+struct profile_net_tunnel_peer
+{
+	unsigned long virtual_address;
+	unsigned long long bytes_out;
+	unsigned long long bytes_in;
+	unsigned long long packets_out;
+	unsigned long long packets_in;
+	unsigned long long highest_in;
+	unsigned long long kcp_payload;
+	unsigned long long kcp_output;
+	unsigned long round_trip;
+};
+
+/* the overlay's totals since the start (bytes and datagrams by direction) */
+struct profile_net_live
+{
+	unsigned long long game_bytes[2];
+	unsigned long long game_packets[2];
+	unsigned long long wire_bytes[2];
+	unsigned long long wire_packets[2];
+	/* the last second's */
+	long ping_ms;
+	long wire_round_trip_ms;
+	double loss_percent;
+};
+
 /* ---------- globals */
 
-/* detail accounting is active only during recording */
+/* recording: the funnel's detail; counting: recording or the overlay on
+(the connection layer's totals, the tunnel and the pings); connections:
+connections known, whose close must be seen */
 extern int profile_net_recording;
+extern int profile_net_counting;
+extern int profile_net_connections;
 
 /* ---------- prototypes/PROFILE_NET.C */
 
@@ -132,6 +179,9 @@ void profile_net_layout(int type, const struct profile_net_layout_member *member
 	unsigned short entry_size);
 void profile_net_set_object_describe(
 	int (*describe)(long key, char *object_type, int object_type_size, char *tag, int tag_size));
+void profile_net_set_peer_describe(unsigned long (*endpoint)(unsigned long virtual_address));
+void profile_net_set_queue_reader(long (*queued_bytes)(void const *connection));
+void profile_net_set_overlay(int on);
 
 /* the netcode's sending functions: a site is a function and a line; the
 outermost pushed is the message's */
@@ -150,7 +200,24 @@ int profile_net_field(const char *expression);
 void profile_net_field_put(int field, unsigned long size);
 void profile_net_packed_entry(long machine, int type, long key, unsigned long size, int added);
 void profile_net_reliable(long machine, void const *message, unsigned long size, int sent);
+/* netcode IPv4 inputs are host order; tunnel peer addresses are network order */
+void profile_net_machine_address(long machine, unsigned long ipv4, unsigned short port);
 void profile_net_received(long machine, void const *message, unsigned long size, int kind, int drop);
+
+/* the connection layer (network_connection.c) */
+void profile_net_traffic(void const *connection, int direction, int channel, unsigned long bytes,
+	unsigned long ipv4, unsigned short port);
+void profile_net_connection_closed(void const *connection);
+void profile_net_connection_machine(void const *connection, long machine);
+/* debug.network_loss's dropped datagrams (any thread) */
+void profile_net_simulated_loss(void);
+
+/* once a second (profile_console.c) */
+void profile_net_tunnel(const struct profile_net_tunnel_peer *peers, int count);
+void profile_net_ping(long machine, long milliseconds);
+void profile_net_sample_queues(void);
+
+void profile_net_live(struct profile_net_live *live);
 
 #endif
 

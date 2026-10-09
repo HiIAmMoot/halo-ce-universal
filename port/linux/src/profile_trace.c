@@ -15,8 +15,8 @@ Record bounded CPU traces and hand frozen parts to the writer.
 #include <string.h>
 #include <time.h>
 
-/* state changes happen only at the game frame boundary. The recording flag
-and track regions change under the p2p lock. two arenas let the writer own
+/* State changes happen only at the game frame boundary. The recording flag
+and track regions change under the p2p lock. Two arenas let the writer own
 one frozen part while the game and p2p threads fill the other. */
 
 /* ---------- constants */
@@ -1002,7 +1002,20 @@ void profile_trace_status(
 	strcpy(status->name, profile_trace_globals.name);
 	if (profile_trace_globals.state != _profile_trace_recording)
 		return;
-	status->part = profile_trace_globals.part_number;
+	{
+		struct profile_trace_track const *game = &profile_trace_tracks[_profile_track_game];
+		int percent = game->capacity ? (int)(game->count * 100 / game->capacity) : 0;
+
+		status->part = profile_trace_globals.part_number;
+		status->seconds = (double)(profile_trace_seams.now() - profile_trace_globals.origin) / 1000000000.0;
+		status->memory_percent = percent;
+	}
+}
+
+unsigned long long profile_trace_clock(
+	void)
+{
+	return profile_trace_seams.now();
 }
 
 struct profile_part *profile_trace_writer_next(

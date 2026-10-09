@@ -455,13 +455,16 @@ static const struct config_setting config_settings[] =
 	{ "debug.profile_record", _config_boolean, "false", "HALO_PROFILE_RECORD", _environment_value, _platform_all,
 		"Record a profile with no command (configure.py --profile builds): from\n"
 		"when profile_record_when says until profile_stop, a map change or the\n"
-		"end, into numbered part files in the data folder's profiles folder\n"
+		"end, into the data folder's profiles folder, one file when it ends\n"
 		"(tools/net_report.py reads it)." },
 	{ "debug.profile_record_when", _config_string, "\"start\"", "HALO_PROFILE_RECORD_WHEN", _environment_value,
 		_platform_all,
 		"\"start\": from the first frame until the first map change; \"game\":\n"
 		"each game that is not the main menu, a recording each, until its map\n"
 		"goes." },
+	{ "debug.profile_overlay", _config_boolean, "false", "HALO_PROFILE_OVERLAY", _environment_value, _platform_all,
+		"Show the profile overlay from the start (frame and tick times, upload\n"
+		"and download, ping and loss); profile_overlay toggles it." },
 	{ "debug.profile_memory", _config_integer, "256", "HALO_PROFILE_MEMORY", _environment_value, _platform_all,
 		"Megabytes a recording keeps in memory, 4 to 1024: two halves, each\n"
 		"written out as a part when it fills." },

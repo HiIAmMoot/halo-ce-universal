@@ -87,6 +87,8 @@ struct profile_trace_status
 	int state;
 	char name[64];
 	long part;
+	double seconds;
+	int memory_percent;
 };
 
 /* ---------- prototypes/PROFILE_TRACE.C */
@@ -139,6 +141,8 @@ void profile_trace_shutdown(void);
 pass sees one value */
 int profile_trace_recording(void);
 void profile_trace_status(struct profile_trace_status *status);
+/* the monotonic clock, in nanoseconds */
+unsigned long long profile_trace_clock(void);
 
 #endif
 

@@ -60,6 +60,7 @@ only look up and create stand-ins.
 #include "ikcp.h"
 #ifdef HALO_PROFILE
 #include "profile_trace.h"
+#include "profile_net.h"
 #endif
 
 #include <stddef.h>
@@ -194,6 +195,16 @@ struct peer
 	unsigned long endpoint_heard_time;
 	unsigned long sent_time;
 	unsigned long round_trip;
+#ifdef HALO_PROFILE
+	/* the profiling build's counts since the peer was made, written under
+	p2p_lock like the rest of the peer (p2p_profile_statistics) */
+	unsigned long long profile_bytes_out;
+	unsigned long long profile_bytes_in;
+	unsigned long long profile_packets_out;
+	unsigned long long profile_packets_in;
+	unsigned long long profile_kcp_payload;
+	unsigned long long profile_kcp_output;
+#endif
 };
 
 /* a UDP stand-in for one port of a peer */
@@ -751,6 +762,41 @@ unsigned long p2p_peer_endpoint_address(unsigned long virtual_address)
 	return address;
 }
 
+#ifdef HALO_PROFILE
+/* the profiler's peer table holds every peer there can be, so a sample is
+never cut short here */
+typedef char p2p_profile_peers_size_assert[MAXIMUM_PROFILE_NET_PEERS >= P2P_MAXIMUM_PEERS ? 1 : -1];
+
+/* each reached peer's counts, copied under p2p_lock (the game thread, once
+a second, profile_console.c): how many there are */
+int p2p_profile_statistics(struct profile_net_tunnel_peer *peers, int maximum)
+{
+	int count = 0;
+	int index;
+
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < P2P_MAXIMUM_PEERS && count < maximum; index++)
+	{
+		const struct peer *peer = &p2p.peers[index];
+
+		if (!peer->used || !peer->connected)
+			continue;
+		peers[count].virtual_address = peer->virtual_address;
+		peers[count].bytes_out = peer->profile_bytes_out;
+		peers[count].bytes_in = peer->profile_bytes_in;
+		peers[count].packets_out = peer->profile_packets_out;
+		peers[count].packets_in = peer->profile_packets_in;
+		peers[count].highest_in = peer->receive_highest;
+		peers[count].kcp_payload = peer->profile_kcp_payload;
+		peers[count].kcp_output = peer->profile_kcp_output;
+		peers[count].round_trip = peer->round_trip;
+		count++;
+	}
+	pthread_mutex_unlock(&p2p_lock);
+	return count;
+}
+#endif
+
 static int is_virtual_address(unsigned long address)
 {
 	/* 100.64.0.0/10 */
@@ -816,6 +862,10 @@ static void peer_send_to(struct peer *peer, const struct p2p_candidate *to, cons
 		packet + TUNNEL_HEADER_SIZE);
 	make_address(&address, to->address, to->port);
 	posix_socket_sendto(p2p.tunnel_socket, packet, TUNNEL_HEADER_SIZE + sealed, 0, &address, sizeof(address));
+#ifdef HALO_PROFILE
+	peer->profile_bytes_out += (unsigned long long)(TUNNEL_HEADER_SIZE + sealed);
+	peer->profile_packets_out++;
+#endif
 }
 
 /* to a peer the tunnel has reached; dropped otherwise */
@@ -1907,6 +1957,11 @@ static int kcp_output(const char *buffer, int size, ikcpcb *kcp, void *user)
 	inner[0] = _packet_stream;
 	memcpy(inner + 1, buffer, (size_t)size);
 	peer_send(&p2p.peers[stream->peer], inner, size + 1);
+#ifdef HALO_PROFILE
+	/* (KCP's whole cost: its headers, acknowledgements and every resend,
+	against the payload stream_message gives it) */
+	p2p.peers[stream->peer].profile_kcp_output += (unsigned long long)size;
+#endif
 	return 0;
 }
 
@@ -1961,6 +2016,9 @@ static void stream_message(struct stream *stream, unsigned char type, const void
 	message[0] = type;
 	memcpy(message + 1, data, (size_t)size);
 	ikcp_send(stream->kcp, (const char *)message, size + 1);
+#ifdef HALO_PROFILE
+	p2p.peers[stream->peer].profile_kcp_payload += (unsigned long long)(size + 1);
+#endif
 }
 
 static void stream_local_closed(struct stream *stream)
@@ -2225,6 +2283,10 @@ static void tunnel_received(const unsigned char *packet, int size, const struct 
 		return;
 	newest = counter > peer->receive_highest;
 	packet_received(peer, counter);
+#ifdef HALO_PROFILE
+	peer->profile_bytes_in += (unsigned long long)size;
+	peer->profile_packets_in++;
+#endif
 	peer_heard(peer, from->sin_addr.s_addr, from->sin_port, newest);
 	switch (inner[0])
 	{

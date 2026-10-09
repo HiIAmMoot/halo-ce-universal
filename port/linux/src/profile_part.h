@@ -35,6 +35,13 @@ enum profile_net_table
 	_profile_net_table_entries,
 	_profile_net_table_field_bytes,
 	_profile_net_table_send_failures,
+	_profile_net_table_traffic,
+	_profile_net_table_queues,
+	_profile_net_table_tunnel_bytes,
+	_profile_net_table_tunnel_packets,
+	_profile_net_table_tunnel_kcp,
+	_profile_net_table_pings,
+	_profile_net_table_simulated_loss,
 	_profile_net_table_datagrams,
 	_profile_net_table_intervals,
 	NUMBER_OF_PROFILE_NET_TABLES,
@@ -90,6 +97,8 @@ struct profile_net_snapshot
 	long sites;
 	long fields;
 	long layouts;
+	long machines;
+	long connections;
 	long objects;
 };
 
@@ -112,6 +121,23 @@ struct profile_net_layout_entry
 	unsigned short entry_size;
 };
 
+struct profile_net_machine_entry
+{
+	long machine;
+	unsigned long ipv4;
+	unsigned short port;
+	unsigned long peer_ipv4;
+};
+
+struct profile_net_connection_entry
+{
+	unsigned long ipv4;
+	unsigned short port;
+	/* written again when the machine is learnt (atomically: the writer may
+	be reading it) */
+	int machine;
+};
+
 struct profile_net_object_entry
 {
 	long key;
@@ -128,6 +154,9 @@ struct profile_net_counts
 	unsigned long foreign_events;
 	unsigned long entry_keys_overflowed;
 	unsigned long dropped_rows;
+	unsigned long peers_dropped;
+	unsigned long machines_dropped;
+	unsigned long connections_overflowed;
 	unsigned long objects_overflowed;
 	unsigned long batches_unbooked;
 	unsigned long sites_overflowed;
@@ -170,6 +199,13 @@ struct profile_part
 	struct profile_net_counts counts;
 };
 
+struct profile_json_ranges
+{
+	long long halo_start, halo_end;
+	long long cpu_start, cpu_end;
+	long long events_start, events_end;
+};
+
 typedef char profile_trace_record_size_assert[sizeof(struct profile_trace_record) == 16 ? 1 : -1];
 typedef char profile_net_row_size_assert[sizeof(struct profile_net_row) == 32 ? 1 : -1];
 
@@ -199,21 +235,38 @@ const struct profile_net_message_name *profile_net_type_name(int type);
 const struct profile_net_site_entry *profile_net_site_entry(long site);
 const struct profile_net_field_entry *profile_net_field_entry(long field);
 const struct profile_net_layout_entry *profile_net_layout_entry(long index);
+const struct profile_net_machine_entry *profile_net_machine_entry(long index);
+const struct profile_net_connection_entry *profile_net_connection_entry(long index);
 const struct profile_net_object_entry *profile_net_object_entry(long index);
 long profile_net_type_name_count(void);
 const struct profile_net_message_name *profile_net_type_name_at(long index);
+/* the loss in an interval of a peer's packets (p2p.c's counter): advance
+of the highest number received less those received, never below what was
+reported before (a late packet makes up for one counted lost) */
+struct profile_net_loss
+{
+	int valid;
+	unsigned long long highest;
+	unsigned long long received;
+	long long reported;
+};
+unsigned long profile_net_loss_step(struct profile_net_loss *loss, unsigned long long highest,
+	unsigned long long received);
 
 /* ---------- prototypes/PROFILE_JSON.C */
 
 /* a part as a Chrome trace with the "halo" and "cpu_summary" keys; 0 when
 the file could not be written */
-int profile_json_write(struct profile_part *part, FILE *file);
-/* Part names keep profile_<stamp>_<role>. */
+int profile_json_write(struct profile_part *part, FILE *file, struct profile_json_ranges *ranges);
+/* (part names keep profile_<stamp>_<role>; the joined name adds map and type) */
 void profile_json_choose_name(const char *folder, const char *stamp, const char *role, char *name, int size);
+void profile_json_joined_name(const char *folder, const char *part_name, const struct profile_trace_session *session,
+	char *name, int size);
 /* the writer thread of a recording: 0 when it cannot start */
 int profile_json_writer_start(void);
 /* a part's file: <folder>/<name>.part<n>.json, written as .tmp and renamed */
-int profile_json_write_part(struct profile_part *part);
+int profile_json_write_part(struct profile_part *part, struct profile_json_ranges *ranges);
+int profile_json_range_length(long long start, long long end, long long *length);
 
 #endif
 

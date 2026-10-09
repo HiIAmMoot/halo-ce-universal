@@ -896,8 +896,15 @@ boolean network_distributed_server_send_to_machine(
 	csmemcpy(buffer, message, size);
 #ifdef HALO_PROFILE
 	{
-		boolean written = network_game_server_write(network_game_server_get_connection(server), buffer, size, &address, 0);
+		boolean written;
 
+		if (profile_net_recording)
+			profile_net_machine_address(machine_index, address.address.ipv4_address, address.port);
+		written = network_game_server_write(network_game_server_get_connection(server), buffer, size, &address, 0);
+		/* (after the write: the connection's first traffic event has given
+		it its address, which a connection learnt before it would keep as 0) */
+		if (profile_net_recording)
+			profile_net_connection_machine(network_game_server_get_connection(server), PROFILE_NET_SERVER_DATAGRAMS);
 		if (profile_net_recording && !written)
 			profile_net_send_failed(_profile_net_failure_write_failed);
 		return written;
@@ -934,7 +941,10 @@ boolean network_distributed_server_send_to_machine_reliably(
 		boolean written = network_game_server_write(connection, buffer, size, NULL, 1);
 
 		if (profile_net_recording)
+		{
+			profile_net_connection_machine(connection, machine_index);
 			profile_net_reliable(machine_index, message, size, written);
+		}
 		return written;
 	}
 #endif
@@ -972,7 +982,10 @@ boolean network_distributed_server_send_to_all_reliably(
 					boolean written = network_game_server_write(connection, buffer, size, NULL, 1);
 
 					if (profile_net_recording)
+					{
+						profile_net_connection_machine(connection, machine_index);
 						profile_net_reliable(machine_index, message, size, written);
+					}
 					result &= written;
 				}
 #else

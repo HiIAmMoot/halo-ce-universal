@@ -280,6 +280,7 @@ symbols in this file:
 
 #ifdef HALO_PROFILE
 #include "profile_console.h"
+#include "profile_overlay.h"
 #include "profile_trace.h"
 #endif
 
@@ -1129,6 +1130,38 @@ void profile_initialize(
 	return;
 }
 
+#ifdef HALO_PROFILE
+/* port: the last frame's times for the overlay (port/linux/game/profile_overlay.c),
+before profile_internal_step rolls up the sections' */
+static void profile_overlay_feed(
+	void)
+{
+	struct profile_frame const *frame = &profile_globals.current_frame;
+	double tick_ms[MAXIMUM_GAME_TICKS_PER_FRAME];
+	double network_ms = 0.0;
+	short index;
+
+	if (!profile_overlay_visible() || !profile_global_enable)
+		return;
+	for (index = 0; index < profile_globals.section_count; index++)
+	{
+		struct profile_section const *section = profile_globals.sections[index];
+		double ms;
+
+		if (!section->frame_call_count)
+			continue;
+		ms = (double)section->frame_elapsed_timebase * 1000.0 / (double)profile_globals.timebase_frequency;
+		if (csstrcmp(section->name, "network_distributed_tick") == 0)
+			network_ms = ms;
+		profile_overlay_note_section(section->name, ms);
+	}
+	for (index = 0; index < frame->game_tick_count; index++)
+		tick_ms[index] = frame->game_ticks[index].frame_total;
+	profile_overlay_note_frame(frame->frame.total, frame->game_tick_count, tick_ms, network_ms);
+}
+
+#endif
+
 void profile_frame_start(
 	void)
 {
@@ -1142,6 +1175,7 @@ void profile_frame_start(
 	stops) */
 	profile_trace_frame_boundary();
 	profile_console_frame();
+	profile_overlay_feed();
 #endif
 	if (!profile_timebase_ticks)
 	{
@@ -1150,7 +1184,7 @@ void profile_frame_start(
 #ifdef HALO_PROFILE
 	/* (after the step, which rolls up what the sections timed last frame:
 	the console no longer turns it off mid-frame, console.c) */
-	profile_global_enable = profile_trace_recording();
+	profile_global_enable = profile_trace_recording() || profile_overlay_visible();
 #endif
 
 	csmemset(&profile_globals.current_frame, 0, sizeof(profile_globals.current_frame));

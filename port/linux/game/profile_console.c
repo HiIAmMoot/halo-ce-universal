@@ -17,6 +17,8 @@ Connect profiling commands and launch settings to game recordings.
 #include "network_distributed.h"
 #include "profile_console.h"
 #include "profile_console_gametype.h"
+#include "profile_overlay.h"
+#include "profile_overlay_lines.h"
 #include "profile_trace.h"
 
 #include <stdio.h>
@@ -31,6 +33,9 @@ void *posix_directory_open(const char *path);
 void posix_directory_close(void *directory);
 void p2p_profile_lock(void);
 void p2p_profile_unlock(void);
+unsigned long p2p_peer_endpoint_address(unsigned long virtual_address);
+int p2p_profile_statistics(struct profile_net_tunnel_peer *peers, int maximum);
+long network_connection_profile_queued_bytes(void const *connection);
 int config_boolean(const char *name);
 long config_integer(const char *name);
 const char *config_string(const char *name);
@@ -77,6 +82,10 @@ static const char *profile_console_gametype(void)
 frame boundary that stops a recording on it (profile_console_frame) */
 static char profile_console_map[64];
 static char profile_console_next_map[64];
+
+/* when the tunnel, the pings and the queues are next read (the clock's
+nanoseconds) */
+static unsigned long long profile_console_next_second;
 
 /* ---------- private code */
 
@@ -211,9 +220,50 @@ static void profile_console_install(
 	profile_trace_set_track_lock(p2p_profile_lock, p2p_profile_unlock);
 	network_distributed_profile_register();
 	profile_net_set_object_describe(profile_console_describe);
+	profile_net_set_peer_describe(p2p_peer_endpoint_address);
+	profile_net_set_queue_reader(network_connection_profile_queued_bytes);
 	/* (the window's close, debug.exit_after and XLaunchNewImage end the
 	process with exit(), which main_exit never sees) */
 	atexit(profile_trace_shutdown);
+}
+
+static void profile_console_tunnel(
+	void)
+{
+	/* (static: 127 peers are about 7 KB, too much for the game thread's stack on the Android guest) */
+	static struct profile_net_tunnel_peer peers[MAXIMUM_PROFILE_NET_PEERS];
+
+	profile_net_tunnel(peers, p2p_profile_statistics(peers, MAXIMUM_PROFILE_NET_PEERS));
+}
+
+/* the pings the scoreboard shows: a client's own round trip, the host's of
+each client's machine (once: a machine's players share its ping) */
+static void profile_console_pings(
+	void)
+{
+	short player_index;
+	byte taken[HALO_PORT_MAXIMUM_NETWORK_MACHINES] = { 0 };
+
+	if (game_connection() == _game_connection_network_client)
+	{
+		real round_trip = distributed_own_round_trip_ticks();
+
+		if (round_trip > 0.0f)
+			profile_net_ping(PROFILE_NET_HOST, (long)(round_trip * 1000.0f / TICKS_PER_SECOND + 0.5f));
+		return;
+	}
+	if (game_connection() != _game_connection_network_server)
+		return;
+	for (player_index = 0; player_index < MAXIMUM_TRACKED_PLAYERS; player_index++)
+	{
+		long machine = distributed_player_machine(player_index);
+		long ping = distributed_player_ping(player_index);
+
+		if (machine < 0 || machine >= HALO_PORT_MAXIMUM_NETWORK_MACHINES || ping == NONE || taken[machine])
+			continue;
+		taken[machine] = 1;
+		profile_net_ping(machine, ping);
+	}
 }
 
 /* what follows the command word an expression starts with (past spaces and
@@ -253,6 +303,7 @@ void profile_console_launch(
 	profile_console_install();
 	profile_trace_thread_register(_profile_track_game);
 	platform_log("profile: network version %d", HALO_PORT_NETWORK_VERSION);
+	profile_overlay_toggle(config_boolean("debug.profile_overlay"));
 	if (strcmp(when, "start") != 0 && strcmp(when, "game") != 0)
 		platform_log("profile: debug.profile_record_when is \"%s\": \"start\" taken", when);
 	if (config_boolean("debug.profile_record"))
@@ -265,8 +316,15 @@ void profile_console_launch(
 void profile_console_frame(
 	void)
 {
+	unsigned long long now = profile_trace_clock();
 
 	strcpy(profile_console_map, profile_console_next_map);
+	if (!profile_net_counting || now < profile_console_next_second)
+		return;
+	profile_console_next_second = now + 1000000000ULL;
+	profile_console_tunnel();
+	profile_console_pings();
+	profile_net_sample_queues();
 }
 
 void profile_console_map_loaded(
@@ -332,6 +390,26 @@ boolean profile_console_command(
 			console_printf(FALSE, "profile: not recording");
 			break;
 		}
+		return TRUE;
+	}
+	if ((rest = profile_console_word(expression, "profile_overlay")) != NULL)
+	{
+		boolean on = !profile_overlay_visible();
+
+		switch (profile_overlay_switch(rest))
+		{
+		case _profile_overlay_switch_on:
+			on = TRUE;
+			break;
+		case _profile_overlay_switch_off:
+			on = FALSE;
+			break;
+		case _profile_overlay_switch_invalid:
+			console_printf(FALSE, "profile: profile_overlay takes on or off");
+			return TRUE;
+		}
+		profile_overlay_toggle(on);
+		console_printf(FALSE, "profile: overlay %s", on ? "on" : "off");
 		return TRUE;
 	}
 	return FALSE;

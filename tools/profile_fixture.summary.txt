@@ -1,7 +1,7 @@
 # halo profile summary, format 1
 # recording: profile_20261005-142233_host, parts 1-3 (complete)
 # build: 0 debug profile, platform: windows, role: host, own_machine: -
-# map: levels\a30\a30, players: 3 at start, 4 most
+# map: levels\a30\a30, players: 3 at start, 4 most, machines: 2
 # recorded: 2026-10-05 14:22:33 UTC, 6.0 s, 180 ticks, 360 frames, stopped: command
 # problems: none
 # units: ms = milliseconds; B/s = bytes per second, mean over the recording (or the # window);
@@ -20,7 +20,10 @@ at_s         seconds from the start of the recording to that frame
 frame_ms     that frame's duration
 ticks        game ticks that frame ran
 longest scopes (ms)  the frame's three scopes, at any depth, with the most time of their own (children not counted), name and that time
+direction    out = sent by this machine, in = received by it
+level        game = what the netcode wrote (a datagram whose batch began before the recording is missing from its first second); connection = what the socket layer sent; wire = tunnel packets incl. encryption and KCP
 B/s          bytes per second, mean over the selected seconds
+packets/s    datagrams (game, connection) or tunnel packets (wire) per second
 dir          out or in
 type         distributed message type (the netcode's message kind)
 msgs/s       messages per second (a message split across datagrams counts per piece)
@@ -33,10 +36,20 @@ sent/s       messages sent per second, summed over machines
 handler      receiving function that handles the type
 dropped/s    received messages discarded before their handler, per second (also counted in the received tables' msgs/s and B/s)
 reason       why a received message was discarded: not_in_game (loading or menus), bad_type, bad_size (shorter than its header or entries; on batch_header a batch cut short, its whole datagram counted), wrong_direction (a host message from a client or the reverse), stale (older than one already taken), fast_clock (a prediction from a machine whose game runs fast)
+machine      the game's machine index ("host" on a client)
+address      the machine's network address (virtual 100.64.x.x on internet play)
+out_B/s      bytes per second sent to the machine
+in_B/s       bytes per second received from the machine, discarded messages included
+ping_ms      game round trip as the scoreboard shows it (33 ms steps)
+wire_rtt_ms  tunnel round trip, milliseconds; 0 = not measured (LAN, no tunnel round trip, or the peer or machine was dropped: see problems)
+loss_in%     tunnel packets lost on the way in, percent; 0 = not measured (LAN, no tunnel packet counter, or the peer or machine was dropped: see problems)
+queue_max_B  most bytes waiting in the reliable queue in any second
+failed       sends that never reached the socket layer (a reliable send that fails early is not counted)
 object_type  biped, vehicle, weapon, equipment, ...; player = a player's entries, other = objects past the key limit, unknown = a handle with no object row (also object keys past the table, counted per interval: see problems)
 tag          the object type's definition's tag name
 field        part of an entry; header = bytes written outside the named fields
 source       measured = counted as written; layout = member size x entries
+item         overhead kind
 
 ## cpu scopes (top 40 by total_ms)
 scope                     count  total_ms  mean_ms  max_ms  per_frame  per_tick_ms
@@ -51,6 +64,17 @@ frame  at_s  frame_ms  ticks  longest scopes (ms)
    12  0.20     40.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
   132  2.20     39.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
   252  4.20     38.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
+
+## traffic
+direction  level             B/s  packets/s
+out        game             4820       61.0
+out        connection       4840       61.0
+out        wire             5600       80.0
+out        not_distributed    20        0.0
+in         game             2280       60.0
+in         connection       2280       62.0
+in         wire             2600       63.0
+in         not_distributed     0        2.0
 
 ## message types
 dir  type            msgs/s  entries/s   B/s  bytes/msg  share%
@@ -75,6 +99,11 @@ distributed_handle_inputs  player_inputs    60.0  1800        2.0
 type           reason  msgs/s
 player_inputs  stale      2.0
 
+## machines
+machine  address          out_B/s  in_B/s  ping_ms  wire_rtt_ms  loss_in%  queue_max_B  failed
+0        100.64.0.2:2302     2660    1140       95           61       3.0          600       0
+1        100.64.0.3:2302     2160    1140      105           71       0.0            0       0
+
 ## object types (top 15)
 object_type  tag                     entries/s   B/s
 biped        characters\elite\elite       30.0  1320
@@ -98,3 +127,10 @@ unit_states    position                measured  720    60.0
 unit_states    header                  measured  480    40.0
 player_inputs  buttons                 layout     12    75.0
 player_inputs  player_index            layout      4    25.0
+
+## overhead
+item                B/s
+batch_header        480
+connection_framing   20
+tunnel_overhead     760
+kcp_overhead         40

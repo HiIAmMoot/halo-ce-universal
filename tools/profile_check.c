@@ -5,6 +5,7 @@ Exercise the profiling recorder, writer and accounting with standalone fakes.
 */
 
 #include "profile_part.h"
+#include "profile_overlay_lines.h"
 #include "profile_console_gametype.h"
 
 #include <pthread.h>
@@ -16,6 +17,8 @@ Exercise the profiling recorder, writer and accounting with standalone fakes.
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+void profile_json_test_fail_join_after_start(void);
 
 /* ---------- fakes */
 
@@ -38,7 +41,18 @@ static const char *fake_map_name = "a30";
 static const char *fake_folder = ".";
 static char last_notice[128];
 static char last_log[600];
+static char last_join_log[600];
+static char last_delete_log[600];
 static int name_aggregate_child;
+
+#ifdef PROFILE_CHECK_KEEP_PARTS
+int profile_check_remove(const char *path)
+{
+	if (strstr(path, ".part") && strstr(path, ".json"))
+		return -1;
+	return unlink(path);
+}
+#endif
 
 static void check(int good, const char *what)
 {
@@ -125,11 +139,42 @@ static void quiet_log(const char *text)
 {
 	if (strstr(text, "cannot write"))
 		snprintf(last_log, sizeof(last_log), "%s", text);
+	if (strstr(text, "cannot join"))
+		snprintf(last_join_log, sizeof(last_join_log), "%s", text);
+	if (strstr(text, "cannot delete joined part"))
+		snprintf(last_delete_log, sizeof(last_delete_log), "%s", text);
 }
 
 static void fake_notify(const char *text)
 {
 	snprintf(last_notice, sizeof(last_notice), "%s", text);
+}
+
+static int joined_file_exists(const char *folder, const char *recording)
+{
+	DIR *directory = opendir(folder);
+	struct dirent *entry;
+	char prefix[128];
+	int found = 0;
+	const char *role_end = strstr(recording, "_host");
+	if (!role_end)
+		role_end = strstr(recording, "_client");
+	if (!role_end)
+		role_end = strstr(recording, "_local");
+
+	if (!directory)
+		return 0;
+	if (role_end)
+		role_end += role_end[1] == 'h' ? 5 : role_end[1] == 'c' ? 7 : 6;
+	snprintf(prefix, sizeof(prefix), "%.*s_", (int)(role_end ? role_end - recording : strlen(recording)), recording);
+	while ((entry = readdir(directory)) != NULL)
+	{
+		if (strncmp(entry->d_name, prefix, strlen(prefix)) == 0 && strstr(entry->d_name, ".json") &&
+			!strstr(entry->d_name, ".part"))
+			found = 1;
+	}
+	closedir(directory);
+	return found;
 }
 
 static int fake_ready_test(void)
@@ -783,6 +828,7 @@ static void net_checks(void)
 	unsigned long row_count, index, totals[4] = { 0, 0, 0, 0 };
 	long first_interval, intervals;
 	int site, field_a, field_b, key;
+	struct profile_net_loss loss;
 
 	profile_net_message_names(names, 1);
 	profile_net_layout(6, layout, 2, 8);
@@ -912,6 +958,16 @@ static void net_checks(void)
 	check(totals[0] == 12 && totals[1] == 4 && totals[2] == 3, "packed fields: committed, discarded, header");
 	profile_net_recording_end();
 
+	/* tunnel loss from the packet counter */
+	memset(&loss, 0, sizeof(loss));
+	check(profile_net_loss_step(&loss, 10, 10) == 0, "the first sample is the base");
+	check(profile_net_loss_step(&loss, 20, 20) == 0, "in order: no loss");
+	check(profile_net_loss_step(&loss, 30, 27) == 3, "a gap is loss");
+	check(profile_net_loss_step(&loss, 40, 37) == 0, "reordered within the second: no loss");
+	check(profile_net_loss_step(&loss, 50, 45) == 2, "late packets count lost first");
+	check(profile_net_loss_step(&loss, 60, 57) == 0, "and make up for it when they come");
+	check(profile_net_loss_step(&loss, 70, 66) == 0, "later loss is set against them");
+	check(profile_net_loss_step(&loss, 170, 67) == 98, "a gap wider than the window");
 }
 
 /* an entry as the netcode's files lay theirs out: its members in a table
@@ -1349,17 +1405,54 @@ static void lifetime_checks(void)
 	fake_ready = 1;
 }
 
+static unsigned long profile_test_peer_endpoint(unsigned long virtual_address)
+{
+	return virtual_address == 0x01004064UL ? 0x01004064UL : 0;
+}
+
 /* a real recording through the real writer, into the folder */
 static void file_checks(const char *folder)
 {
-	struct profile_trace_status status;
 	int frame_index;
 	int quoted;
-	unsigned char entries[8];
+	unsigned char entries[8 * 4];
+	static char connection_identity;
+	struct profile_net_tunnel_peer peer;
+	struct profile_trace_status status;
+	long long range_length;
+	session_sample_calls = 0;
+	check(profile_json_range_length(2147483648LL, 6442450944LL, &range_length) &&
+		range_length == 4294967296LL, "64-bit part ranges exceed 2 GiB");
+	check(!profile_json_range_length(6442450944LL, 2147483648LL, &range_length), "reversed 64-bit ranges fail");
+	{
+		struct profile_trace_session session;
+		char joined_name[128];
+
+		fake_session(&session);
+		strcpy(session.map_name, "levels\\test\\bloodgulch");
+		strcpy(session.gametype, "ctf");
+		profile_json_joined_name(folder, "profile_20261008-065527_client", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261008-065527_host_bloodgulch_ctf") == 0,
+			"joined names use the sanitized scenario and engine type");
+		strcpy(session.map_name, "levels\\a-b!?");
+		strcpy(session.gametype, "slayer");
+		profile_json_joined_name(folder, "profile_20261008-065527_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261008-065527_host_a-b--_slayer") == 0,
+			"joined names replace unsupported map characters");
+		session.map_name[0] = 0;
+		profile_json_joined_name(folder, "profile_20261008-065527_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261008-065527_host_a30_slayer") == 0,
+			"a legacy map path supplies the joined-name slug");
+		session.map[0] = 0;
+		profile_json_joined_name(folder, "profile_20261008-065527_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261008-065527_host_nomap_slayer") == 0,
+			"an empty map is named nomap");
+	}
 
 	fake_folder = folder;
 	profile_trace_set_writer(NULL);
 	profile_trace_set_session_sampler(fake_session_sample);
+	profile_net_set_peer_describe(profile_test_peer_endpoint);
 	quoted = profile_trace_name("quote\"back\\slash");
 	fake_map = "";
 	fake_map_name = "";
@@ -1369,6 +1462,7 @@ static void file_checks(const char *folder)
 	fake_own_machine = 1;
 	fake_map = "levels\\a30\\a30";
 	fake_map_name = "a30";
+	memset(&peer, 0, sizeof(peer));
 	for (frame_index = 0; frame_index < 2400; frame_index++)
 	{
 		if (frame_index == 2)
@@ -1385,6 +1479,22 @@ static void file_checks(const char *folder)
 		advance(100);
 		profile_trace_end(name_aggregate_child);
 		profile_trace_end(name_texture);
+		if (frame_index == 0)
+		{
+			profile_net_machine_address(202, 0x64400001UL, 5152);
+			profile_net_machine_address(201, 0x7F0000C9UL, 5151);
+			profile_net_traffic(&connection_identity, _profile_net_out, _profile_net_datagram, 100,
+				0x7F0000C9UL, 5151);
+			profile_net_connection_machine(&connection_identity, 201);
+			peer.virtual_address = 0x01004064UL;
+			profile_net_tunnel(&peer, 1);
+			peer.bytes_out = 1000;
+			peer.bytes_in = 500;
+			peer.packets_out = 1;
+			peer.packets_in = 1;
+			peer.highest_in = 1;
+			profile_net_tunnel(&peer, 1);
+		}
 		/* (salted datum handles are negative: the part's entries and objects tables carry them as they are) */
 		{
 			int handle = (int)(0xE1740000UL + (unsigned long)(frame_index % 5));
@@ -1418,8 +1528,12 @@ static void file_checks(const char *folder)
 	profile_trace_status(&status);
 	{
 		char name[64];
+		char joined_name[128];
 		char path[512];
 		FILE *file;
+		struct profile_trace_session session;
+		char joined_path[512];
+		char temporary_path[520];
 
 		profile_json_choose_name(folder, "20261005-142233", "host", name, sizeof(name));
 		check(strcmp(name, "profile_20261005-142233_host") == 0, "a free name is taken as it is");
@@ -1430,6 +1544,153 @@ static void file_checks(const char *folder)
 		profile_json_choose_name(folder, "20261005-142233", "host", name, sizeof(name));
 		check(strcmp(name, "profile_20261005-142233_host_2") == 0, "a name taken gets _2");
 		remove(path);
+		fake_session(&session);
+		profile_json_joined_name(folder, "profile_20261005-142233_host", &session, joined_name, sizeof(joined_name));
+		snprintf(joined_path, sizeof(joined_path), "%s/profile_20261005-142233_host_a30_campaign.json", folder);
+		file = fopen(joined_path, "wb");
+		if (file)
+			fclose(file);
+		profile_json_joined_name(folder, "profile_20261005-142233_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261005-142233_host_a30_campaign_2") == 0,
+			"a joined trace name is not reused");
+		remove(joined_path);
+		profile_json_joined_name(folder, "profile_20261005-142233_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261005-142233_host_a30_campaign") == 0,
+			"a free suffixed name is chosen for the joined trace");
+		snprintf(joined_path, sizeof(joined_path), "%s/%s.json", folder, joined_name);
+		file = fopen(joined_path, "wb");
+		if (file)
+			fclose(file);
+		profile_json_joined_name(folder, "profile_20261005-142233_host", &session, joined_name, sizeof(joined_name));
+		check(strcmp(joined_name, "profile_20261005-142233_host_a30_campaign_2") == 0,
+			"a joined-name collision gets _2");
+		remove(joined_path);
+		snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", joined_path);
+		check(joined_file_exists(folder, status.name), "the C writer joins its recording");
+		file = fopen(temporary_path, "rb");
+		check(file == NULL, "a successful join leaves no temporary file");
+		if (file)
+			fclose(file);
+		snprintf(path, sizeof(path), "%s/%s.part1.json", folder, status.name);
+		file = fopen(path, "rb");
+#ifndef PROFILE_CHECK_KEEP_PARTS
+		check(file == NULL, "a successful join deletes its parts");
+#else
+		check(file != NULL, "the parity check retains source parts");
+		check(strstr(last_delete_log, "cannot delete joined part") != NULL,
+			"a part deletion failure after joining is logged");
+#endif
+		if (file)
+			fclose(file);
+	}
+	{
+		char temporary_path[520];
+		char joined_name[128];
+		struct profile_trace_session session;
+
+		profile_trace_request_start(0.0, _profile_trace_when_now, 4);
+		profile_trace_status(&status);
+		fake_session(&session);
+		profile_json_joined_name(folder, status.name, &session, joined_name, sizeof(joined_name));
+		snprintf(temporary_path, sizeof(temporary_path), "%s/%s.json.tmp", folder, joined_name);
+		check(mkdir(temporary_path, 0700) == 0, "a competing join temporary is prepared");
+		frame(1);
+		profile_trace_shutdown();
+		check(access(temporary_path, F_OK) == 0, "a competing temporary file is preserved");
+		rmdir(temporary_path);
+	}
+	{
+		char part_path[512];
+		FILE *file;
+
+		profile_trace_request_start(0.0, _profile_trace_when_now, 4);
+		frame(1);
+		profile_trace_shutdown();
+		profile_trace_status(&status);
+		snprintf(part_path, sizeof(part_path), "%s/%s.part1.json", folder, status.name);
+		check(joined_file_exists(folder, status.name), "a one-part recording is joined");
+		file = fopen(part_path, "rb");
+#ifndef PROFILE_CHECK_KEEP_PARTS
+		check(file == NULL, "a one-part join removes its part");
+#else
+		check(file != NULL, "the parity build keeps its one-part source");
+#endif
+		if (file)
+		{
+			fclose(file);
+#ifndef PROFILE_CHECK_KEEP_PARTS
+			remove(part_path);
+#endif
+		}
+	}
+	{
+		char temporary_path[520];
+		char part_path[512];
+		char joined_path[512];
+		char joined_name[128];
+		struct profile_trace_session session;
+		FILE *file;
+		int frame_index;
+
+		profile_trace_request_start(0.0, _profile_trace_when_now, 4);
+		profile_trace_status(&status);
+		snprintf(temporary_path, sizeof(temporary_path), "%s/%s.part2.json.tmp", folder, status.name);
+		check(mkdir(temporary_path, 0700) == 0, "the middle-part failure path is prepared");
+		for (frame_index = 0; frame_index < 2400; frame_index++)
+		{
+			frame(40);
+			profile_trace_begin(name_texture);
+			advance(200);
+			profile_trace_end(name_texture);
+		}
+		profile_trace_shutdown();
+		check(strstr(last_log, "cannot write") != NULL, "a failed middle part write is logged");
+		check(strstr(last_join_log, "cannot join") != NULL, "a failed middle part skips joining");
+		rmdir(temporary_path);
+		fake_session(&session);
+		profile_json_joined_name(folder, status.name, &session, joined_name, sizeof(joined_name));
+		snprintf(joined_path, sizeof(joined_path), "%s/%s.json", folder, joined_name);
+		file = fopen(joined_path, "rb");
+		check(file == NULL, "a failed middle part creates no joined file");
+		if (file)
+			fclose(file), remove(joined_path);
+		snprintf(part_path, sizeof(part_path), "%s/%s.part1.json", folder, status.name);
+		file = fopen(part_path, "rb");
+		check(file != NULL, "a failed middle part keeps the already written first part");
+		if (file)
+		{
+			fclose(file);
+#ifndef PROFILE_CHECK_KEEP_PARTS
+			remove(part_path);
+#endif
+		}
+	}
+	{
+		char part_path[512];
+		char temporary_path[520];
+		FILE *file;
+		profile_trace_request_start(0.0, _profile_trace_when_now, 4);
+		frame(1);
+		profile_trace_status(&status);
+		snprintf(part_path, sizeof(part_path), "%s/%s.part1.json", folder, status.name);
+		snprintf(temporary_path, sizeof(temporary_path), "%s/%s_a30_campaign.json.tmp", folder, status.name);
+		last_join_log[0] = 0;
+		profile_json_test_fail_join_after_start();
+		profile_trace_shutdown();
+		check(strstr(last_join_log, "cannot join") != NULL, "a mid-copy join failure is logged");
+		file = fopen(temporary_path, "rb");
+		check(file == NULL, "a mid-copy join failure removes its temporary");
+		if (file)
+			fclose(file), remove(temporary_path);
+		file = fopen(part_path, "rb");
+		check(file != NULL, "a mid-copy join failure keeps its parts");
+		if (file)
+		{
+			fclose(file);
+#ifndef PROFILE_CHECK_KEEP_PARTS
+			remove(part_path);
+#endif
+		}
 	}
 }
 
@@ -1527,6 +1788,673 @@ static void net_received_checks(void)
 	profile_net_recording_end();
 }
 
+/* the first row of a table with this direction, aux, machine and key; the sum of a value over the matching rows */
+static struct profile_net_row const *net_row(struct profile_net_row const *rows, unsigned long count, int table,
+	int direction, int aux, int machine, int key)
+{
+	unsigned long index;
+
+	for (index = 0; index < count; index++)
+	{
+		if (rows[index].table == table && rows[index].direction == direction && rows[index].aux == aux &&
+			rows[index].machine == machine && rows[index].key == key)
+		{
+			return &rows[index];
+		}
+	}
+	return NULL;
+}
+
+static unsigned long net_rows_of(struct profile_net_row const *rows, unsigned long count, int table)
+{
+	unsigned long index, found = 0;
+
+	for (index = 0; index < count; index++)
+		found += rows[index].table == table;
+	return found;
+}
+
+/* a connection is known to profile_net.c by its address alone */
+static char connection_identity[4];
+static long queue_bytes;
+static int queue_reads[4];
+
+static long fake_queue_reader(void const *connection)
+{
+	int index;
+
+	for (index = 0; index < 4; index++)
+	{
+		if (connection == &connection_identity[index])
+			queue_reads[index]++;
+	}
+	return queue_bytes;
+}
+
+/* the connection layer: traffic by connection, direction and channel, the
+machine a connection is learnt to be, the reliable backlog read once a
+second, and a closed connection never read again (its pointer is kept in
+profile_net.c and the connection freed behind it) */
+static void net_connection_checks(void)
+{
+	struct profile_net_row rows[256];
+	struct profile_net_row const *row;
+	struct profile_net_snapshot snapshot;
+	struct profile_net_live before, after;
+	unsigned long row_count;
+	long first_interval, intervals;
+
+	profile_net_set_queue_reader(fake_queue_reader);
+	profile_net_live(&before);
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	profile_net_traffic(&connection_identity[0], _profile_net_out, _profile_net_datagram, 100, 0x7F000001, 2302);
+	profile_net_traffic(&connection_identity[0], _profile_net_out, _profile_net_datagram, 50, 0x7F000001, 2302);
+	profile_net_traffic(&connection_identity[0], _profile_net_in, _profile_net_stream, 30, 0x7F000001, 2302);
+	/* the top of the address and port ranges */
+	profile_net_traffic(&connection_identity[1], _profile_net_out, _profile_net_stream, 7, 0xFFFFFFFFUL, 65535);
+	profile_net_connection_machine(&connection_identity[0], PROFILE_NET_SERVER_DATAGRAMS);
+	profile_net_connection_machine(&connection_identity[1], 127);
+	check(profile_net_connections == 2, "two connections are live");
+	check(profile_net_connection_entry(0)->ipv4 == 0x0100007F && profile_net_connection_entry(0)->port == 2302 &&
+		profile_net_connection_entry(0)->machine == PROFILE_NET_SERVER_DATAGRAMS,
+		"a connection keeps its address and the host's datagram connection its own machine");
+	check(profile_net_connection_entry(1)->ipv4 == 0xFFFFFFFFUL && profile_net_connection_entry(1)->port == 65535 &&
+		profile_net_connection_entry(1)->machine == 127, "the top address, port and machine of the ranges");
+
+	/* a connection that closed: not read again, and its memory's next owner is a connection of its own */
+	profile_net_traffic(&connection_identity[2], _profile_net_out, _profile_net_stream, 9, 0x00000002, 1);
+	check(profile_net_connections == 3, "a third connection is live");
+	profile_net_connection_closed(&connection_identity[2]);
+	check(profile_net_connections == 2, "a closed connection is not live");
+	profile_net_connection_closed(&connection_identity[2]);
+	check(profile_net_connections == 2, "a connection closes once");
+	queue_bytes = 900;
+	profile_net_sample_queues();
+	queue_bytes = 300;
+	profile_net_sample_queues();
+	check(queue_reads[0] == 2 && queue_reads[1] == 2 && queue_reads[2] == 0, "the live connections are read each second, a closed one never");
+	profile_net_traffic(&connection_identity[2], _profile_net_in, _profile_net_datagram, 11, 0x00000003, 2);
+	check(profile_net_connection_entry(3) && profile_net_connection_entry(3)->ipv4 == 0x03000000,
+		"memory reused by a new connection is a new row");
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+
+	check(snapshot.connections == 4, "the connections at the cut: closed ones keep their rows");
+	row = net_row(rows, row_count, _profile_net_table_traffic, _profile_net_out, _profile_net_datagram, -1, 0);
+	check(row && row->values[0] == 150 && row->values[1] == 2, "datagram bytes out and their count by connection");
+	row = net_row(rows, row_count, _profile_net_table_traffic, _profile_net_in, _profile_net_stream, -1, 0);
+	check(row && row->values[0] == 30 && row->values[1] == 1, "stream bytes in by connection");
+	row = net_row(rows, row_count, _profile_net_table_traffic, _profile_net_out, _profile_net_stream, -1, 1);
+	check(row && row->values[0] == 7, "the connection at the top of the ranges has its row");
+	row = net_row(rows, row_count, _profile_net_table_traffic, _profile_net_in, _profile_net_datagram, -1, 3);
+	check(row && row->values[0] == 11, "a reused address counts under its new connection");
+	row = net_row(rows, row_count, _profile_net_table_queues, _profile_net_out, 0, -1, 0);
+	check(row && row->values[0] == 900, "the queue row keeps the interval's largest backlog");
+	row = net_row(rows, row_count, _profile_net_table_queues, _profile_net_out, 0, -1, 2);
+	check(!row, "a closed connection has no queue row");
+	check(net_rows_of(rows, row_count, _profile_net_table_queues) == 2, "a queue row for each live connection");
+	profile_net_recording_end();
+	/* the overlay's totals count without a recording */
+	profile_net_set_overlay(1);
+	profile_net_traffic(&connection_identity[0], _profile_net_out, _profile_net_datagram, 5, 0, 0);
+	profile_net_set_overlay(0);
+	profile_net_live(&after);
+	check(after.game_bytes[_profile_net_out] - before.game_bytes[_profile_net_out] == 100 + 50 + 7 + 9 + 5 &&
+		after.game_packets[_profile_net_in] - before.game_packets[_profile_net_in] == 2,
+		"the live totals are the connection layer's bytes and datagrams");
+}
+
+/* the tunnel's peers: a first sample is the baseline, the next ones are the
+differences. A peer address with its top bit set is a negative key, and a
+peer past the table's last is left out */
+static void net_tunnel_checks(void)
+{
+	struct profile_net_tunnel_peer peers[MAXIMUM_PROFILE_NET_PEERS + 1];
+	struct profile_net_row *rows = calloc(1024, sizeof(*rows));
+	struct profile_net_row const *row;
+	struct profile_net_snapshot snapshot;
+	struct profile_net_live live;
+	struct profile_net_counts counts;
+	unsigned long row_count;
+	long first_interval, intervals;
+	int index, peer_count = MAXIMUM_PROFILE_NET_PEERS + 1;
+
+	/* (the p2p layer's own limit, which p2p.c asserts the table holds) */
+	check(MAXIMUM_PROFILE_NET_PEERS == HALO_PORT_MAXIMUM_NETWORK_MACHINES - 1 &&
+		MAXIMUM_PROFILE_NET_MACHINES == HALO_PORT_MAXIMUM_NETWORK_MACHINES, "the tables hold the netcode's machines");
+	memset(peers, 0, sizeof(peers));
+	for (index = 0; index < peer_count; index++)
+	{
+		peers[index].virtual_address = 0xFEFF7F64UL - (unsigned long)index;
+		peers[index].bytes_out = 1000;
+		peers[index].bytes_in = 2000;
+		peers[index].packets_out = 100;
+		peers[index].packets_in = 200;
+		peers[index].highest_in = 200;
+		peers[index].kcp_payload = 300;
+		peers[index].kcp_output = 400;
+		peers[index].round_trip = 20;
+	}
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 1024, 0, 0);
+	profile_net_tunnel(peers, peer_count);
+	for (index = 0; index < peer_count; index++)
+	{
+		peers[index].bytes_out += 100 * (unsigned long)(index + 1);
+		peers[index].bytes_in += 10;
+		peers[index].packets_out += 4;
+		peers[index].packets_in += 10;
+		peers[index].highest_in += 12;
+		peers[index].kcp_payload += 50;
+		peers[index].kcp_output += 90;
+		peers[index].round_trip = 35;
+	}
+	profile_net_tunnel(peers, peer_count);
+	profile_net_live(&live);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_rows_of(rows, row_count, _profile_net_table_tunnel_bytes) == MAXIMUM_PROFILE_NET_PEERS,
+		"a row for each peer of the table, none for the first sample, none past the last");
+	row = net_row(rows, row_count, _profile_net_table_tunnel_bytes, _profile_net_out, 0, -1, (int)peers[MAXIMUM_PROFILE_NET_PEERS - 1].virtual_address);
+	check(row && row->key != PROFILE_NET_KEY_NONE && row->key != PROFILE_NET_KEY_OTHER && row->key < 0 &&
+		row->values[0] == 100 * MAXIMUM_PROFILE_NET_PEERS && row->values[1] == 10 && row->values[2] == 35,
+		"the last peer's bytes out and in, and its round trip, under its negative address key");
+	row = net_row(rows, row_count, _profile_net_table_tunnel_bytes, _profile_net_out, 0, -1, (int)peers[MAXIMUM_PROFILE_NET_PEERS].virtual_address);
+	check(!row, "a peer past the table has no row");
+	profile_net_counters(&counts);
+	check(counts.peers_dropped == 2, "a peer sample past the table is counted, in each sample");
+	row = net_row(rows, row_count, _profile_net_table_tunnel_packets, _profile_net_out, 0, -1, (int)peers[0].virtual_address);
+	check(row && row->values[0] == 4 && row->values[1] == 10 && row->values[2] == 2,
+		"packets out and in, and the two the advance of the highest number says were lost");
+	row = net_row(rows, row_count, _profile_net_table_tunnel_kcp, _profile_net_out, 0, -1, (int)peers[0].virtual_address);
+	check(row && row->values[0] == 50 && row->values[1] == 90, "KCP's payload and output");
+	check(live.wire_bytes[_profile_net_in] == 10 * MAXIMUM_PROFILE_NET_PEERS && live.wire_packets[_profile_net_out] == 4 * MAXIMUM_PROFILE_NET_PEERS &&
+		live.wire_round_trip_ms == 35, "the live wire totals are the peers' differences");
+	check(live.loss_percent > 16.6 && live.loss_percent < 16.7, "the loss of the second is the lost over the lost and the received");
+	profile_net_recording_end();
+
+	/* a new recording's first sample is a baseline again: nothing of the gap
+	since the last sample, in the rows or in the live totals */
+	profile_net_live(&live);
+	{
+		struct profile_net_live gap;
+
+		profile_net_recording_begin();
+		memset(rows, 0, 1024 * sizeof(*rows));
+		profile_net_part_begin(rows, 1024, 0, 0);
+		for (index = 0; index < 2; index++)
+		{
+			peers[index].bytes_out += 5000;
+			peers[index].packets_out += 50;
+			peers[index].packets_in += 50;
+			peers[index].highest_in += 50;
+		}
+		profile_net_tunnel(peers, 2);
+		profile_net_live(&gap);
+		check(gap.wire_bytes[_profile_net_out] == live.wire_bytes[_profile_net_out] &&
+			gap.wire_packets[_profile_net_in] == live.wire_packets[_profile_net_in],
+			"the gap between recordings is not in the live totals");
+		profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+		check(net_rows_of(rows, row_count, _profile_net_table_tunnel_bytes) == 0 &&
+			net_rows_of(rows, row_count, _profile_net_table_tunnel_packets) == 0,
+			"the first sample of a recording has no rows");
+		profile_net_recording_end();
+	}
+
+	/* the table of peers is a recording's: peers of earlier recordings do not fill it */
+	{
+		unsigned long address = 0x0A000001UL;
+		int recording;
+
+		for (recording = 0; recording < 3; recording++)
+		{
+			memset(peers, 0, sizeof(peers));
+			for (index = 0; index < 20; index++)
+			{
+				peers[index].virtual_address = address++;
+				peers[index].bytes_out = 100;
+				peers[index].packets_out = 10;
+				peers[index].packets_in = 10;
+				peers[index].highest_in = 10;
+			}
+			profile_net_recording_begin();
+			memset(rows, 0, 1024 * sizeof(*rows));
+			profile_net_part_begin(rows, 1024, 0, 0);
+			profile_net_tunnel(peers, 20);
+			for (index = 0; index < 20; index++)
+			{
+				peers[index].bytes_out += 7;
+				peers[index].packets_out += 1;
+			}
+			profile_net_tunnel(peers, 20);
+			profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+			check(net_rows_of(rows, row_count, _profile_net_table_tunnel_bytes) == 20,
+				"the peers of a later recording are tracked after 40 others came before");
+			profile_net_recording_end();
+		}
+	}
+
+	/* a peer made again since has its counts start over, in any of them: bytes
+	down with packets up is not a difference to add */
+	memset(peers, 0, sizeof(peers));
+	peers[0].virtual_address = 0x0B000001UL;
+	peers[0].bytes_out = 5000;
+	peers[0].packets_out = 100;
+	peers[0].packets_in = 100;
+	peers[0].highest_in = 100;
+	profile_net_recording_begin();
+	memset(rows, 0, 1024 * sizeof(*rows));
+	profile_net_part_begin(rows, 1024, 0, 0);
+	profile_net_tunnel(peers, 1);
+	profile_net_live(&live);
+	peers[0].bytes_out = 100;
+	peers[0].packets_out = 150;
+	profile_net_tunnel(peers, 1);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_rows_of(rows, row_count, _profile_net_table_tunnel_bytes) == 0,
+		"a peer whose bytes went down has no row for the sample that restarts it");
+	{
+		struct profile_net_live after;
+
+		profile_net_live(&after);
+		check(after.wire_bytes[_profile_net_out] == live.wire_bytes[_profile_net_out],
+			"a peer made again adds no wrapped difference to the live totals");
+	}
+	profile_net_recording_end();
+
+	/* the peers of one long recording: far more than the table's size over
+	time, a few at once, all tracked (a peer that is gone leaves the table) */
+	{
+		struct profile_net_tunnel_peer window[3];
+		int sample, slot, tracked = 0;
+		unsigned long address;
+
+		profile_net_recording_begin();
+		memset(rows, 0, 1024 * sizeof(*rows));
+		profile_net_part_begin(rows, 1024, 0, 0);
+		for (sample = 0; sample < 40; sample++)
+		{
+			memset(window, 0, sizeof(window));
+			for (slot = 0; slot < 3; slot++)
+			{
+				window[slot].virtual_address = 0x0C000000UL + (unsigned long)(sample + slot);
+				window[slot].bytes_out = 1000 + 10 * (unsigned long)sample;
+				window[slot].packets_out = 100 + (unsigned long)sample;
+				window[slot].packets_in = 100 + (unsigned long)sample;
+				window[slot].highest_in = 100 + (unsigned long)sample;
+			}
+			profile_net_tunnel(window, 3);
+		}
+		profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+		for (address = 0x0C000000UL; address < 0x0C000000UL + 42; address++)
+			tracked += net_row(rows, row_count, _profile_net_table_tunnel_bytes, _profile_net_out, 0, -1, (int)address) != NULL;
+		check(tracked == 40, "every peer that was there for two samples is tracked, 42 over time in a table of 32");
+		profile_net_recording_end();
+	}
+
+	/* a peer that disappears and comes back is new: a baseline, no row */
+	{
+		struct profile_net_tunnel_peer peer, other;
+
+		memset(&peer, 0, sizeof(peer));
+		other = peer;
+		peer.virtual_address = 0x0D000001UL;
+		other.virtual_address = 0x0D000002UL;
+		profile_net_recording_begin();
+		memset(rows, 0, 1024 * sizeof(*rows));
+		profile_net_part_begin(rows, 1024, 0, 0);
+		peer.bytes_out = 100;
+		peer.packets_out = 10;
+		profile_net_tunnel(&peer, 1);
+		profile_net_tunnel(&other, 1);
+		peer.bytes_out = 900;
+		peer.packets_out = 90;
+		profile_net_tunnel(&peer, 1);
+		profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+		check(net_rows_of(rows, row_count, _profile_net_table_tunnel_bytes) == 0,
+			"a peer that was gone and is back has a baseline, not the difference over its absence");
+		profile_net_recording_end();
+	}
+	free(rows);
+}
+
+/* the pings: the last of the second and how many, by machine, the host's
+under its own value; a negative one (not known) is not counted */
+static void net_ping_checks(void)
+{
+	struct profile_net_row rows[64];
+	struct profile_net_row const *row;
+	struct profile_net_snapshot snapshot;
+	struct profile_net_live live;
+	unsigned long row_count;
+	long first_interval, intervals;
+
+	profile_net_live(&live);
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 64, 0, 0);
+	profile_net_ping(127, 40);
+	profile_net_ping(127, 60);
+	profile_net_ping(PROFILE_NET_HOST, 25);
+	profile_net_ping(5, -1);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	row = net_row(rows, row_count, _profile_net_table_pings, _profile_net_in, 0, 127, -1);
+	check(row && row->values[0] == 60 && row->values[1] == 2, "the top machine's last ping and how many were taken");
+	row = net_row(rows, row_count, _profile_net_table_pings, _profile_net_in, 0, PROFILE_NET_HOST, -1);
+	check(row && row->values[0] == 25 && row->values[1] == 1, "the host's ping has its own machine");
+	check(!net_row(rows, row_count, _profile_net_table_pings, _profile_net_in, 0, 5, -1), "an unknown ping is not a row");
+	profile_net_live(&live);
+	check(live.ping_ms == (40 + 60 + 25) / 3, "the overlay's ping is the mean of the second's");
+	profile_net_recording_end();
+}
+
+/* the overlay's round trip is the mean of the peers sampled, and its ping the
+last second's, whether or not the overlay was reading in between */
+static void net_overlay_number_checks(void)
+{
+	struct profile_net_tunnel_peer peers[3];
+	struct profile_net_live live;
+	int index;
+
+	memset(peers, 0, sizeof(peers));
+	for (index = 0; index < 3; index++)
+	{
+		peers[index].virtual_address = 0x64400001UL + (unsigned long)index;
+		peers[index].round_trip = 10UL + 20UL * (unsigned long)index * (unsigned long)index;
+	}
+	profile_net_live(&live);
+	profile_net_recording_begin();
+	profile_net_tunnel(peers, 3);
+	for (index = 0; index < 3; index++)
+	{
+		peers[index].packets_in += 5;
+		peers[index].bytes_in += 50;
+	}
+	profile_net_tunnel(peers, 3);
+	profile_net_live(&live);
+	check(live.wire_round_trip_ms == (10 + 30 + 90) / 3, "the wire round trip is the mean of the peers, not the last one's");
+
+	profile_net_ping(1, 100);
+	profile_net_tunnel(peers, 0);
+	profile_net_ping(1, 200);
+	profile_net_tunnel(peers, 0);
+	profile_net_ping(1, 60);
+	profile_net_live(&live);
+	check(live.ping_ms == 60, "the pings of earlier seconds are not in the overlay's mean, read or not");
+	profile_net_recording_end();
+}
+
+/* the thread drops until the game thread says stop, and says when it began,
+so that the two overlap */
+struct loss_thread
+{
+	long count;
+	int started;
+	int stop;
+};
+
+static void *loss_thread_main(void *argument)
+{
+	struct loss_thread *thread = argument;
+
+	__atomic_store_n(&thread->started, 1, __ATOMIC_SEQ_CST);
+	while (!__atomic_load_n(&thread->stop, __ATOMIC_SEQ_CST))
+	{
+		profile_net_simulated_loss();
+		thread->count++;
+	}
+	return NULL;
+}
+
+/* debug.network_loss's datagrams are dropped on the thread that reads the
+socket, which may not be the game's: counted atomically, in the interval
+the game thread closes next. The recording flag it tests is flipped by the
+game thread meanwhile */
+static void net_simulated_loss_checks(void)
+{
+	struct profile_net_row *rows = calloc(8192, sizeof(*rows));
+	struct profile_net_snapshot snapshot;
+	struct loss_thread loss = { 0, 0, 0 };
+	struct profile_net_live live;
+	unsigned long row_count;
+	long first_interval, intervals;
+	unsigned long long now = 0;
+	pthread_t thread;
+	unsigned long counted;
+	int round;
+
+	/* the flag's own flips (nothing is asserted of what is counted) */
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 8192, now, 0);
+	pthread_create(&thread, NULL, loss_thread_main, &loss);
+	while (!__atomic_load_n(&loss.started, __ATOMIC_SEQ_CST))
+		;
+	for (round = 0; round < 2000; round++)
+	{
+		profile_net_recording_end();
+		profile_net_recording_begin();
+		profile_net_part_begin(rows, 8192, now, 0);
+	}
+	__atomic_store_n(&loss.stop, 1, __ATOMIC_SEQ_CST);
+	pthread_join(thread, NULL);
+	profile_net_part_end(now, &row_count, &first_interval, &intervals, &snapshot);
+	profile_net_recording_end();
+
+	/* in a recording that stays on, the game thread sampling and closing intervals meanwhile: nothing is lost */
+	memset(rows, 0, 8192 * sizeof(*rows));
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 8192, now, 0);
+	loss.count = 0;
+	loss.started = 0;
+	loss.stop = 0;
+	pthread_create(&thread, NULL, loss_thread_main, &loss);
+	while (!__atomic_load_n(&loss.started, __ATOMIC_SEQ_CST))
+		;
+	for (round = 0; round < 40; round++)
+	{
+		now += 1100000000ULL;
+		profile_net_ping(1, round);
+		profile_net_sample_queues();
+		profile_net_live(&live);
+		profile_net_frame(now, round);
+	}
+	__atomic_store_n(&loss.stop, 1, __ATOMIC_SEQ_CST);
+	pthread_join(thread, NULL);
+	profile_net_part_end(now + 1100000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	counted = net_table_sum(rows, row_count, _profile_net_table_simulated_loss, 0);
+	check(counted == (unsigned long)loss.count, "every datagram a second thread drops is counted once, across the intervals closed meanwhile");
+	profile_net_recording_end();
+	profile_net_simulated_loss();
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 8192, now, 0);
+	profile_net_part_end(now, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_table_sum(rows, row_count, _profile_net_table_simulated_loss, 0) == 0, "a drop outside a recording is not counted into the next");
+	profile_net_recording_end();
+	free(rows);
+}
+
+static void *traffic_thread_main(void *argument)
+{
+	struct loss_thread *thread = argument;
+
+	__atomic_store_n(&thread->started, 1, __ATOMIC_SEQ_CST);
+	while (!__atomic_load_n(&thread->stop, __ATOMIC_SEQ_CST))
+	{
+		/* (not the game's thread: counted at most, and only while recording) */
+		profile_net_traffic(&connection_identity[0], _profile_net_out, _profile_net_datagram, 1, 0, 0);
+		thread->count++;
+	}
+	return NULL;
+}
+
+/* the connection layer's hooks may be reached from another thread: they
+read the counting flag the game thread turns on and off */
+static void net_counting_checks(void)
+{
+	struct loss_thread traffic = { 0, 0, 0 };
+	pthread_t thread;
+	int round;
+
+	pthread_create(&thread, NULL, traffic_thread_main, &traffic);
+	while (!__atomic_load_n(&traffic.started, __ATOMIC_SEQ_CST))
+		;
+	for (round = 0; round < 5000; round++)
+	{
+		profile_net_set_overlay(1);
+		profile_net_set_overlay(0);
+	}
+	__atomic_store_n(&traffic.stop, 1, __ATOMIC_SEQ_CST);
+	pthread_join(thread, NULL);
+	check(traffic.count > 0, "the other thread ran while the flag was toggled");
+}
+
+/* profile_overlay's argument: nothing toggles, on and off set, anything else is wrong
+(a prefix such as "onx" is not "on") */
+static void overlay_switch_checks(void)
+{
+	check(profile_overlay_switch("") == _profile_overlay_switch_toggle && profile_overlay_switch(")") == _profile_overlay_switch_toggle &&
+		profile_overlay_switch("  )") == _profile_overlay_switch_toggle, "no word toggles the overlay, in or out of parentheses");
+	check(profile_overlay_switch("on") == _profile_overlay_switch_on && profile_overlay_switch("off") == _profile_overlay_switch_off,
+		"on and off set it");
+	check(profile_overlay_switch("ON") == _profile_overlay_switch_on && profile_overlay_switch("Off )") == _profile_overlay_switch_off &&
+		profile_overlay_switch("on)") == _profile_overlay_switch_on && profile_overlay_switch("on \t") == _profile_overlay_switch_on,
+		"in either case, before a closing parenthesis, with spaces after");
+	check(profile_overlay_switch("onx") == _profile_overlay_switch_invalid && profile_overlay_switch("offline") == _profile_overlay_switch_invalid &&
+		profile_overlay_switch("o") == _profile_overlay_switch_invalid && profile_overlay_switch("on off") == _profile_overlay_switch_invalid &&
+		profile_overlay_switch("1") == _profile_overlay_switch_invalid, "any other word is not an answer");
+	/* the last member of the loss state: nothing is left of it that nothing uses */
+	check(offsetof(struct profile_net_loss, reported) + sizeof(long long) == sizeof(struct profile_net_loss), "the loss state has no spare member");
+}
+
+static void overlay_checks(void)
+{
+	static const double first_ticks[] = { 3.0 };
+	static const double second_ticks[] = { 2.0, 5.0 };
+	struct profile_overlay_lines overlay;
+	struct profile_trace_status status;
+	struct profile_net_live live, quiet;
+
+	profile_overlay_lines_reset(&overlay);
+	check(strcmp(overlay.lines[0], "profile idle") == 0, "the overlay starts idle");
+	memset(&status, 0, sizeof(status));
+	memset(&live, 0, sizeof(live));
+	profile_overlay_lines_second(&overlay, &status, "local", 0, &live, 1.0);
+	check(strcmp(overlay.lines[1], "local") == 0, "a local game says so");
+	check(strcmp(overlay.lines[2], "frame 0.0 ms avg 0.0 max   tick --") == 0, "no tick: --");
+	check(strcmp(overlay.lines[3], "tick slow: --") == 0, "no tick: no slow sections");
+	check(strcmp(overlay.lines[5], "up 0.0 KB/s  down 0.0 KB/s") == 0, "no tunnel: no wire");
+	check(strcmp(overlay.lines[6], "ping 0 ms  loss 0.0%  packets 0 up 0 down") == 0, "no tunnel: no loss, no wire ping");
+
+	/* a busy second */
+	profile_overlay_lines_frame(&overlay, 8.0, 1, first_ticks, 1.0);
+	profile_overlay_lines_frame(&overlay, 20.0, 2, second_ticks, 2.0);
+	profile_overlay_lines_section(&overlay, "game_tick.objects", 4.2);
+	profile_overlay_lines_section(&overlay, "game_tick.ai", 2.7);
+	profile_overlay_lines_section(&overlay, "network_distributed_tick", 1.8);
+	profile_overlay_lines_section(&overlay, "render", 9.0);
+	status.state = _profile_trace_recording;
+	status.seconds = 724.5;
+	status.part = 3;
+	status.memory_percent = 41;
+	live.game_bytes[0] = 41200;
+	live.game_bytes[1] = 6100;
+	live.wire_bytes[0] = 52000;
+	live.wire_bytes[1] = 9000;
+	live.game_packets[0] = 92;
+	live.game_packets[1] = 31;
+	live.wire_packets[0] = 95;
+	live.wire_packets[1] = 40;
+	live.ping_ms = 95;
+	live.wire_round_trip_ms = 61;
+	live.loss_percent = 0.4;
+	quiet = live;
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &live, 1.0);
+	check(strcmp(overlay.lines[0], "REC 12:04 part 3  mem 41%") == 0, "recording: time, part and memory");
+	check(strcmp(overlay.lines[1], "host  3 clients") == 0, "a host: its clients");
+	check(strcmp(overlay.lines[2], "frame 14.0 ms avg 20.0 max   tick 4.3 ms avg 6.0 max") == 0,
+		"frame and tick, mean and most");
+	check(strcmp(overlay.lines[3], "tick slow: objects 1.4  ai 0.9  network_distributed 0.6") == 0,
+		"the three slowest sections per tick");
+	check(overlay.lines[4][0] == 0, "short slow sections stay on one line");
+	check(strcmp(overlay.lines[5], "up 41.2 KB/s (wire 52.0)  down 6.1 KB/s (wire 9.0)") == 0, "up and down, game and wire");
+	check(strcmp(overlay.lines[6], "ping 95 ms (wire 61)  loss 0.4%  packets 92 up 31 down") == 0,
+		"ping, loss and packets");
+	for (int line = 0; line < PROFILE_OVERLAY_LINE_COUNT; line++)
+		check(strlen(overlay.lines[line]) <= PROFILE_OVERLAY_LINE_LIMIT,
+			"every overlay line stays within the character cap");
+
+	/* a second with no tunnel packets: the wire parts go, the loss with them */
+	profile_overlay_lines_frame(&overlay, 10.0, 1, first_ticks, 0.0);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(strcmp(overlay.lines[5], "up 0.0 KB/s  down 0.0 KB/s") == 0, "no tunnel packets this second: no wire parts");
+	check(strcmp(overlay.lines[6], "ping 95 ms  loss 0.0%  packets 0 up 0 down") == 0,
+		"no tunnel packets this second: loss 0.0");
+	check(strcmp(overlay.lines[3], "tick slow: --") == 0, "a tick without sections: no slow sections");
+	check(strcmp(overlay.lines[2], "frame 10.0 ms avg 10.0 max   tick 3.0 ms avg 3.0 max") == 0, "a tick without the network's time");
+
+	/* ranked by time per tick, whatever order the sections came in; a fourth is left out */
+	profile_overlay_lines_frame(&overlay, 5.0, 2, second_ticks, 0.0);
+	profile_overlay_lines_section(&overlay, "game_tick.a", 1.0);
+	profile_overlay_lines_section(&overlay, "game_tick.b", 6.0);
+	profile_overlay_lines_section(&overlay, "game_tick.c", 2.0);
+	profile_overlay_lines_section(&overlay, "game_tick.d", 4.0);
+	profile_overlay_lines_section(&overlay, "game_tick.b", 2.0);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(strcmp(overlay.lines[3], "tick slow: b 4.0  d 2.0  c 1.0") == 0,
+		"slow sections: ranked, summed over frames, three of them");
+
+	/* long names wrap between sections, leaving both lines tracker-safe */
+	profile_overlay_lines_frame(&overlay, 5.0, 1, first_ticks, 0.0);
+	profile_overlay_lines_section(&overlay, "game_tick.very_long_section_alpha", 9.0);
+	profile_overlay_lines_section(&overlay, "game_tick.very_long_section_bravo", 6.0);
+	profile_overlay_lines_section(&overlay, "game_tick.very_long_section_charlie", 3.0);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(strlen(overlay.lines[3]) <= PROFILE_OVERLAY_SLOW_LINE_LIMIT &&
+		strlen(overlay.lines[4]) <= PROFILE_OVERLAY_SLOW_LINE_LIMIT && overlay.lines[4][0],
+		"three long slow names wrap without exceeding the character cap");
+	check(strstr(overlay.lines[3], "very_long_section_alpha") &&
+		strstr(overlay.lines[4], "very_long_section_bravo") &&
+		!strstr(overlay.lines[4], "very_long_section_charlie"),
+		"overflow moves the second entry and stops before a third that cannot fit");
+	profile_overlay_lines_frame(&overlay, 5.0, 1, first_ticks, 0.0);
+	profile_overlay_lines_section(&overlay, "game_tick.short", 1.0);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(!overlay.lines[4][0], "a new second clears the previous continuation");
+
+	/* exact cap stays intact; the next character starts a new line */
+	profile_overlay_lines_reset(&overlay);
+	profile_overlay_lines_frame(&overlay, 5.0, 1, first_ticks, 0.0);
+	profile_overlay_lines_section(&overlay, "game_tick.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO", 1.0);
+	profile_overlay_lines_section(&overlay, "game_tick.b", 0.9);
+	profile_overlay_lines_section(&overlay, "game_tick.c", 0.8);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(strlen(overlay.lines[3]) == PROFILE_OVERLAY_LINE_LIMIT && strcmp(overlay.lines[4], "b 0.9  c 0.8") == 0,
+		"an exact-cap line stays intact and continuation entries keep their separator");
+	profile_overlay_lines_frame(&overlay, 5.0, 1, first_ticks, 0.0);
+	profile_overlay_lines_section(&overlay, "game_tick.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP", 1.0);
+	profile_overlay_lines_second(&overlay, &status, "host", 3, &quiet, 1.0);
+	check(strlen(overlay.lines[3]) <= PROFILE_OVERLAY_LINE_LIMIT && overlay.lines[4][0],
+		"a slow line one character over the cap wraps");
+	{
+		char text[PROFILE_OVERLAY_LINE_COUNT * (PROFILE_OVERLAY_LINE_SIZE + 2) + 1];
+		int breaks = 0;
+		overlay.lines[PROFILE_OVERLAY_CONTINUATION_LINE][0] = 0;
+		profile_overlay_lines_text(&overlay, text);
+		for (char *at = text; (at = strstr(at, "|n")) != NULL; at += 2)
+			breaks++;
+		check(breaks == PROFILE_OVERLAY_LINE_COUNT - 1,
+			"overlay text excludes the empty continuation line");
+	}
+
+	status.state = _profile_trace_finishing;
+	strcpy(status.name, "profile_20261005-142233_host");
+	profile_overlay_lines_second(&overlay, &status, "client", 0, &live, 1.0);
+	check(strcmp(overlay.lines[0], "profile writing profile_20261005-142233_host") == 0, "writing: the name");
+	check(strcmp(overlay.lines[1], "client") == 0, "a client says so");
+	check(strcmp(overlay.lines[2], "frame 0.0 ms avg 0.0 max   tick --") == 0, "a new second starts empty");
+	status.state = _profile_trace_armed;
+	profile_overlay_lines_second(&overlay, &status, "local", 0, &live, 1.0);
+	check(strcmp(overlay.lines[0], "profile armed") == 0, "armed: waiting for a game");
+}
+
 static int refusing_writer_start(void)
 {
 	return 0;
@@ -1616,7 +2544,7 @@ static void worst_frame_checks(void)
 		free(part);
 		return;
 	}
-	check(profile_json_write(part, file), "a part with nested scopes is written");
+	check(profile_json_write(part, file, NULL), "a part with nested scopes is written");
 	rewind(file);
 	length = fread(text, 1, sizeof(text) - 1, file);
 	text[length] = 0;
@@ -1629,10 +2557,302 @@ static void worst_frame_checks(void)
 	free(part);
 }
 
+/* the writer's passes over a part's rows: the tunnel table and the second
+counters must stay what the plain scans (kept here, as they were written) make
+of the same rows, and a part of a million rows is written in seconds, not
+minutes */
+static void reference_address(FILE *file, unsigned long ipv4)
+{
+	fprintf(file, "\"%lu.%lu.%lu.%lu\"", ipv4 & 255, (ipv4 >> 8) & 255, (ipv4 >> 16) & 255, (ipv4 >> 24) & 255);
+}
+
+static void reference_tunnel(const struct profile_part *part, FILE *file)
+{
+	unsigned long index, other, items = 0;
+
+	fputs(",\n\"tunnel\": {\"columns\": [\"interval\", \"peer\", \"bytes_out\", \"bytes_in\", \"packets_out\", "
+		"\"packets_in\", \"lost_in\", \"kcp_payload\", \"kcp_output\", \"round_trip_ms\"], \"rows\": [\n", file);
+	for (index = 0; index < part->row_count; index++)
+	{
+		const struct profile_net_row *row = &part->rows[index];
+		unsigned int packets[3] = { 0, 0, 0 };
+		unsigned int kcp[2] = { 0, 0 };
+
+		if (row->table != _profile_net_table_tunnel_bytes)
+			continue;
+		for (other = index + 1; other < part->row_count; other++)
+		{
+			const struct profile_net_row *match = &part->rows[other];
+
+			if (match->interval != row->interval || match->key != row->key)
+				continue;
+			if (match->table == _profile_net_table_tunnel_packets)
+				memcpy(packets, match->values, sizeof(packets));
+			else if (match->table == _profile_net_table_tunnel_kcp)
+				memcpy(kcp, match->values, sizeof(kcp));
+		}
+		if (items++)
+			fputs(",\n", file);
+		fprintf(file, "[%u, ", row->interval);
+		reference_address(file, (unsigned long)(unsigned int)row->key);
+		fprintf(file, ", %u, %u, %u, %u, %u, %u, %u, %u]", row->values[0], row->values[1], packets[0], packets[1],
+			packets[2], kcp[0], kcp[1], row->values[2]);
+	}
+	fputs(items ? "\n]}" : "]}", file);
+}
+
+static void reference_counters(const struct profile_part *part, FILE *file)
+{
+	unsigned long index, other, items = 0;
+
+	for (index = 0; index < part->row_count; index++)
+	{
+		const struct profile_net_row *interval = &part->rows[index];
+		double seconds = interval->values[1] / 1000.0;
+		double game[2] = { 0.0, 0.0 }, wire[2] = { 0.0, 0.0 };
+		double ping = 0.0, lost = 0.0, received = 0.0;
+		unsigned long long start = (unsigned long long)interval->values[0] * 1000000ULL;
+		int pings = 0;
+
+		if (interval->table != _profile_net_table_intervals || seconds <= 0.0)
+			continue;
+		for (other = 0; other < part->row_count; other++)
+		{
+			const struct profile_net_row *row = &part->rows[other];
+
+			if (row->interval != (unsigned int)interval->key)
+				continue;
+			if (row->table == _profile_net_table_traffic)
+				game[row->direction & 1] += row->values[0];
+			else if (row->table == _profile_net_table_tunnel_bytes)
+			{
+				wire[0] += row->values[0];
+				wire[1] += row->values[1];
+			}
+			else if (row->table == _profile_net_table_tunnel_packets)
+			{
+				received += row->values[1];
+				lost += row->values[2];
+			}
+			else if (row->table == _profile_net_table_pings)
+			{
+				ping += row->values[0];
+				pings++;
+			}
+		}
+		fprintf(file, "%s{\"ph\":\"C\",\"name\":\"game_Bps\",\"pid\":1,\"tid\":1,\"ts\":%llu.%03llu,\"args\":{\"up\":%.0f,\"down\":%.0f}}",
+			items++ ? ",\n" : "", start / 1000ULL, start % 1000ULL, game[0] / seconds, game[1] / seconds);
+		fprintf(file, ",\n{\"ph\":\"C\",\"name\":\"wire_Bps\",\"pid\":1,\"tid\":1,\"ts\":%llu.%03llu,\"args\":{\"up\":%.0f,\"down\":%.0f}}",
+			start / 1000ULL, start % 1000ULL, wire[0] / seconds, wire[1] / seconds);
+		fprintf(file, ",\n{\"ph\":\"C\",\"name\":\"ping_ms\",\"pid\":1,\"tid\":1,\"ts\":%llu.%03llu,\"args\":{\"value\":%.0f}}",
+			start / 1000ULL, start % 1000ULL, pings ? ping / pings : 0.0);
+		fprintf(file, ",\n{\"ph\":\"C\",\"name\":\"loss_pct\",\"pid\":1,\"tid\":1,\"ts\":%llu.%03llu,\"args\":{\"value\":%.2f}}",
+			start / 1000ULL, start % 1000ULL, received + lost > 0.0 ? 100.0 * lost / (received + lost) : 0.0);
+	}
+}
+
+static struct profile_net_row *writer_row(struct profile_net_row *rows, unsigned long *count, unsigned int interval,
+	int table, int key, unsigned int first, unsigned int second, unsigned int third)
+{
+	struct profile_net_row *row = &rows[(*count)++];
+
+	memset(row, 0, sizeof(*row));
+	row->interval = interval;
+	row->table = (unsigned char)table;
+	row->direction = (unsigned char)(key & 1);
+	row->site = PROFILE_NET_NO_SITE;
+	row->key = key;
+	row->values[0] = first;
+	row->values[1] = second;
+	row->values[2] = third;
+	return row;
+}
+
+/* intervals of peers' tunnel rows among the other tables' rows, as a cut leaves them */
+static unsigned long writer_rows(struct profile_net_row *rows, int intervals, int peers, int filler)
+{
+	unsigned long count = 0;
+	int interval, peer, extra;
+
+	for (interval = 0; interval < intervals; interval++)
+	{
+		/* (rows of a table the writer does not print: they cost the scans only) */
+		for (extra = 0; extra < filler; extra++)
+			writer_row(rows, &count, (unsigned int)interval, 200, extra, 1, 1, 1);
+		for (peer = 0; peer < peers; peer++)
+		{
+			int key = (peer & 1) ? (int)(0xFEFF0000UL + (unsigned long)peer) : 0x64400000 + peer;
+			unsigned int value = (unsigned int)(interval * 1000 + peer);
+
+			writer_row(rows, &count, (unsigned int)interval, _profile_net_table_traffic, key, value + 1, 3, 0);
+			writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_bytes, key, value + 2, value + 3, 20 + peer);
+			/* (the kcp row first in some intervals) */
+			if (interval % 3 == 1)
+			{
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_kcp, key, value + 6, value + 7, 0);
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_packets, key, value + 4, value + 5, peer);
+			}
+			else
+			{
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_packets, key, value + 4, value + 5, peer);
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_kcp, key, value + 6, value + 7, 0);
+			}
+			if (peer % 5 == 2)
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_pings, key, 40 + peer, 1, 0);
+			/* (a later sample of the interval's peer: the last row counts) */
+			if (interval == 5 && peer == 3)
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_packets, key, 9, 8, 7);
+			/* (a packets row before its bytes row does not count for it) */
+			if (interval == 6 && peer == 4)
+			{
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_packets, key + 1, 99, 98, 97);
+				writer_row(rows, &count, (unsigned int)interval, _profile_net_table_tunnel_bytes, key + 1, 5, 6, 7);
+			}
+		}
+		/* (the interval's own row last, as the close leaves it; interval 4 has no length) */
+		writer_row(rows, &count, (unsigned int)interval, _profile_net_table_intervals, interval, (unsigned int)interval * 1000,
+			interval == 4 ? 0 : 1000, (unsigned int)interval * 30)->machine = interval * 30;
+	}
+	return count;
+}
+
+static char *writer_text(struct profile_part *part, unsigned long *length)
+{
+	FILE *file = tmpfile();
+	char *text = NULL;
+
+	if (!file)
+		return NULL;
+	check(profile_json_write(part, file, NULL), "a part of many tunnel rows is written");
+	*length = (unsigned long)ftell(file);
+	rewind(file);
+	text = malloc(*length + 1);
+	if (text && fread(text, 1, *length, file) == *length)
+		text[*length] = 0;
+	else
+	{
+		free(text);
+		text = NULL;
+	}
+	fclose(file);
+	return text;
+}
+
+/* what a reference function wrote, whole */
+static char *writer_reference(const struct profile_part *part, int counters, unsigned long *length)
+{
+	FILE *file = tmpfile();
+	char *text = NULL;
+
+	if (!file)
+		return NULL;
+	if (counters)
+		reference_counters(part, file);
+	else
+		reference_tunnel(part, file);
+	*length = (unsigned long)ftell(file);
+	rewind(file);
+	text = malloc(*length + 1);
+	if (text && fread(text, 1, *length, file) == *length)
+		text[*length] = 0;
+	else
+	{
+		free(text);
+		text = NULL;
+	}
+	fclose(file);
+	return text;
+}
+
+/* the writer's text for a part against the plain scans' */
+static void writer_same_as_scans(struct profile_part *part, const char *what)
+{
+	unsigned long length = 0, expected_length = 0;
+	char *text = writer_text(part, &length);
+	char *wanted = writer_reference(part, 0, &expected_length);
+	char *found = text ? strstr(text, ",\n\"tunnel\": {") : NULL;
+	char *end = found ? strstr(found, ",\n\"pings\": {") : NULL;
+
+	check(text && wanted && found && end && (unsigned long)(end - found) == expected_length &&
+		memcmp(found, wanted, expected_length) == 0, what);
+	free(wanted);
+	wanted = writer_reference(part, 1, &expected_length);
+	found = text ? strstr(text, "{\"ph\":\"C\",\"name\":\"game_Bps\"") : NULL;
+	end = found ? strstr(found, "\n],\n\"displayTimeUnit\"") : NULL;
+	check(text && wanted && found && end && expected_length > 100 && (unsigned long)(end - found) == expected_length &&
+		memcmp(found, wanted, expected_length) == 0, what);
+	free(wanted);
+	free(text);
+}
+
+/* the seconds a part takes to write */
+static double writer_seconds(struct profile_part *part)
+{
+	struct timespec before, after;
+	unsigned long length = 0;
+	char *text;
+
+	clock_gettime(CLOCK_MONOTONIC, &before);
+	text = writer_text(part, &length);
+	clock_gettime(CLOCK_MONOTONIC, &after);
+	free(text);
+	return (double)(after.tv_sec - before.tv_sec) + (double)(after.tv_nsec - before.tv_nsec) / 1e9;
+}
+
+static void writer_pass_checks(void)
+{
+	struct profile_part *part = calloc(1, sizeof(*part));
+	struct profile_net_row *rows = calloc(1500000, sizeof(*rows));
+	double seconds;
+
+	if (!part || !rows)
+	{
+		check(0, "memory for the writer's passes");
+		free(part);
+		free(rows);
+		return;
+	}
+	part->rows = rows;
+	part->first_interval = 0;
+
+	part->intervals = 30;
+	part->row_count = writer_rows(rows, 30, 40, 50);
+	writer_same_as_scans(part, "30 intervals of 40 peers are what the plain scans make of the rows");
+
+	/* an interval of as many rows as the recording's index lets one have */
+	memset(rows, 0, 1500000 * sizeof(*rows));
+	part->intervals = 1;
+	part->row_count = writer_rows(rows, 1, PROFILE_NET_MAXIMUM_INTERVAL_ROWS / 2, 0);
+	check(part->row_count > PROFILE_NET_MAXIMUM_INTERVAL_ROWS, "an interval of more rows than the recording lets an interval have");
+	writer_same_as_scans(part, "an interval of the most tunnel rows is what the plain scans make of it");
+
+	/* thousands of intervals, a few rows each: a pass per interval over every row is quadratic in them */
+	memset(rows, 0, 1500000 * sizeof(*rows));
+	part->intervals = 40000;
+	part->row_count = writer_rows(rows, 40000, 2, 0);
+	seconds = writer_seconds(part);
+	check(seconds < 2.0, "40000 intervals are written in two seconds");
+	if (seconds >= 2.0)
+		printf("writing %lu rows of 40000 intervals took %.1f s\n", part->row_count, seconds);
+
+	/* most of a million rows of 127 peers, which the plain scans take minutes over */
+	memset(rows, 0, 1500000 * sizeof(*rows));
+	part->intervals = 100;
+	part->row_count = writer_rows(rows, 100, 127, 8000);
+	check(part->row_count > 800000 && part->row_count < 1500000, "most of a million rows");
+	seconds = writer_seconds(part);
+	check(seconds < 2.0, "most of a million rows of 127 peers are written in two seconds");
+	if (seconds >= 2.0)
+		printf("writing %lu rows took %.1f s\n", part->row_count, seconds);
+	free(rows);
+	free(part);
+}
+
 /* the tables that cannot grow past their sizes count what no longer fits (the
 header carries it to the report), and keep every machine the netcode has */
 static void net_table_overflow_checks(void)
 {
+	static char identities[MAXIMUM_PROFILE_NET_CONNECTIONS + 5];
 	static const struct profile_net_layout_member filler[] = { { "filler", 0, 4, _profile_net_key_none } };
 	struct profile_net_row *rows = calloc(20000, sizeof(*rows));
 	struct profile_net_snapshot snapshot;
@@ -1645,6 +2865,10 @@ static void net_table_overflow_checks(void)
 
 	profile_net_recording_begin();
 	profile_net_part_begin(rows, 20000, 0, 0);
+	for (index = 0; index < HALO_PORT_MAXIMUM_NETWORK_MACHINES + 3; index++)
+		profile_net_machine_address(index, 0x0100007F, 2302);
+	for (index = 0; index < MAXIMUM_PROFILE_NET_CONNECTIONS + 5; index++)
+		profile_net_traffic(&identities[index], _profile_net_out, _profile_net_datagram, 1, 0, 0);
 	for (index = 0; index < MAXIMUM_PROFILE_NET_OBJECTS + 10; index++)
 	{
 		int handle = (int)(0x80000000UL + (unsigned long)index);
@@ -1662,6 +2886,12 @@ static void net_table_overflow_checks(void)
 		profile_net_layout(200 + index % 50, filler, 1, 4);
 	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
 	profile_net_counters(&counts);
+	check(snapshot.machines == HALO_PORT_MAXIMUM_NETWORK_MACHINES &&
+		profile_net_machine_entry(HALO_PORT_MAXIMUM_NETWORK_MACHINES - 1)->machine == HALO_PORT_MAXIMUM_NETWORK_MACHINES - 1,
+		"every machine of the netcode has its address");
+	check(counts.machines_dropped == 3, "machines past the table are counted");
+	check(snapshot.connections == MAXIMUM_PROFILE_NET_CONNECTIONS && counts.connections_overflowed == 5,
+		"connection events past the table are counted");
 	check(snapshot.objects == MAXIMUM_PROFILE_NET_OBJECTS && counts.objects_overflowed == 10,
 		"object keys past the table are counted");
 	check(counts.fields_overflowed >= 5, "field names past the table are counted");
@@ -1669,7 +2899,7 @@ static void net_table_overflow_checks(void)
 	check(counts.sites_overflowed >= 8, "sending sites past the table are counted (net_sender_checks filled it)");
 	/* (the run's tables: the count stays until the process ends, in every part) */
 	profile_net_counters(&counts);
-	check(counts.sites_overflowed >= 8 && counts.fields_overflowed >= 5,
+	check(counts.machines_dropped == 0 && counts.sites_overflowed >= 8 && counts.fields_overflowed >= 5,
 		"a recording's counts start over at each part, the run's tables' do not");
 	profile_net_recording_end();
 	free(rows);
@@ -1829,10 +3059,19 @@ int main(int argc, char **argv)
 	net_batch_seam_checks();
 	net_received_checks();
 	reliable_entry_checks();
+	net_connection_checks();
+	net_tunnel_checks();
+	net_ping_checks();
+	net_overlay_number_checks();
+	net_simulated_loss_checks();
+	net_counting_checks();
 	straddle_checks();
 	lifetime_checks();
+	overlay_checks();
+	overlay_switch_checks();
 	net_table_overflow_checks();
 	worst_frame_checks();
+	writer_pass_checks();
 	release_path_checks();
 	reset_race_checks();
 	foreign_thread_checks();

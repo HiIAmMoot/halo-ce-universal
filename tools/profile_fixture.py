@@ -20,6 +20,8 @@ LAYOUTS = [[6, "object_index", 0, 4, "datum"], [6, "flags", 4, 1, ""], [6, "pad"
            [6, "time", 6, 2, ""], [6, "position", 8, 12, ""], [6, "forward", 20, 6, ""], [6, "up", 26, 6, ""],
            [6, "translational_velocity", 32, 6, ""], [6, "angular_velocity", 38, 6, ""],
            [14, "player_index", 0, 1, "player"], [14, "buttons", 1, 3, ""]]
+MACHINES = [[0, "100.64.0.2:2302", "203.0.113.7"], [1, "100.64.0.3:2302", "198.51.100.9"]]
+CONNECTIONS = [[0, "0.0.0.0:2302", "server_datagrams"], [1, "100.64.0.2:2303", 0], [2, "100.64.0.3:2303", 1]]
 # (a real datum handle has bit 31 set, so its key is negative)
 HANDLE = 0x80010001 - 2**32
 PLAYER = 0xE0000001 - 2**32
@@ -29,7 +31,8 @@ OBJECTS = [[HANDLE, "biped", "characters\\elite\\elite"], [0x20002, "vehicle", "
 
 def interval_rows(interval):
     """one second of a host sending to machines 0 and 1"""
-    rows = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures", "datagrams")}
+    rows = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures",
+                                  "traffic", "queues", "tunnel", "pings", "simulated_loss", "datagrams")}
     for machine in (0, 1):
         rows["messages"].append([interval, "out", machine, 6, 0, 1320, 30, 30, False])
         rows["messages"].append([interval, "out", machine, 2, 1, 600, 30, 60, False])
@@ -39,6 +42,7 @@ def interval_rows(interval):
         rows["entries"].append([interval, "out", machine, 6, 0x20002, 660, 15])
         rows["received"].append([interval, machine, 0, "", 240, 30, 0, ""])
         rows["received"].append([interval, machine, 14, "distributed_handle_inputs", 900, 30, 30, ""])
+        rows["pings"].append([interval, machine, 95 + machine * 10])
     rows["messages"].append([interval, "out", 0, 5, 2, 500, 1, 4, True])
     rows["received"].append([interval, 1, 14, "distributed_handle_inputs", 60, 2, 2, "stale"])
     # (no key, "other", a handle no object row describes: a player's, and an unknown one)
@@ -53,11 +57,18 @@ def interval_rows(interval):
     rows["built"].append([interval, 5, 2, 1])
     rows["field_bytes"].append([interval, "out", 2, 1, 720, 60])
     rows["field_bytes"].append([interval, "out", 2, 0, 480, 60])
+    rows["traffic"].append([interval, "out", "datagram", 0, 4320, 60])
+    rows["traffic"].append([interval, "out", "stream", 1, 520, 1])
+    rows["traffic"].append([interval, "in", "datagram", 0, 2280, 62])
+    rows["queues"].append([interval, 1, 120 * interval])
+    rows["tunnel"].append([interval, "100.64.0.2", 2800, 1300, 40, 32, 1, 520, 560, 61])
+    rows["tunnel"].append([interval, "100.64.0.3", 2800, 1300, 40, 31, 0, 0, 0, 71])
     return rows
 
 
 def part(number, intervals, last, frames_before, ticks_before):
-    tables = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures", "datagrams")}
+    tables = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures",
+                                    "traffic", "queues", "tunnel", "pings", "simulated_loss", "datagrams")}
     for interval in intervals:
         for name, rows in interval_rows(interval).items():
             tables[name].extend(rows)
@@ -72,33 +83,33 @@ def part(number, intervals, last, frames_before, ticks_before):
         "first_tick": ticks_before, "ticks": ticks, "start_s": float(intervals[0]), "duration_s": float(len(intervals)),
         "stop_reason": "command" if last else "", "clock_read_ns": 21.5, "memory_used": 1000, "memory_limit": 16777216,
         "writer_wait_ms": 0.0, "foreign_scopes": 0, "deep_scopes": 0, "unbalanced_scopes": 0, "dropped_scopes": 0,
-        "foreign_net_events": 0, "entry_keys_overflowed": 0, "dropped_rows": 0, "objects_overflowed": 0, "sites_overflowed": 0,
+        "foreign_net_events": 0, "entry_keys_overflowed": 0, "dropped_rows": 0, "peers_dropped": 0,
+        "machines_dropped": 0, "connections_overflowed": 0, "objects_overflowed": 0, "sites_overflowed": 0,
         "fields_overflowed": 0, "layouts_overflowed": 0, "batches_unbooked": 0,
     }
     halo = {"header": header}
     columns = {
-        'message_types': ['id', 'name', 'handler'],
-        'sites': ['id', 'function', 'line'],
-        'fields': ['id', 'name', 'size'],
-        'layouts': ['type', 'member', 'offset', 'size', 'key'],
-        'objects': ['key', 'object_type', 'tag'],
-        'intervals': ['interval', 'start_s', 'length_s', 'tick', 'ticks'],
-        'messages': ['interval', 'dir', 'machine', 'type', 'site', 'bytes', 'messages', 'entries', 'reliable'],
-        'received': ['interval', 'machine', 'type', 'handler', 'bytes', 'messages', 'entries', 'dropped'],
-        'built': ['interval', 'type', 'site', 'messages'],
-        'entries': ['interval', 'dir', 'machine', 'type', 'key', 'bytes', 'entries'],
-        'field_bytes': ['interval', 'dir', 'type', 'field', 'bytes', 'count'],
-        'send_failures': ['interval', 'machine', 'reason', 'sends', 'bytes', 'reliable'],
-        'datagrams': ['interval', 'machine', 'bytes', 'datagrams'],
+        "message_types": ["id", "name", "handler"], "sites": ["id", "function", "line"],
+        "fields": ["id", "name", "size"], "layouts": ["type", "member", "offset", "size", "key"],
+        "machines": ["machine", "address", "tunnel_peer"], "connections": ["id", "address", "machine"],
+        "objects": ["key", "object_type", "tag"],
+        "intervals": ["interval", "start_s", "length_s", "tick", "ticks"],
+        "messages": ["interval", "dir", "machine", "type", "site", "bytes", "messages", "entries", "reliable"],
+        "received": ["interval", "machine", "type", "handler", "bytes", "messages", "entries", "dropped"],
+        "built": ["interval", "type", "site", "messages"],
+        "entries": ["interval", "dir", "machine", "type", "key", "bytes", "entries"],
+        "field_bytes": ["interval", "dir", "type", "field", "bytes", "count"],
+        "send_failures": ["interval", "machine", "reason", "sends", "bytes", "reliable"],
+        "traffic": ["interval", "dir", "channel", "connection", "bytes", "packets"],
+        "queues": ["interval", "connection", "bytes"],
+        "tunnel": ["interval", "peer", "bytes_out", "bytes_in", "packets_out", "packets_in", "lost_in", "kcp_payload",
+                   "kcp_output", "round_trip_ms"],
+        "pings": ["interval", "machine", "ping_ms"], "simulated_loss": ["interval", "datagrams"],
+        "datagrams": ["interval", "machine", "bytes", "datagrams"],
     }
-    metadata = {
-        'message_types': MESSAGE_TYPES,
-        'sites': SITES,
-        'fields': FIELDS,
-        'layouts': LAYOUTS,
-        'objects': OBJECTS,
-        'intervals': [[interval, float(interval), 1.0, 30 * interval, 30] for interval in intervals],
-    }
+    metadata = {"message_types": MESSAGE_TYPES, "sites": SITES, "fields": FIELDS, "layouts": LAYOUTS,
+                "machines": MACHINES, "connections": CONNECTIONS, "objects": OBJECTS,
+                "intervals": [[interval, float(interval), 1.0, 30 * interval, 30] for interval in intervals]}
     for name in columns:
         rows = metadata[name] if name in metadata else tables[name]
         halo[name] = {"columns": columns[name], "rows": rows}
@@ -147,3 +158,16 @@ def write_recording(folder, name="profile_20261005-142233_host", split=True):
         halo, cpu = part(index + 1, intervals, index == len(spans) - 1, intervals[0] * 60, intervals[0] * 30)
         write_part(folder / f"{name}.part{index + 1}.json", halo, cpu)
     return folder / name
+
+
+def write_client(folder, name="profile_20261005-142240_client"):
+    """machine 1's own recording of the same seconds, as one part"""
+    halo, cpu = part(1, [0, 1, 2, 3, 4, 5], True, 0, 0)
+    halo["header"]["role"] = "client"
+    halo["header"]["own_machine"] = 1
+    for table in ("messages", "received", "datagrams", "entries", "pings"):
+        for row in halo[table]["rows"]:
+            row[2 if table != "received" and table != "datagrams" and table != "pings" else 1] = "host"
+    halo["machines"]["rows"] = []
+    write_part(Path(folder) / f"{name}.part1.json", halo, cpu)
+    return Path(folder) / name

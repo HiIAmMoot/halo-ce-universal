@@ -49,6 +49,9 @@ alone peers reach.
 #include "posix.h"
 #include "port_config.h"
 #include "p2p.h"
+#ifdef HALO_PROFILE
+#include "profile_net.h"
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -851,8 +854,17 @@ static int delayed_receive_locked(SOCKET socket, char *buffer, int length, int f
 		/* (a stream closing is at once) */
 		if (!datagram && result == 0)
 			return 0;
+#ifdef HALO_PROFILE
+		if (datagram && rand() % 100 < delayed.loss_percent)
+		{
+			/* (kept apart from the tunnel's real loss) */
+			profile_net_simulated_loss();
+			continue;
+		}
+#else
 		if (datagram && rand() % 100 < delayed.loss_percent)
 			continue;
+#endif
 		/* (a stream's reads by their own share: a damaged stream is dropped,
 		and the game must go on for its datagrams to be tested) */
 		if ((datagram ? delayed.corrupt_percent : delayed.corrupt_stream_percent) &&

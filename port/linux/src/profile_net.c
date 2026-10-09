@@ -1,7 +1,7 @@
 /*
 PROFILE_NET.C
 
-Accumulate network message and field measurements.
+Accumulate network message, field and transport measurements.
 */
 
 #ifdef HALO_PROFILE
@@ -48,9 +48,23 @@ struct profile_net_pending_field
 	unsigned long size;
 };
 
+struct profile_net_peer
+{
+	unsigned long virtual_address;
+	struct profile_net_tunnel_peer previous;
+	struct profile_net_loss loss;
+	/* in the sample being taken (the others have gone) */
+	int seen;
+};
+
+/* accounting belongs to the game thread; only the simulated-loss
+counter is updated from other threads, atomically. */
+
 /* ---------- globals */
 
 int profile_net_recording;
+int profile_net_counting;
+int profile_net_connections;
 
 /* for the whole run */
 static const struct profile_net_message_name *profile_net_names;
@@ -66,8 +80,17 @@ static int profile_net_current_site = PROFILE_NET_NO_SITE;
 static struct profile_net_field_entry profile_net_fields[MAXIMUM_PROFILE_NET_FIELDS] = { { "header" } };
 static int profile_net_field_count = 1;
 static int (*profile_net_describe)(long key, char *object_type, int object_type_size, char *tag, int tag_size);
+static unsigned long (*profile_net_endpoint)(unsigned long virtual_address);
+static long (*profile_net_queued_bytes)(void const *connection);
+static int profile_net_overlay;
 
 /* a recording's */
+static struct profile_net_machine_entry profile_net_machines[MAXIMUM_PROFILE_NET_MACHINES];
+static int profile_net_machine_count;
+static struct profile_net_connection_entry profile_net_connection_rows[MAXIMUM_PROFILE_NET_CONNECTIONS];
+static int profile_net_connection_count;
+/* the live connections' ids (closed ones leave, their rows stay) */
+static void const *profile_net_live_connections[MAXIMUM_PROFILE_NET_CONNECTIONS];
 static struct profile_net_object_entry profile_net_objects[MAXIMUM_PROFILE_NET_OBJECTS];
 static int profile_net_object_count;
 static int profile_net_object_slots[PROFILE_NET_OBJECT_SLOTS];
@@ -98,12 +121,24 @@ static unsigned long profile_net_tick_in;
 static unsigned long profile_net_foreign;
 static unsigned long profile_net_overflowed;
 static unsigned long profile_net_dropped_rows;
+static unsigned long profile_net_peers_dropped;
+static unsigned long profile_net_machines_dropped;
+static unsigned long profile_net_connections_overflowed;
 static unsigned long profile_net_objects_overflowed;
 static unsigned long profile_net_batches_unbooked;
 /* the run's tables: not reset with a recording */
 static unsigned long profile_net_sites_overflowed;
 static unsigned long profile_net_fields_overflowed;
 static unsigned long profile_net_layouts_overflowed;
+static unsigned int profile_net_simulated;
+
+static struct profile_net_peer profile_net_peers[MAXIMUM_PROFILE_NET_PEERS];
+static int profile_net_peer_count;
+static struct profile_net_live profile_net_totals;
+static long profile_net_ping_sum;
+static long profile_net_ping_count;
+static unsigned long long profile_net_second_lost;
+static unsigned long long profile_net_second_received;
 
 /* ---------- private code */
 
@@ -218,6 +253,12 @@ static void profile_net_close_interval(
 	unsigned long long now)
 {
 	struct profile_net_row *row;
+	unsigned int lost = __atomic_exchange_n(&profile_net_simulated, 0, __ATOMIC_RELAXED);
+
+	if (!profile_net_rows)
+		return;
+	if (lost)
+		profile_net_add(_profile_net_table_simulated_loss, _profile_net_in, 0, PROFILE_NET_NO_SITE, 0, -1, -1, lost, 0, 0);
 	/* (the interval's own row comes from the reserve: never dropped) */
 	if (profile_net_row_count < profile_net_row_capacity)
 	{
@@ -315,6 +356,40 @@ static void profile_net_entry(
 	profile_net_add(_profile_net_table_entries, _profile_net_out, type, PROFILE_NET_NO_SITE, 0, machine, key, bytes, 1, 0);
 }
 
+/* netcode addresses are host order; table addresses use network order */
+static unsigned long profile_net_network_address(
+	unsigned long host_address)
+{
+	return (unsigned long)__builtin_bswap32((unsigned int)host_address);
+}
+
+static int profile_net_connection_id(
+	void const *connection,
+	unsigned long ipv4,
+	unsigned short port)
+{
+	int index;
+
+	for (index = 0; index < profile_net_connection_count; index++)
+	{
+		if (profile_net_live_connections[index] == connection)
+			return index;
+	}
+	if (profile_net_connection_count >= MAXIMUM_PROFILE_NET_CONNECTIONS)
+	{
+		profile_net_connections_overflowed++;
+		return -1;
+	}
+	index = profile_net_connection_count;
+	profile_net_connection_rows[index].ipv4 = profile_net_network_address(ipv4);
+	profile_net_connection_rows[index].port = port;
+	profile_net_connection_rows[index].machine = PROFILE_NET_NO_MACHINE;
+	profile_net_live_connections[index] = connection;
+	profile_net_connection_count++;
+	profile_net_connections++;
+	return index;
+}
+
 /* ---------- public code: start-up */
 
 void profile_net_message_names(
@@ -351,6 +426,40 @@ void profile_net_set_object_describe(
 	int (*describe)(long key, char *object_type, int object_type_size, char *tag, int tag_size))
 {
 	profile_net_describe = describe;
+}
+
+void profile_net_set_peer_describe(
+	unsigned long (*endpoint)(unsigned long virtual_address))
+{
+	profile_net_endpoint = endpoint;
+}
+
+void profile_net_set_queue_reader(
+	long (*queued_bytes)(void const *connection))
+{
+	profile_net_queued_bytes = queued_bytes;
+}
+
+/* the tunnel's peers are sampled only while counting: after a gap the first
+sample is a baseline again, not the gap's counts, and the table of peers
+does not fill with the peers of earlier recordings */
+static void profile_net_forget_peers(
+	void)
+{
+	profile_net_peer_count = 0;
+	profile_net_second_lost = 0;
+	profile_net_second_received = 0;
+}
+
+void profile_net_set_overlay(
+	int on)
+{
+	int was_counting = __atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED);
+
+	profile_net_overlay = on;
+	__atomic_store_n(&profile_net_counting, profile_net_recording || on, __ATOMIC_RELAXED);
+	if (!was_counting && __atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED))
+		profile_net_forget_peers();
 }
 
 /* ---------- public code: sites and fields */
@@ -677,6 +786,33 @@ void profile_net_reliable(
 	}
 }
 
+void profile_net_machine_address(
+	long machine,
+	unsigned long ipv4,
+	unsigned short port)
+{
+	int index;
+
+	if (!PROFILE_NET_RECORDING() || !profile_net_game_thread())
+		return;
+	for (index = 0; index < profile_net_machine_count; index++)
+	{
+		if (profile_net_machines[index].machine == machine)
+			return;
+	}
+	if (profile_net_machine_count >= MAXIMUM_PROFILE_NET_MACHINES)
+	{
+		profile_net_machines_dropped++;
+		return;
+	}
+	profile_net_machines[profile_net_machine_count].machine = machine;
+	profile_net_machines[profile_net_machine_count].ipv4 = profile_net_network_address(ipv4);
+	profile_net_machines[profile_net_machine_count].port = port;
+	profile_net_machines[profile_net_machine_count].peer_ipv4 = profile_net_endpoint ?
+		profile_net_endpoint(profile_net_network_address(ipv4)) : 0;
+	profile_net_machine_count++;
+}
+
 void profile_net_received(
 	long machine,
 	void const *message,
@@ -719,6 +855,251 @@ void profile_net_received(
 	}
 }
 
+/* ---------- public code: the connection layer */
+
+void profile_net_traffic(
+	void const *connection,
+	int direction,
+	int channel,
+	unsigned long bytes,
+	unsigned long ipv4,
+	unsigned short port)
+{
+	int id;
+
+	if (!__atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED) || !profile_net_game_thread() ||
+		(direction != _profile_net_out && direction != _profile_net_in))
+		return;
+	profile_net_totals.game_bytes[direction] += bytes;
+	profile_net_totals.game_packets[direction]++;
+	if (!profile_net_recording)
+		return;
+	id = profile_net_connection_id(connection, ipv4, port);
+	profile_net_add(_profile_net_table_traffic, direction, 0, PROFILE_NET_NO_SITE, channel, -1, id, bytes, 1, 0);
+}
+
+void profile_net_connection_closed(
+	void const *connection)
+{
+	int index;
+
+	for (index = 0; index < profile_net_connection_count; index++)
+	{
+		if (profile_net_live_connections[index] == connection)
+		{
+			profile_net_live_connections[index] = NULL;
+			profile_net_connections--;
+		}
+	}
+}
+
+void profile_net_connection_machine(
+	void const *connection,
+	long machine)
+{
+	int id;
+
+	if (!PROFILE_NET_RECORDING() || !profile_net_game_thread())
+		return;
+	id = profile_net_connection_id(connection, 0, 0);
+	if (id >= 0 && profile_net_connection_rows[id].machine != (int)machine)
+		__atomic_store_n(&profile_net_connection_rows[id].machine, (int)machine, __ATOMIC_RELAXED);
+}
+
+void profile_net_simulated_loss(
+	void)
+{
+	/* (the flag is read here by a thread that is not the game's, which sets
+	it) */
+	if (__atomic_load_n(&profile_net_recording, __ATOMIC_RELAXED))
+		__atomic_fetch_add(&profile_net_simulated, 1, __ATOMIC_RELAXED);
+}
+
+/* ---------- public code: once a second */
+
+unsigned long profile_net_loss_step(
+	struct profile_net_loss *loss,
+	unsigned long long highest,
+	unsigned long long received)
+{
+	long long cumulative;
+	long long lost;
+
+	if (!loss->valid)
+	{
+		loss->valid = 1;
+		loss->highest = highest;
+		loss->received = received;
+		loss->reported = 0;
+		return 0;
+	}
+	cumulative = (long long)(highest - loss->highest) - (long long)(received - loss->received);
+	if (cumulative <= loss->reported)
+		return 0;
+	lost = cumulative - loss->reported;
+	loss->reported = cumulative;
+	return (unsigned long)lost;
+}
+
+void profile_net_tunnel(
+	const struct profile_net_tunnel_peer *peers,
+	int count)
+{
+	long round_trip_sum = 0;
+	long round_trips = 0;
+	int index;
+	int kept;
+
+	if (!__atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED) || !profile_net_game_thread())
+		return;
+	profile_net_second_lost = 0;
+	profile_net_second_received = 0;
+	/* (the second's pings come after this in the same pass: the overlay reads
+	the last second's mean, whether it was on or not) */
+	profile_net_ping_sum = 0;
+	profile_net_ping_count = 0;
+	for (index = 0; index < count; index++)
+	{
+		const struct profile_net_tunnel_peer *peer = &peers[index];
+		struct profile_net_peer *state = NULL;
+		struct profile_net_row *row;
+		unsigned long long bytes_out, bytes_in, packets_out, packets_in, payload, output;
+		unsigned long lost;
+		int search;
+
+		for (search = 0; search < profile_net_peer_count; search++)
+		{
+			if (profile_net_peers[search].virtual_address == peer->virtual_address)
+			{
+				state = &profile_net_peers[search];
+				state->seen = 1;
+				break;
+			}
+		}
+		if (!state)
+		{
+			if (profile_net_peer_count >= MAXIMUM_PROFILE_NET_PEERS)
+			{
+				profile_net_peers_dropped++;
+				continue;
+			}
+			state = &profile_net_peers[profile_net_peer_count++];
+			memset(state, 0, sizeof(*state));
+			state->virtual_address = peer->virtual_address;
+			state->seen = 1;
+			state->previous = *peer;
+			profile_net_loss_step(&state->loss, peer->highest_in, peer->packets_in);
+			continue;
+		}
+		/* (a peer made again since: its counts start over, in any of them) */
+		if (peer->packets_in < state->previous.packets_in || peer->packets_out < state->previous.packets_out ||
+			peer->bytes_in < state->previous.bytes_in || peer->bytes_out < state->previous.bytes_out ||
+			peer->kcp_payload < state->previous.kcp_payload || peer->kcp_output < state->previous.kcp_output ||
+			peer->highest_in < state->previous.highest_in)
+		{
+			state->previous = *peer;
+			memset(&state->loss, 0, sizeof(state->loss));
+			profile_net_loss_step(&state->loss, peer->highest_in, peer->packets_in);
+			continue;
+		}
+		bytes_out = peer->bytes_out - state->previous.bytes_out;
+		bytes_in = peer->bytes_in - state->previous.bytes_in;
+		packets_out = peer->packets_out - state->previous.packets_out;
+		packets_in = peer->packets_in - state->previous.packets_in;
+		payload = peer->kcp_payload - state->previous.kcp_payload;
+		output = peer->kcp_output - state->previous.kcp_output;
+		lost = profile_net_loss_step(&state->loss, peer->highest_in, peer->packets_in);
+		state->previous = *peer;
+		profile_net_totals.wire_bytes[_profile_net_out] += bytes_out;
+		profile_net_totals.wire_bytes[_profile_net_in] += bytes_in;
+		profile_net_totals.wire_packets[_profile_net_out] += packets_out;
+		profile_net_totals.wire_packets[_profile_net_in] += packets_in;
+		round_trip_sum += (long)peer->round_trip;
+		round_trips++;
+		profile_net_second_lost += lost;
+		profile_net_second_received += packets_in;
+		if (!profile_net_recording)
+			continue;
+		profile_net_add(_profile_net_table_tunnel_bytes, _profile_net_out, 0, PROFILE_NET_NO_SITE, 0, -1,
+			(long)(int)peer->virtual_address, (unsigned long)bytes_out, (unsigned long)bytes_in, 0);
+		/* the latest sample, not a sum: two samples may land in one interval */
+		row = profile_net_find(_profile_net_table_tunnel_bytes, _profile_net_out, 0, PROFILE_NET_NO_SITE, 0, -1,
+			(long)(int)peer->virtual_address, 0);
+		if (row)
+			row->values[2] = peer->round_trip;
+		profile_net_add(_profile_net_table_tunnel_packets, _profile_net_out, 0, PROFILE_NET_NO_SITE, 0, -1,
+			(long)(int)peer->virtual_address, (unsigned long)packets_out, (unsigned long)packets_in, lost);
+		profile_net_add(_profile_net_table_tunnel_kcp, _profile_net_out, 0, PROFILE_NET_NO_SITE, 0, -1,
+			(long)(int)peer->virtual_address, (unsigned long)payload, (unsigned long)output, 0);
+	}
+	/* (a peer that is not in this sample is gone: the table holds the peers
+	there are, a peer back is new, and the cap is on those together) */
+	for (index = 0, kept = 0; index < profile_net_peer_count; index++)
+	{
+		if (profile_net_peers[index].seen)
+		{
+			profile_net_peers[kept] = profile_net_peers[index];
+			profile_net_peers[kept++].seen = 0;
+		}
+	}
+	profile_net_peer_count = kept;
+	if (round_trips)
+		profile_net_totals.wire_round_trip_ms = (round_trip_sum + round_trips / 2) / round_trips;
+	profile_net_totals.loss_percent = profile_net_second_received + profile_net_second_lost ?
+		100.0 * (double)profile_net_second_lost / (double)(profile_net_second_received + profile_net_second_lost) : 0.0;
+}
+
+void profile_net_ping(
+	long machine,
+	long milliseconds)
+{
+	struct profile_net_row *row;
+
+	if (!__atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED) || !profile_net_game_thread() || milliseconds < 0)
+		return;
+	profile_net_ping_sum += milliseconds;
+	profile_net_ping_count++;
+	if (!profile_net_recording)
+		return;
+	row = profile_net_find(_profile_net_table_pings, _profile_net_in, 0, PROFILE_NET_NO_SITE, 0, machine, -1, 1);
+	if (row)
+	{
+		row->values[0] = (unsigned int)milliseconds;
+		row->values[1]++;
+	}
+}
+
+void profile_net_sample_queues(
+	void)
+{
+	int index;
+
+	if (!PROFILE_NET_RECORDING() || !profile_net_queued_bytes || !profile_net_game_thread())
+		return;
+	for (index = 0; index < profile_net_connection_count; index++)
+	{
+		struct profile_net_row *row;
+		long bytes;
+
+		if (!profile_net_live_connections[index])
+			continue;
+		bytes = profile_net_queued_bytes(profile_net_live_connections[index]);
+		row = profile_net_find(_profile_net_table_queues, _profile_net_out, 0, PROFILE_NET_NO_SITE, 0, -1, index, 1);
+		if (row && bytes > 0 && (unsigned long)bytes > row->values[0])
+			row->values[0] = (unsigned int)bytes;
+	}
+}
+
+void profile_net_live(
+	struct profile_net_live *live)
+{
+	if (profile_net_ping_count)
+		profile_net_totals.ping_ms = profile_net_ping_sum / profile_net_ping_count;
+	profile_net_ping_sum = 0;
+	profile_net_ping_count = 0;
+	*live = profile_net_totals;
+}
+
 /* ---------- public code: the recording's side (profile_trace.c) */
 
 void profile_net_recording_begin(
@@ -726,6 +1107,12 @@ void profile_net_recording_begin(
 {
 	int sender;
 
+	if (!__atomic_load_n(&profile_net_counting, __ATOMIC_RELAXED))
+		profile_net_forget_peers();
+	profile_net_machine_count = 0;
+	profile_net_connection_count = 0;
+	profile_net_connections = 0;
+	memset(profile_net_live_connections, 0, sizeof(profile_net_live_connections));
 	profile_net_object_count = 0;
 	memset(profile_net_object_slots, 0, sizeof(profile_net_object_slots));
 	for (sender = 0; sender < PROFILE_NET_SENDERS; sender++)
@@ -735,17 +1122,21 @@ void profile_net_recording_begin(
 	profile_net_tick_out = profile_net_tick_in = 0;
 	__atomic_store_n(&profile_net_foreign, 0, __ATOMIC_RELAXED);
 	profile_net_overflowed = profile_net_dropped_rows = 0;
-	profile_net_objects_overflowed = 0;
+	profile_net_peers_dropped = profile_net_machines_dropped = 0;
+	profile_net_connections_overflowed = profile_net_objects_overflowed = 0;
 	profile_net_batches_unbooked = 0;
+	__atomic_store_n(&profile_net_simulated, 0, __ATOMIC_RELAXED);
 	profile_net_interval = 0;
 	profile_net_tick = 0;
 	__atomic_store_n(&profile_net_recording, 1, __ATOMIC_RELAXED);
+	__atomic_store_n(&profile_net_counting, 1, __ATOMIC_RELAXED);
 }
 
 void profile_net_recording_end(
 	void)
 {
 	__atomic_store_n(&profile_net_recording, 0, __ATOMIC_RELAXED);
+	__atomic_store_n(&profile_net_counting, profile_net_overlay, __ATOMIC_RELAXED);
 	profile_net_rows = NULL;
 }
 
@@ -782,6 +1173,8 @@ void profile_net_part_end(
 	snapshot->sites = profile_net_site_count;
 	snapshot->fields = profile_net_field_count;
 	snapshot->layouts = profile_net_layout_count;
+	snapshot->machines = profile_net_machine_count;
+	snapshot->connections = profile_net_connection_count;
 	snapshot->objects = profile_net_object_count;
 	profile_net_rows = NULL;
 	profile_net_row_count = 0;
@@ -820,13 +1213,17 @@ void profile_net_counters(
 	counts->foreign_events = __atomic_exchange_n(&profile_net_foreign, 0, __ATOMIC_RELAXED);
 	counts->entry_keys_overflowed = profile_net_overflowed;
 	counts->dropped_rows = profile_net_dropped_rows;
+	counts->peers_dropped = profile_net_peers_dropped;
+	counts->machines_dropped = profile_net_machines_dropped;
+	counts->connections_overflowed = profile_net_connections_overflowed;
 	counts->objects_overflowed = profile_net_objects_overflowed;
 	counts->batches_unbooked = profile_net_batches_unbooked;
 	counts->sites_overflowed = profile_net_sites_overflowed;
 	counts->fields_overflowed = profile_net_fields_overflowed;
 	counts->layouts_overflowed = profile_net_layouts_overflowed;
 	profile_net_overflowed = profile_net_dropped_rows = 0;
-	profile_net_objects_overflowed = 0;
+	profile_net_peers_dropped = profile_net_machines_dropped = 0;
+	profile_net_connections_overflowed = profile_net_objects_overflowed = 0;
 	profile_net_batches_unbooked = 0;
 }
 
@@ -871,6 +1268,18 @@ const struct profile_net_layout_entry *profile_net_layout_entry(
 	long index)
 {
 	return index >= 0 && index < MAXIMUM_PROFILE_NET_TYPES ? &profile_net_layouts[index] : NULL;
+}
+
+const struct profile_net_machine_entry *profile_net_machine_entry(
+	long index)
+{
+	return index >= 0 && index < MAXIMUM_PROFILE_NET_MACHINES ? &profile_net_machines[index] : NULL;
+}
+
+const struct profile_net_connection_entry *profile_net_connection_entry(
+	long index)
+{
+	return index >= 0 && index < MAXIMUM_PROFILE_NET_CONNECTIONS ? &profile_net_connection_rows[index] : NULL;
 }
 
 const struct profile_net_object_entry *profile_net_object_entry(

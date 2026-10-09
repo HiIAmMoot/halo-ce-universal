@@ -114,7 +114,7 @@ Give these options to `configure.py`:
 | `--lto=thin`, `--lto=off` | Less link-time optimization. The link is faster. |
 | `--pgo=off` | No profile-guided optimization. |
 | `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
-| `--profile` | A profiling build. It records CPU times, network messages and fields. Refer to "Profiling builds". |
+| `--profile` | A profiling build. It records CPU times and network bytes. Refer to "Profiling builds". |
 
 Without `--portable`, the Linux and Windows builds use all the instructions
 of the processor that builds them (`-march=native`). Such a build does not
@@ -143,8 +143,9 @@ data must be in `assets/`.
 ### Profiling builds
 
 A profiling build records where the game spends its time and where its
-message and field bytes go. Connection and tunnel measurements are not yet
-recorded.
+network bytes go. Use it to find what makes a game slow or what uses the
+upload of a host or a client. The main menu shows "profiling enabled" under
+the version number in this build.
 
 1. Enter `python configure.py --profile`, then build as usual.
 2. Start a recording. Enter `profile_record` in the console (or the telnet
@@ -153,20 +154,32 @@ recorded.
    `debug.profile_record_when = "game"`.
 3. Stop the recording. Enter `profile_stop`, load another map, or quit.
 
-The game writes numbered `.part<n>.json` files under `profiles/` in its data root
-and logs their paths. Parts are retained after the recording stops. Logs go to
-standard error; a Windows release build without standard error writes them to
-`halo.log` next to `halo.exe`.
+The game writes one `profile_<date>-<time>_<role>_<map>_<gametype>.json` per recording to the
+`profiles` folder in the data root (the folder that contains `maps/`). For example,
+`profile_20261008-123009_client_b30_campaign.json`. The date and time are UTC;
+the role is `host`, `client` or `local`. Numbered part
+files are kept while recording, after a crash, or if joining fails (for
+example, when the disk is full); when recording ends, the game joins them and
+deletes the parts only after the join succeeds. Use
+`python tools/profile_join.py <recording>` to join leftover parts from an old
+recording or a crash. The joined trace opens in https://ui.perfetto.dev. Part
+timestamps use the recording clock, but event order is only guaranteed within
+each part. The console and log show the part base name; the final joined file
+uses the suffixed name shown above (with a collision suffix if needed). Logs
+go to standard error; a Windows release build without a standard error writes
+them to `halo.log` next to `halo.exe`.
 
 `tools/net_report.py` is a helper for developers. Enter
-`python tools/net_report.py <recording.part1.json>` to read a recording
+`python tools/net_report.py <recording.json>` to read a recording
 as tables. The command also writes `<recording>.summary.txt`, a short text
-file.
+file. Give the recordings of a host and of a client together to compare the
+two directions.
 
 | Command | Result |
 | --- | --- |
 | `profile_record [seconds]` | Starts a recording. With a number of seconds, the recording stops after that time. |
 | `profile_stop` | Stops the recording. |
+| `profile_overlay [on\|off]` | Shows or hides the overlay: the frame and tick times, the upload, the download, the ping and the loss. Without an argument, the command toggles the overlay. |
 
 `debug.profile_memory` sets the memory of a recording in MB (default 256,
 from 4 to 1024). A recording has no length limit:
@@ -174,7 +187,7 @@ the game writes a part each time the memory is full. Refer to "Settings" in
 [port/linux/README.md](port/linux/README.md).
 
 On Android, the files are in `/sdcard/Android/data/com.halo.decomp/files/profiles/`.
-Enter `adb pull` to copy the recording parts to a computer.
+Enter `adb pull` to copy the recording and any leftover parts to a computer.
 
 A profiling build plays with normal builds. It does not use
 `--pgo=train`.
