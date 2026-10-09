@@ -108,6 +108,7 @@ void profile_trace_set_session_sampler(void (*sample)(struct profile_trace_sessi
 
 /* which track the calling thread records on */
 void profile_trace_thread_register(int track);
+int profile_trace_on_game_thread(void);
 
 /* a name's id (the same name, the same id, for the whole run); an
 aggregate name's scopes are summed per frame rather than recorded */

@@ -1,10 +1,66 @@
-"""Hand-written CPU recording parts for the report tests."""
+"""A recording written by hand, as port/linux/src/profile_json.c writes
+one, for tools/test_profile.py: a host of two clients over internet play,
+six one-second intervals, in three parts or (for the merge test) in one."""
 
 import json
 from pathlib import Path
 
+MESSAGE_TYPES = [
+    [0, "batch_header", ""],
+    [255, "short_message", ""],
+    [2, "unit_states", "distributed_handle_unit_states"],
+    [6, "object_states", "network_objects_handle_states"],
+    [14, "player_inputs", "distributed_handle_inputs"],
+    [5, "object_changes", "network_objects_handle_changes"],
+]
+SITES = [[0, "distributed_host_send_states", 1112], [1, "distributed_host_send_players", 2757],
+         [2, "network_objects_send_changes", 700]]
+FIELDS = [[0, "header", 0], [1, "position", 0], [2, "unit_index", 0]]
+LAYOUTS = [[6, "object_index", 0, 4, "datum"], [6, "flags", 4, 1, ""], [6, "pad", 5, 1, ""],
+           [6, "time", 6, 2, ""], [6, "position", 8, 12, ""], [6, "forward", 20, 6, ""], [6, "up", 26, 6, ""],
+           [6, "translational_velocity", 32, 6, ""], [6, "angular_velocity", 38, 6, ""],
+           [14, "player_index", 0, 1, "player"], [14, "buttons", 1, 3, ""]]
+# (a real datum handle has bit 31 set, so its key is negative)
+HANDLE = 0x80010001 - 2**32
+PLAYER = 0xE0000001 - 2**32
+UNKNOWN = 0xE0000002 - 2**32
+OBJECTS = [[HANDLE, "biped", "characters\\elite\\elite"], [0x20002, "vehicle", "vehicles\\ghost\\ghost"]]
+
+
+def interval_rows(interval):
+    """one second of a host sending to machines 0 and 1"""
+    rows = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures", "datagrams")}
+    for machine in (0, 1):
+        rows["messages"].append([interval, "out", machine, 6, 0, 1320, 30, 30, False])
+        rows["messages"].append([interval, "out", machine, 2, 1, 600, 30, 60, False])
+        rows["messages"].append([interval, "out", machine, 0, -1, 240, 30, 0, False])
+        rows["datagrams"].append([interval, machine, 2160, 30])
+        rows["entries"].append([interval, "out", machine, 6, HANDLE, 660, 15])
+        rows["entries"].append([interval, "out", machine, 6, 0x20002, 660, 15])
+        rows["received"].append([interval, machine, 0, "", 240, 30, 0, ""])
+        rows["received"].append([interval, machine, 14, "distributed_handle_inputs", 900, 30, 30, ""])
+    rows["messages"].append([interval, "out", 0, 5, 2, 500, 1, 4, True])
+    rows["received"].append([interval, 1, 14, "distributed_handle_inputs", 60, 2, 2, "stale"])
+    # (no key, "other", a handle no object row describes: a player's, and an unknown one)
+    rows["entries"].append([interval, "out", 0, 6, "", 20, 1])
+    rows["entries"].append([interval, "out", 0, 6, "other", 100, 5])
+    rows["entries"].append([interval, "out", 0, 2, PLAYER, 60, 3])
+    # (a fixed-size entry keyed by a player index, which no object row describes)
+    rows["entries"].append([interval, "out", 0, 14, 1, 40, 4])
+    rows["entries"].append([interval, "out", 0, 6, UNKNOWN, 44, 2])
+    rows["built"].append([interval, 6, 0, 30])
+    rows["built"].append([interval, 2, 1, 30])
+    rows["built"].append([interval, 5, 2, 1])
+    rows["field_bytes"].append([interval, "out", 2, 1, 720, 60])
+    rows["field_bytes"].append([interval, "out", 2, 0, 480, 60])
+    return rows
+
 
 def part(number, intervals, last, frames_before, ticks_before):
+    tables = {name: [] for name in ("messages", "received", "built", "entries", "field_bytes", "send_failures", "datagrams")}
+    for interval in intervals:
+        for name, rows in interval_rows(interval).items():
+            tables[name].extend(rows)
     frames = 60 * len(intervals)
     ticks = 30 * len(intervals)
     header = {
@@ -12,13 +68,40 @@ def part(number, intervals, last, frames_before, ticks_before):
         "map": "levels\\a30\\a30", "map_name": "a30", "gametype": "campaign",
         "players": 3 if number == 1 else 4, "players_most": 4, "start_utc": "2026-10-05 14:22:33",
         "recording": "profile_20261005-142233_host", "part": number, "last_part": last,
-        "first_frame": frames_before, "frames": frames,
+        "first_interval": intervals[0], "intervals": len(intervals), "first_frame": frames_before, "frames": frames,
         "first_tick": ticks_before, "ticks": ticks, "start_s": float(intervals[0]), "duration_s": float(len(intervals)),
         "stop_reason": "command" if last else "", "clock_read_ns": 21.5, "memory_used": 1000, "memory_limit": 16777216,
         "writer_wait_ms": 0.0, "foreign_scopes": 0, "deep_scopes": 0, "unbalanced_scopes": 0, "dropped_scopes": 0,
-        "dropped_scopes": 0,
+        "foreign_net_events": 0, "entry_keys_overflowed": 0, "dropped_rows": 0, "objects_overflowed": 0, "sites_overflowed": 0,
+        "fields_overflowed": 0, "layouts_overflowed": 0, "batches_unbooked": 0,
     }
     halo = {"header": header}
+    columns = {
+        'message_types': ['id', 'name', 'handler'],
+        'sites': ['id', 'function', 'line'],
+        'fields': ['id', 'name', 'size'],
+        'layouts': ['type', 'member', 'offset', 'size', 'key'],
+        'objects': ['key', 'object_type', 'tag'],
+        'intervals': ['interval', 'start_s', 'length_s', 'tick', 'ticks'],
+        'messages': ['interval', 'dir', 'machine', 'type', 'site', 'bytes', 'messages', 'entries', 'reliable'],
+        'received': ['interval', 'machine', 'type', 'handler', 'bytes', 'messages', 'entries', 'dropped'],
+        'built': ['interval', 'type', 'site', 'messages'],
+        'entries': ['interval', 'dir', 'machine', 'type', 'key', 'bytes', 'entries'],
+        'field_bytes': ['interval', 'dir', 'type', 'field', 'bytes', 'count'],
+        'send_failures': ['interval', 'machine', 'reason', 'sends', 'bytes', 'reliable'],
+        'datagrams': ['interval', 'machine', 'bytes', 'datagrams'],
+    }
+    metadata = {
+        'message_types': MESSAGE_TYPES,
+        'sites': SITES,
+        'fields': FIELDS,
+        'layouts': LAYOUTS,
+        'objects': OBJECTS,
+        'intervals': [[interval, float(interval), 1.0, 30 * interval, 30] for interval in intervals],
+    }
+    for name in columns:
+        rows = metadata[name] if name in metadata else tables[name]
+        halo[name] = {"columns": columns[name], "rows": rows}
     cpu_rows = [
         ["frame", frames, 8.3 * frames, 8.3, 41.2, 1.0, None],
         ["game_tick", ticks, 3.2 * ticks, 3.2, 6.012, 0.5, 3.2],

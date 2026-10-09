@@ -264,6 +264,9 @@ symbols in this file:
 #include "text/unicode.h"
 /* system_milliseconds(), for the settings update interval */
 #include "cseries/cseries_windows.h"
+#ifdef HALO_PROFILE
+#include "profile_net.h"
+#endif
 
 /* port/linux/game/network_distributed.c's */
 void network_distributed_handle_message(long machine_index, word const *message, word size);
@@ -864,13 +867,25 @@ boolean network_distributed_server_send_to_machine(
 	struct network_connection *connection;
 	struct transport_address address;
 
+#ifdef HALO_PROFILE
+	if (profile_net_recording && (!server || size > sizeof(buffer)))
+		profile_net_send_failed(!server ? _profile_net_failure_no_server : _profile_net_failure_too_large);
+#endif
 	if (!server || size > sizeof(buffer))
 		return FALSE;
 	/* (a machine's slot is its index, network_game_server_accept_client_machine_into_game) */
 	machine = network_game_server_client_machine_in_game(server, machine_index);
+#ifdef HALO_PROFILE
+	if (profile_net_recording && !machine)
+		profile_net_send_failed(_profile_net_failure_no_machine);
+#endif
 	if (!machine)
 		return FALSE;
 	connection = network_game_server_get_client_connection(machine);
+#ifdef HALO_PROFILE
+	if (profile_net_recording && (!connection || !network_connection_active(connection)))
+		profile_net_send_failed(_profile_net_failure_no_connection);
+#endif
 	if (!connection || !network_connection_active(connection))
 		return FALSE;
 	/* from the game's public datagram endpoint (the one clients send
@@ -879,6 +894,15 @@ boolean network_distributed_server_send_to_machine(
 	network_connection_get_address(connection, &address, NULL);
 	address.port = NETWORK_GAME_CLIENT_PORT;
 	csmemcpy(buffer, message, size);
+#ifdef HALO_PROFILE
+	{
+		boolean written = network_game_server_write(network_game_server_get_connection(server), buffer, size, &address, 0);
+
+		if (profile_net_recording && !written)
+			profile_net_send_failed(_profile_net_failure_write_failed);
+		return written;
+	}
+#endif
 	return network_game_server_write(network_game_server_get_connection(server), buffer, size, &address, 0);
 }
 
@@ -905,6 +929,15 @@ boolean network_distributed_server_send_to_machine_reliably(
 	if (!connection || !network_connection_active(connection))
 		return FALSE;
 	csmemcpy(buffer, message, size);
+#ifdef HALO_PROFILE
+	{
+		boolean written = network_game_server_write(connection, buffer, size, NULL, 1);
+
+		if (profile_net_recording)
+			profile_net_reliable(machine_index, message, size, written);
+		return written;
+	}
+#endif
 	return network_game_server_write(connection, buffer, size, NULL, 1);
 }
 
@@ -934,7 +967,17 @@ boolean network_distributed_server_send_to_all_reliably(
 			if (connection && network_connection_active(connection) && size <= sizeof(buffer))
 			{
 				csmemcpy(buffer, message, size);
+#ifdef HALO_PROFILE
+				{
+					boolean written = network_game_server_write(connection, buffer, size, NULL, 1);
+
+					if (profile_net_recording)
+						profile_net_reliable(machine_index, message, size, written);
+					result &= written;
+				}
+#else
 				result &= network_game_server_write(connection, buffer, size, NULL, 1);
+#endif
 			}
 		}
 	}

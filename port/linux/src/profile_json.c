@@ -11,7 +11,6 @@ Write recording parts on the writer thread.
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-
 /* ---------- constants */
 
 enum
@@ -39,6 +38,15 @@ struct profile_json_name_totals
 
 /* ---------- globals */
 
+static const char *profile_json_directions[] = { "out", "in" };
+static const char *profile_json_drops[NUMBER_OF_PROFILE_NET_DROPS] =
+{
+	"", "not_in_game", "bad_type", "bad_size", "wrong_direction", "stale", "fast_clock",
+};
+static const char *profile_json_failures[NUMBER_OF_PROFILE_NET_FAILURES] =
+{
+	"", "no_server", "no_machine", "no_connection", "too_large", "write_failed",
+};
 static const char *profile_json_stop_reasons[] = { "", "command", "seconds", "map_load", "exit" };
 
 /* ---------- private code */
@@ -74,6 +82,16 @@ static void profile_json_string(
 	fputc('"', file);
 	profile_json_escaped(file, text);
 	fputc('"', file);
+}
+
+static void profile_json_machine(
+	FILE *file,
+	long machine)
+{
+	if (machine == PROFILE_NET_HOST)
+		fputs("\"host\"", file);
+	else
+		fprintf(file, "%ld", machine);
 }
 
 /* microseconds with three decimals, as the trace event format has them */
@@ -133,17 +151,215 @@ static void profile_json_header(
 	profile_json_string(file, part->start_utc);
 	fputs(", \"recording\": ", file);
 	profile_json_string(file, part->name);
-	fprintf(file, ", \"part\": %ld, \"last_part\": %s"
+	fprintf(file, ", \"part\": %ld, \"last_part\": %s, \"first_interval\": %ld, \"intervals\": %ld"
 		", \"first_frame\": %ld, \"frames\": %ld, \"first_tick\": %ld, \"ticks\": %ld",
-		part->number, part->last ? "true" : "false",
+		part->number, part->last ? "true" : "false", part->first_interval, part->intervals,
 		part->first_frame, part->frames, part->first_tick, part->ticks);
 	fprintf(file, ", \"start_s\": %.6f, \"duration_s\": %.6f, \"stop_reason\": ",
 		(double)part->start_ns / 1e9, (double)(part->end_ns - part->start_ns) / 1e9);
 	profile_json_string(file, profile_json_stop_reasons[part->stop_reason]);
 	fprintf(file, ", \"clock_read_ns\": %.1f, \"memory_used\": %lu, \"memory_limit\": %lu, \"writer_wait_ms\": %.3f"
-		", \"foreign_scopes\": %lu, \"deep_scopes\": %lu, \"unbalanced_scopes\": %lu, \"dropped_scopes\": %lu}",
+		", \"foreign_scopes\": %lu, \"deep_scopes\": %lu, \"unbalanced_scopes\": %lu, \"dropped_scopes\": %lu"
+		", \"foreign_net_events\": %lu, \"entry_keys_overflowed\": %lu, \"dropped_rows\": %lu"
+		", \"objects_overflowed\": %lu, \"batches_unbooked\": %lu, \"sites_overflowed\": %lu, \"fields_overflowed\": %lu"
+		", \"layouts_overflowed\": %lu}",
 		part->clock_read_ns, part->memory_used, part->memory_limit, part->writer_wait_ms,
-		part->foreign_scopes, part->deep_scopes, part->unbalanced_scopes, part->dropped_scopes);
+		part->foreign_scopes, part->deep_scopes, part->unbalanced_scopes, part->dropped_scopes,
+		part->counts.foreign_events, part->counts.entry_keys_overflowed, part->counts.dropped_rows,
+		part->counts.objects_overflowed, part->counts.batches_unbooked, part->counts.sites_overflowed, part->counts.fields_overflowed,
+		part->counts.layouts_overflowed);
+}
+
+static void profile_json_table_begin(
+	FILE *file,
+	const char *name,
+	const char *columns)
+{
+	fprintf(file, ",\n\"%s\": {\"columns\": [%s], \"rows\": [\n", name, columns);
+}
+
+static void profile_json_table_end(
+	FILE *file,
+	struct profile_json_list *list)
+{
+	fputs(list->items ? "\n]}" : "]}", file);
+}
+
+static void profile_json_metadata(
+	const struct profile_part *part,
+	FILE *file)
+{
+	struct profile_json_list list;
+	long index;
+	int member;
+
+	profile_json_table_begin(file, "message_types", "\"id\", \"name\", \"handler\"");
+	list.file = file;
+	list.items = 0;
+	profile_json_item(&list);
+	fprintf(file, "[%d, \"batch_header\", \"\"]", PROFILE_NET_BATCH_HEADER);
+	profile_json_item(&list);
+	fputs("[255, \"short_message\", \"\"]", file);
+	for (index = 0; index < part->net.types; index++)
+	{
+		const struct profile_net_message_name *name = profile_net_type_name_at(index);
+
+		profile_json_item(&list);
+		fprintf(file, "[%d, ", name->type);
+		profile_json_string(file, name->name);
+		fputs(", ", file);
+		profile_json_string(file, name->handler);
+		fputc(']', file);
+	}
+	profile_json_table_end(file, &list);
+
+	profile_json_table_begin(file, "sites", "\"id\", \"function\", \"line\"");
+	list.items = 0;
+	for (index = 0; index < part->net.sites; index++)
+	{
+		const struct profile_net_site_entry *site = profile_net_site_entry(index);
+
+		profile_json_item(&list);
+		fprintf(file, "[%ld, ", index);
+		profile_json_string(file, site->function);
+		fprintf(file, ", %ld]", site->line);
+	}
+	profile_json_table_end(file, &list);
+
+	profile_json_table_begin(file, "fields", "\"id\", \"name\", \"size\"");
+	list.items = 0;
+	for (index = 0; index < part->net.fields; index++)
+	{
+		profile_json_item(&list);
+		fprintf(file, "[%ld, ", index);
+		profile_json_string(file, profile_net_field_entry(index)->name);
+		fputs(", 0]", file);
+	}
+	profile_json_table_end(file, &list);
+
+	profile_json_table_begin(file, "layouts", "\"type\", \"member\", \"offset\", \"size\", \"key\"");
+	list.items = 0;
+	for (index = 0; index < part->net.layouts; index++)
+	{
+		const struct profile_net_layout_entry *layout = profile_net_layout_entry(index);
+
+		unsigned int end = 0;
+
+		for (member = 0; member < layout->count; member++)
+		{
+			profile_json_item(&list);
+			fprintf(file, "[%d, ", layout->type);
+			profile_json_string(file, layout->members[member].name);
+			fprintf(file, ", %u, %u, %s]", layout->members[member].offset, layout->members[member].size,
+				layout->members[member].key == _profile_net_key_datum ? "\"datum\"" :
+				layout->members[member].key == _profile_net_key_player ? "\"player\"" : "\"\"");
+			end = layout->members[member].offset + layout->members[member].size;
+		}
+		/* (the struct's padding after its last member goes on the wire too) */
+		if (layout->entry_size > end)
+		{
+			profile_json_item(&list);
+			fprintf(file, "[%d, \"tail_pad\", %u, %u, \"\"]", layout->type, end, layout->entry_size - end);
+		}
+	}
+	profile_json_table_end(file, &list);
+
+	profile_json_table_begin(file, "objects", "\"key\", \"object_type\", \"tag\"");
+	list.items = 0;
+	for (index = 0; index < part->net.objects; index++)
+	{
+		const struct profile_net_object_entry *object = profile_net_object_entry(index);
+
+		profile_json_item(&list);
+		fprintf(file, "[%ld, ", object->key);
+		profile_json_string(file, object->object_type);
+		fputs(", ", file);
+		profile_json_string(file, object->tag);
+		fputc(']', file);
+	}
+	profile_json_table_end(file, &list);
+}
+
+static const char *profile_json_handler(
+	int type)
+{
+	const struct profile_net_message_name *name = profile_net_type_name(type);
+
+	return name ? name->handler : "";
+}
+
+/* the rows of one table, in the columns that table has */
+static void profile_json_rows(
+	const struct profile_part *part,
+	FILE *file,
+	int table,
+	const char *name,
+	const char *columns)
+{
+	struct profile_json_list list;
+	unsigned long index;
+
+	profile_json_table_begin(file, name, columns);
+	list.file = file;
+	list.items = 0;
+	for (index = 0; index < part->row_count; index++)
+	{
+		const struct profile_net_row *row = &part->rows[index];
+
+		if (row->table != table)
+			continue;
+		profile_json_item(&list);
+		fprintf(file, "[%u, ", row->interval);
+		switch (table)
+		{
+		case _profile_net_table_intervals:
+			fprintf(file, "%.3f, %.3f, %d, %u]", row->values[0] / 1000.0, row->values[1] / 1000.0, row->machine,
+				row->values[2]);
+			break;
+		case _profile_net_table_messages:
+			fprintf(file, "\"%s\", ", profile_json_directions[row->direction]);
+			profile_json_machine(file, row->machine);
+			fprintf(file, ", %u, %d, %u, %u, %u, %s]", row->type, row->site == PROFILE_NET_NO_SITE ? -1 : row->site,
+				row->values[0], row->values[1], row->values[2], row->aux ? "true" : "false");
+			break;
+		case _profile_net_table_received:
+			profile_json_machine(file, row->machine);
+			fprintf(file, ", %u, ", row->type);
+			profile_json_string(file, profile_json_handler(row->type));
+			fprintf(file, ", %u, %u, %u, \"%s\"]", row->values[0], row->values[1], row->values[2],
+				row->aux < NUMBER_OF_PROFILE_NET_DROPS ? profile_json_drops[row->aux] : "");
+			break;
+		case _profile_net_table_built:
+			fprintf(file, "%u, %d, %u]", row->type, row->site == PROFILE_NET_NO_SITE ? -1 : row->site, row->values[0]);
+			break;
+		case _profile_net_table_entries:
+			fprintf(file, "\"%s\", ", profile_json_directions[row->direction]);
+			profile_json_machine(file, row->machine);
+			fprintf(file, ", %u, ", row->type);
+			if (row->key == PROFILE_NET_KEY_OTHER)
+				fputs("\"other\"", file);
+			else if (row->key == PROFILE_NET_KEY_NONE)
+				fputs("\"\"", file);
+			else
+				fprintf(file, "%d", row->key);
+			fprintf(file, ", %u, %u]", row->values[0], row->values[1]);
+			break;
+		case _profile_net_table_field_bytes:
+			fprintf(file, "\"%s\", %u, %u, %u, %u]", profile_json_directions[row->direction], row->type, row->site,
+				row->values[0], row->values[1]);
+			break;
+		case _profile_net_table_send_failures:
+			profile_json_machine(file, row->machine);
+			fprintf(file, ", \"%s\", %u, %u, %s]", row->aux < NUMBER_OF_PROFILE_NET_FAILURES ? profile_json_failures[row->aux] : "",
+				row->values[0], row->values[1], row->type ? "true" : "false");
+			break;
+		case _profile_net_table_datagrams:
+			profile_json_machine(file, row->machine);
+			fprintf(file, ", %u, %u]", row->values[0], row->values[1]);
+			break;
+		}
+	}
+	profile_json_table_end(file, &list);
 }
 
 /* a worst frame's scopes: the open ones (one a depth, so no more than the
@@ -345,6 +561,13 @@ static void profile_json_event(
 		else
 			fprintf(file, ",\"args\":{\"value\":%u}}", record->duration);
 		break;
+	case PROFILE_TRACE_DEPTH_NET_OUT:
+	case PROFILE_TRACE_DEPTH_NET_IN:
+		fprintf(file, "{\"ph\":\"C\",\"name\":\"%s\",\"pid\":1,\"tid\":1,\"ts\":",
+			record->depth == PROFILE_TRACE_DEPTH_NET_OUT ? "net_out" : "net_in");
+		profile_json_time(file, record->start);
+		fprintf(file, ",\"args\":{\"bytes\":%u}}", record->duration);
+		break;
 	default:
 		fputs("{\"ph\":\"X\",\"name\":", file);
 		profile_json_string(file, name);
@@ -367,6 +590,7 @@ int profile_json_write(
 	unsigned long next[NUMBER_OF_PROFILE_TRACKS] = { 0, 0 };
 	int track;
 
+
 	for (track = 0; track < NUMBER_OF_PROFILE_TRACKS; track++)
 	{
 		if (part->record_counts[track])
@@ -378,6 +602,22 @@ int profile_json_write(
 
 	fputs("{\"halo\": {\n", file);
 	profile_json_header(part, file);
+	profile_json_metadata(part, file);
+	profile_json_rows(part, file, _profile_net_table_intervals, "intervals",
+		"\"interval\", \"start_s\", \"length_s\", \"tick\", \"ticks\"");
+	profile_json_rows(part, file, _profile_net_table_messages, "messages",
+		"\"interval\", \"dir\", \"machine\", \"type\", \"site\", \"bytes\", \"messages\", \"entries\", \"reliable\"");
+	profile_json_rows(part, file, _profile_net_table_received, "received",
+		"\"interval\", \"machine\", \"type\", \"handler\", \"bytes\", \"messages\", \"entries\", \"dropped\"");
+	profile_json_rows(part, file, _profile_net_table_built, "built", "\"interval\", \"type\", \"site\", \"messages\"");
+	profile_json_rows(part, file, _profile_net_table_entries, "entries",
+		"\"interval\", \"dir\", \"machine\", \"type\", \"key\", \"bytes\", \"entries\"");
+	profile_json_rows(part, file, _profile_net_table_field_bytes, "field_bytes",
+		"\"interval\", \"dir\", \"type\", \"field\", \"bytes\", \"count\"");
+	profile_json_rows(part, file, _profile_net_table_send_failures, "send_failures",
+		"\"interval\", \"machine\", \"reason\", \"sends\", \"bytes\", \"reliable\"");
+	profile_json_rows(part, file, _profile_net_table_datagrams, "datagrams",
+		"\"interval\", \"machine\", \"bytes\", \"datagrams\"");
 	fputs("},\n\"cpu_summary\": ", file);
 	profile_json_cpu_summary(part, file);
 	fputs(",\n\"traceEvents\": [\n", file);
@@ -492,6 +732,7 @@ int profile_json_write_part(
 static void *profile_json_writer(
 	void *unused)
 {
+
 	(void)unused;
 	for (;;)
 	{

@@ -3157,3 +3157,82 @@ void network_objects_new_game(
 		}
 	}
 }
+
+#ifdef HALO_PROFILE
+/* the file's entries' layouts, for the profiling build's bytes per field:
+every member in order, a key's kind */
+#define DISTRIBUTED_OBJECT_CHANGE_LAYOUT(M) \
+	M(struct distributed_object_change, change, _profile_net_key_none) \
+	M(struct distributed_object_change, flags, _profile_net_key_none) \
+	M(struct distributed_object_change, owner_player_index, _profile_net_key_none) \
+	M(struct distributed_object_change, forced_shader_permutation_index, _profile_net_key_none) \
+	M(struct distributed_object_change, object_index, _profile_net_key_datum) \
+	M(struct distributed_object_change, definition_index, _profile_net_key_none) \
+	M(struct distributed_object_change, owner_team_index, _profile_net_key_none) \
+	M(struct distributed_object_change, variant_number, _profile_net_key_none) \
+	M(struct distributed_object_change, position, _profile_net_key_none) \
+	M(struct distributed_object_change, forward, _profile_net_key_none) \
+	M(struct distributed_object_change, up, _profile_net_key_none) \
+	M(struct distributed_object_change, translational_velocity, _profile_net_key_none) \
+	M(struct distributed_object_change, angular_velocity, _profile_net_key_none) \
+	M(struct distributed_object_change, change_colors, _profile_net_key_none) \
+	M(struct distributed_object_change, region_permutations, _profile_net_key_none)
+#define DISTRIBUTED_OBJECT_STATE_LAYOUT(M) \
+	M(struct distributed_object_state, object_index, _profile_net_key_datum) \
+	M(struct distributed_object_state, flags, _profile_net_key_none) \
+	M(struct distributed_object_state, pad, _profile_net_key_none) \
+	M(struct distributed_object_state, time, _profile_net_key_none) \
+	M(struct distributed_object_state, position, _profile_net_key_none) \
+	M(struct distributed_object_state, forward, _profile_net_key_none) \
+	M(struct distributed_object_state, up, _profile_net_key_none) \
+	M(struct distributed_object_state, translational_velocity, _profile_net_key_none) \
+	M(struct distributed_object_state, angular_velocity, _profile_net_key_none)
+#define DISTRIBUTED_INVENTORY_LAYOUT(M) \
+	M(struct distributed_inventory, unit_index, _profile_net_key_datum) \
+	M(struct distributed_inventory, grenade_counts, _profile_net_key_none) \
+	M(struct distributed_inventory, current_weapon_index, _profile_net_key_none) \
+	M(struct distributed_inventory, pad, _profile_net_key_none) \
+	M(struct distributed_inventory, weapon_indices, _profile_net_key_none) \
+	M(struct distributed_inventory, rounds_total, _profile_net_key_none) \
+	M(struct distributed_inventory, rounds_loaded, _profile_net_key_none) \
+	M(struct distributed_inventory, age, _profile_net_key_none)
+#define DISTRIBUTED_DAMAGE_ANIMATION_LAYOUT(M) \
+	M(struct distributed_damage_animation, unit_index, _profile_net_key_datum) \
+	M(struct distributed_damage_animation, animation_index, _profile_net_key_none) \
+	M(struct distributed_damage_animation, type, _profile_net_key_none) \
+	M(struct distributed_damage_animation, number, _profile_net_key_none)
+
+static struct profile_net_layout_member const distributed_object_change_layout[] =
+	{ DISTRIBUTED_OBJECT_CHANGE_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_object_state_layout[] =
+	{ DISTRIBUTED_OBJECT_STATE_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_inventory_layout[] =
+	{ DISTRIBUTED_INVENTORY_LAYOUT(PROFILE_NET_MEMBER) };
+static struct profile_net_layout_member const distributed_damage_animation_layout[] =
+	{ DISTRIBUTED_DAMAGE_ANIMATION_LAYOUT(PROFILE_NET_MEMBER) };
+
+typedef char distributed_object_change_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_OBJECT_CHANGE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_object_change, region_permutations) ? 1 : -1];
+typedef char distributed_object_state_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_OBJECT_STATE_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_object_state, angular_velocity) ? 1 : -1];
+typedef char distributed_inventory_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_INVENTORY_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_inventory, age) ? 1 : -1];
+typedef char distributed_damage_animation_layout_assert[PROFILE_NET_LAYOUT_OK(0 DISTRIBUTED_DAMAGE_ANIMATION_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+		struct distributed_damage_animation, number) ? 1 : -1];
+
+void network_objects_profile_register(
+	void)
+{
+	profile_net_layout(_distributed_message_object_changes, distributed_object_change_layout,
+		NUMBEROF(distributed_object_change_layout), sizeof(struct distributed_object_change));
+	profile_net_layout(_distributed_message_object_states, distributed_object_state_layout,
+		NUMBEROF(distributed_object_state_layout), sizeof(struct distributed_object_state));
+	/* (a client's vehicle is sent as an object's state) */
+	profile_net_layout(_distributed_message_vehicle_prediction, distributed_object_state_layout,
+		NUMBEROF(distributed_object_state_layout), sizeof(struct distributed_object_state));
+	profile_net_layout(_distributed_message_inventories, distributed_inventory_layout,
+		NUMBEROF(distributed_inventory_layout), sizeof(struct distributed_inventory));
+	profile_net_layout(_distributed_message_damage_animations, distributed_damage_animation_layout,
+		NUMBEROF(distributed_damage_animation_layout), sizeof(struct distributed_damage_animation));
+}
+#endif

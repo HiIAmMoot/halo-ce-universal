@@ -15,6 +15,16 @@ clients, and the clients' hits, reported to the host).
 #include "bungie_net/common/message_header.h"
 #include "networking/network_connection.h"
 
+/* the profiling build's senders are macros that note the function and line
+that called them (profile_net.c's sites), so their own definitions name
+them in parentheses, where a function-like macro does not expand */
+#ifdef HALO_PROFILE
+#include "profile_net.h"
+#define PROFILE_FUNCTION_NAME(name) (name)
+#else
+#define PROFILE_FUNCTION_NAME(name) name
+#endif
+
 /* ---------- constants */
 
 /* the messages, all of the game's "data" kind (network_distributed.c) */
@@ -249,6 +259,32 @@ real distributed_angle_unpack(short value, boolean signed_angle);
 /* shields and health in 16 bits */
 word distributed_vitality_pack(real value);
 real distributed_vitality_unpack(word value);
+
+#ifdef HALO_PROFILE
+/* a send noted with the function and line that decided it: the outermost
+noted, so a forwarding helper's caller (network_coop.c's send_to_clients) */
+#define PROFILE_NET_SITE(call) \
+	({ \
+		static int profile_net_site_id = -1; \
+		if (profile_net_site_id < 0) \
+			profile_net_site_id = profile_net_site(__FUNCTION__, __LINE__); \
+		profile_net_site_push(profile_net_site_id); \
+		call; \
+		profile_net_site_pop(); \
+	})
+#define distributed_send(message, type, count, size, destination) \
+	PROFILE_NET_SITE((distributed_send)(message, type, count, size, destination))
+#define distributed_send_to_machine(machine_index, message, type, count, size) \
+	PROFILE_NET_SITE((distributed_send_to_machine)(machine_index, message, type, count, size))
+#define distributed_send_to_machine_reliably(machine_index, message, type, count, size) \
+	PROFILE_NET_SITE((distributed_send_to_machine_reliably)(machine_index, message, type, count, size))
+/* the message names and the entries' layouts (profile_console.c, once) */
+void network_distributed_profile_register(void);
+void network_objects_profile_register(void);
+void network_actors_profile_register(void);
+void network_damage_profile_register(void);
+void network_coop_profile_register(void);
+#endif
 
 /* ---------- prototypes/NETWORK_ACTORS.C */
 

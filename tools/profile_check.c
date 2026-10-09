@@ -1,7 +1,7 @@
 /*
 PROFILE_CHECK.C
 
-Exercise the CPU recorder and writer with standalone fakes.
+Exercise the profiling recorder, writer and accounting with standalone fakes.
 */
 
 #include "profile_part.h"
@@ -157,6 +157,15 @@ static void fake_session_sample(struct profile_trace_session *session)
 	fake_session(session);
 }
 
+static int describe_object(long key, char *object_type, int object_type_size, char *tag, int tag_size)
+{
+	if (key == 99)
+		return 0;
+	snprintf(object_type, (size_t)object_type_size, "biped");
+	snprintf(tag, (size_t)tag_size, "characters\\elite\\elite %ld", key);
+	return 1;
+}
+
 /* ---------- the fake writer: what each part held */
 
 enum
@@ -175,6 +184,8 @@ static struct
 	unsigned long aggregate_count[MAXIMUM_PROFILE_TRACE_NAMES];
 	long first_frame[MAXIMUM_PARTS];
 	long frames[MAXIMUM_PARTS];
+	long first_interval[MAXIMUM_PARTS];
+	long intervals[MAXIMUM_PARTS];
 	unsigned long long start_ns[MAXIMUM_PARTS];
 	unsigned long long end_ns[MAXIMUM_PARTS];
 	int last[MAXIMUM_PARTS];
@@ -185,6 +196,7 @@ static struct
 	unsigned long deep;
 	unsigned long foreign;
 	unsigned long dropped;
+	unsigned long foreign_events;
 	int records_in_span;
 	int aggregate_child_depth;
 	int delay_milliseconds;
@@ -212,6 +224,8 @@ static void *fake_writer(void *unused)
 		{
 			written.first_frame[written.parts] = part->first_frame;
 			written.frames[written.parts] = part->frames;
+			written.first_interval[written.parts] = part->first_interval;
+			written.intervals[written.parts] = part->intervals;
 			written.start_ns[written.parts] = part->start_ns;
 			written.end_ns[written.parts] = part->end_ns;
 			written.last[written.parts] = part->last;
@@ -224,6 +238,7 @@ static void *fake_writer(void *unused)
 		written.deep += part->deep_scopes;
 		written.foreign += part->foreign_scopes;
 		written.dropped += part->dropped_scopes;
+		written.foreign_events += part->counts.foreign_events;
 		for (track = 0; track < NUMBER_OF_PROFILE_TRACKS; track++)
 		{
 			for (index = 0; index < part->record_counts[track]; index++)
@@ -281,6 +296,7 @@ static void forget_written(void)
 	memset(written.counts, 0, sizeof(written.counts));
 	written.counter_records = 0;
 	written.unbalanced = written.deep = written.foreign = written.dropped = 0;
+	written.foreign_events = 0;
 	written.records_in_span = 1;
 	pthread_mutex_unlock(&written.lock);
 }
@@ -531,7 +547,7 @@ static void part_checks(void)
 	p2p_running = 1;
 	pthread_create(&thread, NULL, p2p_thread, NULL);
 	profile_trace_request_start(0.0, _profile_trace_when_now, 4);
-	/* (4 MB, CPU-only: about 114 000 game records a part) */
+	/* (4 MB: about 86 000 game records a part) */
 	for (frame_index = 0; frame_index < 3000; frame_index++)
 	{
 		frame(50);
@@ -557,10 +573,11 @@ static void part_checks(void)
 	for (part = 1; part < written.parts && part < MAXIMUM_PARTS; part++)
 	{
 		continuous &= written.first_frame[part] == written.first_frame[part - 1] + written.frames[part - 1];
+		continuous &= written.first_interval[part] == written.first_interval[part - 1] + written.intervals[part - 1];
 		continuous &= written.start_ns[part] == written.end_ns[part - 1];
 		continuous &= !written.last[part - 1];
 	}
-	check(continuous, "frames and time continue across parts");
+	check(continuous, "frames, intervals and time continue across parts");
 	check(written.last[written.parts - 1], "only the last part is the last");
 	check(written.records_in_span, "each record within its part");
 	check(outstanding() == 0, "both arenas freed after a long recording");
@@ -573,7 +590,7 @@ static void part_checks(void)
 	pthread_create(&thread, NULL, p2p_thread, NULL);
 	profile_trace_request_start(0.0, _profile_trace_when_now, 4);
 	frames_recorded = 0;
-	for (frame_index = 0; frame_index < 3000; frame_index++)
+	for (frame_index = 0; frame_index < 2000; frame_index++)
 	{
 		frame(50);
 		if (profile_trace_recording())
@@ -702,6 +719,591 @@ static void straddle_checks(void)
 	check(outstanding() == 0, "nothing left after a pass across a restart");
 }
 
+static void reliable_entry_checks(void)
+{
+	static const struct profile_net_layout_member layout[] =
+	{
+		{ "object_index", 0, 4, _profile_net_key_datum },
+		{ "flags", 4, 4, _profile_net_key_none },
+	};
+	struct profile_net_row rows[64];
+	struct profile_net_snapshot snapshot;
+	unsigned char message[25] = { 0 };
+	int key = 99, entries = 0, failures = 0;
+	unsigned long count, index;
+	long first, intervals;
+
+	profile_net_layout(6, layout, 2, 8);
+	message[2] = 6;
+	message[3] = 2;
+	memcpy(message + 8, &key, 4);
+	memcpy(message + 16, &key, 4);
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 64, 0, 0);
+	profile_net_reliable(1, message, sizeof(message) - 1, 1);
+	/* a truncated payload is still a sent message, but is not a pair of entries */
+	profile_net_reliable(1, message, 15, 1);
+	/* a complete pair followed by a partial entry is not a valid fixed table */
+	profile_net_reliable(1, message, 25, 1);
+	profile_net_reliable(1, message, sizeof(message), 0);
+	profile_net_part_end(1000000000ULL, &count, &first, &intervals, &snapshot);
+	for (index = 0; index < count; index++)
+	{
+		if (rows[index].table == _profile_net_table_entries && rows[index].type == 6)
+		{
+			check(rows[index].key == 99 && rows[index].values[0] == 16,
+				"reliable fixed entries keep their full object key and payload bytes");
+			entries += rows[index].values[1];
+		}
+		if (rows[index].table == _profile_net_table_send_failures)
+		{
+			check(rows[index].type == 1, "a reliable failure is distinguished from a datagram failure");
+			failures += rows[index].values[0];
+		}
+	}
+	check(entries == 2, "only a successful bounded reliable payload adds layout entries");
+	check(failures == 1, "a reliable write failure is counted once");
+	profile_net_recording_end();
+}
+
+static void net_checks(void)
+{
+	static const struct profile_net_layout_member layout[] =
+	{
+		{ "object_index", 0, 4, _profile_net_key_datum },
+		{ "flags", 4, 4, _profile_net_key_none },
+	};
+	static const struct profile_net_message_name names[] =
+	{
+		{ 6, "object_states", "network_objects_handle_states" },
+	};
+	struct profile_net_row rows[2048];
+	struct profile_net_snapshot snapshot;
+	unsigned char entries[8 * 4];
+	unsigned long row_count, index, totals[4] = { 0, 0, 0, 0 };
+	long first_interval, intervals;
+	int site, field_a, field_b, key;
+
+	profile_net_message_names(names, 1);
+	profile_net_layout(6, layout, 2, 8);
+	profile_net_set_object_describe(describe_object);
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 2048, 0, 0);
+
+	/* batches: messages counted at the flush, as sent or failed */
+	site = profile_net_site("distributed_host_send_states", 1112);
+	check(site == profile_net_site("distributed_host_send_states", 1112), "a site is interned");
+	profile_net_site_push(site);
+	profile_net_site_push(profile_net_site("send_to_clients", 570));
+	profile_net_built(6);
+	profile_net_batch_append(0, 0, 6, 50, 2);
+	profile_net_batch_append(0, 0, 6, 30, 1);
+	profile_net_site_pop();
+	profile_net_site_pop();
+	profile_net_batch_flush(0, 0, 88, 1);
+	profile_net_batch_append(1, 1, 6, 50, 2);
+	profile_net_send_failed(_profile_net_failure_no_connection);
+	profile_net_batch_flush(1, 1, 58, 0);
+	/* an object key described once, an unknown one as unknown */
+	key = 99;
+	memcpy(entries, &key, 4);
+	profile_net_entries(0, 6, entries, 1, 8);
+	profile_net_entries(0, 6, entries, 1, 8);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	for (index = 0; index < row_count; index++)
+	{
+		if (rows[index].table == _profile_net_table_messages)
+		{
+			totals[0] += rows[index].values[0];
+			if (rows[index].type == 6)
+				check(rows[index].site == site, "the outermost site is the message's");
+		}
+		if (rows[index].table == _profile_net_table_send_failures)
+		{
+			check(rows[index].aux == _profile_net_failure_no_connection && rows[index].values[1] == 58,
+				"a failed send counts its reason and bytes");
+		}
+		if (rows[index].table == _profile_net_table_built)
+			totals[1] += rows[index].values[0];
+		if (rows[index].table == _profile_net_table_entries)
+			totals[2] += rows[index].values[1];
+	}
+	check(totals[0] == 88, "the bytes by type and the batch header equal the datagram");
+	check(totals[1] == 1, "a message is built once, before its fan-out");
+	check(totals[2] == 2, "entries counted by key");
+	check(snapshot.objects == 1 && strcmp(profile_net_object_entry(0)->object_type, "unknown") == 0,
+		"an object no longer there is unknown, described once");
+	check(snapshot.sites >= 2 && first_interval == 0 && intervals == 1, "the snapshot counts the tables");
+
+	/* a bigger row region for the key test */
+	{
+		struct profile_net_row *many = calloc(40000, sizeof(*many));
+		unsigned long long bytes = 0, counted = 0;
+		int next_interval_rows = 0;
+		int other_rows = 0;
+
+		profile_net_part_begin(many, 40000, 1000000000ULL, 0);
+		for (key = 0; key < MAXIMUM_PROFILE_NET_INTERVAL_KEYS + 10; key++)
+		{
+			int object = key;
+
+			memcpy(entries, &object, 4);
+			profile_net_entries(0, 6, entries, 1, 8);
+			bytes += 8;
+		}
+		profile_net_frame(2100000000ULL, 30);
+		/* a new interval: the scratch index starts over */
+		memcpy(entries, &key, 4);
+		profile_net_entries(0, 6, entries, 1, 8);
+		profile_net_part_end(2200000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+		for (index = 0; index < row_count; index++)
+		{
+			if (many[index].table != _profile_net_table_entries)
+				continue;
+			if (many[index].interval == 1)
+			{
+				counted += many[index].values[0];
+				if (many[index].key == PROFILE_NET_KEY_OTHER)
+				{
+					check(many[index].values[1] == 10, "keys past the limit go to other");
+					other_rows++;
+				}
+			}
+			if (many[index].interval == 2)
+			{
+				check(many[index].key == key, "the next interval keys again");
+				next_interval_rows++;
+			}
+		}
+		check(next_interval_rows == 1, "the next interval has rows of its own");
+		check(other_rows == 1, "one other row for the keys past the limit");
+		check(counted == bytes, "entry totals stay exact past the key limit");
+		check(intervals == 2 && first_interval == 1, "an interval closes after a second");
+		free(many);
+	}
+
+	/* packed entries: fields committed on add, discarded on drop, the rest
+	"header" */
+	profile_net_part_begin(rows, 2048, 3000000000ULL, 0);
+	field_a = profile_net_field("&state->position");
+	field_b = profile_net_field("relayed->control_flags[history]");
+	check(strcmp(profile_net_field_entry(field_a)->name, "position") == 0, "a field is named by its member");
+	check(strcmp(profile_net_field_entry(field_b)->name, "control_flags") == 0, "an array field without its index");
+	profile_net_field_put(field_a, 12);
+	profile_net_field_put(field_b, 2);
+	profile_net_packed_entry(0, 2, 3, 17, 1);
+	profile_net_field_put(field_a, 12);
+	profile_net_packed_entry(0, 2, 4, 15, 0);
+	profile_net_field_put(field_b, 2);
+	profile_net_packed_entry(0, 2, 5, 2, 1);
+	profile_net_part_end(4000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	memset(totals, 0, sizeof(totals));
+	for (index = 0; index < row_count; index++)
+	{
+		if (rows[index].table != _profile_net_table_field_bytes)
+			continue;
+		if (rows[index].site == (unsigned short)field_a)
+			totals[0] += rows[index].values[0];
+		else if (rows[index].site == (unsigned short)field_b)
+			totals[1] += rows[index].values[0];
+		else if (rows[index].site == 0)
+			totals[2] += rows[index].values[0];
+	}
+	check(totals[0] == 12 && totals[1] == 4 && totals[2] == 3, "packed fields: committed, discarded, header");
+	profile_net_recording_end();
+
+}
+
+/* an entry as the netcode's files lay theirs out: its members in a table
+made of the real macros, and a gap of padding the compiler leaves after the
+last member */
+struct sample_entry
+{
+	int object_index;
+	unsigned char player_index;
+	unsigned char pad;
+	short count;
+	float position[3];
+	unsigned char last;
+};
+
+#define SAMPLE_ENTRY_LAYOUT(M) \
+	M(struct sample_entry, object_index, _profile_net_key_datum) \
+	M(struct sample_entry, player_index, _profile_net_key_none) \
+	M(struct sample_entry, pad, _profile_net_key_none) \
+	M(struct sample_entry, count, _profile_net_key_none) \
+	M(struct sample_entry, position, _profile_net_key_none) \
+	M(struct sample_entry, last, _profile_net_key_none)
+#define SAMPLE_PLAYER_LAYOUT(M) \
+	M(struct sample_entry, object_index, _profile_net_key_none) \
+	M(struct sample_entry, player_index, _profile_net_key_player)
+/* (a table that left members out does not add up to where the last ends) */
+#define SAMPLE_SHORT_LAYOUT(M) \
+	M(struct sample_entry, object_index, _profile_net_key_datum) \
+	M(struct sample_entry, count, _profile_net_key_none)
+
+static const struct profile_net_layout_member sample_entry_layout[] = { SAMPLE_ENTRY_LAYOUT(PROFILE_NET_MEMBER) };
+static const struct profile_net_layout_member sample_player_layout[] = { SAMPLE_PLAYER_LAYOUT(PROFILE_NET_MEMBER) };
+typedef char sample_entry_layout_assert[(0 SAMPLE_ENTRY_LAYOUT(PROFILE_NET_MEMBER_SIZE)) ==
+	PROFILE_NET_END(struct sample_entry, last) ? 1 : -1];
+typedef char sample_short_layout_is_caught[(0 SAMPLE_SHORT_LAYOUT(PROFILE_NET_MEMBER_SIZE)) !=
+	PROFILE_NET_END(struct sample_entry, last) ? 1 : -1];
+
+/* (nor does one that left a member out after the last it lists: the
+writer would report its bytes as padding) */
+struct sample_trailing
+{
+	int first;
+	short last;
+	int added_later;
+};
+#define SAMPLE_TRAILING_LAYOUT(M) \
+	M(struct sample_trailing, first, _profile_net_key_none) \
+	M(struct sample_trailing, last, _profile_net_key_none)
+typedef char sample_trailing_member_is_caught[PROFILE_NET_LAYOUT_OK(0 SAMPLE_TRAILING_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+	struct sample_trailing, last) ? -1 : 1];
+typedef char sample_entry_tail_is_padding[PROFILE_NET_LAYOUT_OK(0 SAMPLE_ENTRY_LAYOUT(PROFILE_NET_MEMBER_SIZE),
+	struct sample_entry, last) ? 1 : -1];
+
+enum
+{
+	SAMPLE_ENTRY_TYPE = 7,
+	SAMPLE_PLAYER_TYPE = 8,
+};
+
+/* the layouts the netcode's files register: members as the compiler laid
+them out (the tail of padding past the last one is what the writer reports
+as tail_pad), the key's kind, and what a keyed entry counts under */
+static void layout_checks(void)
+{
+	static const char *const names[] = { "object_index", "player_index", "pad", "count", "position", "last" };
+	static const int keys[] = { _profile_net_key_datum, 0, 0, 0, 0, 0 };
+	struct profile_net_row rows[256];
+	struct profile_net_snapshot snapshot;
+	struct sample_entry entries[3];
+	const struct profile_net_layout_entry *layout = NULL;
+	unsigned long row_count, index, bytes[3] = { 0, 0, 0 };
+	long first_interval, intervals;
+	int member, described = 0, none_rows = 0, keyed_players = 0;
+
+	profile_net_layout(SAMPLE_ENTRY_TYPE, sample_entry_layout, (int)(sizeof(sample_entry_layout) / sizeof(sample_entry_layout[0])),
+		sizeof(struct sample_entry));
+	profile_net_layout(SAMPLE_PLAYER_TYPE, sample_player_layout, 2, sizeof(struct sample_entry));
+	for (index = 0; index < 16 && !layout; index++)
+	{
+		if (profile_net_layout_entry((long)index)->type == SAMPLE_ENTRY_TYPE)
+			layout = profile_net_layout_entry((long)index);
+	}
+	check(layout && layout->count == 6 && layout->entry_size == sizeof(struct sample_entry),
+		"a layout keeps its members and its entry's size");
+	if (layout && layout->count == 6)
+	{
+		for (member = 0; member < layout->count; member++)
+		{
+			check(strcmp(layout->members[member].name, names[member]) == 0, "a member is named as in the struct");
+			check(layout->members[member].key == keys[member], "a member's key kind");
+		}
+		check(layout->members[0].offset == 0 && layout->members[0].size == 4, "the key member's offset and size");
+		check(layout->members[2].offset == 5 && layout->members[2].size == 1, "a byte's offset and size");
+		check(layout->members[3].offset == 6 && layout->members[3].size == 2, "a short's offset");
+		check(layout->members[4].offset == 8 && layout->members[4].size == 12, "an array member's size is all of it");
+		check(layout->members[5].offset == 20 && layout->members[5].size == 1, "the last member's offset");
+		check(layout->entry_size == 24 && layout->members[5].offset + layout->members[5].size == 21,
+			"the entry ends 3 bytes past its last member");
+	}
+
+	memset(entries, 0, sizeof(entries));
+	entries[0].object_index = (int)0xE1740005UL;
+	entries[1].object_index = (int)0xE1740005UL;
+	/* (a datum handle's salt is bit 31, so a key is negative: only -1 and -2 are not keys) */
+	entries[2].object_index = -1;
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	profile_net_entries(0, SAMPLE_ENTRY_TYPE, entries, 3, sizeof(struct sample_entry));
+	entries[0].player_index = 3;
+	profile_net_entries(0, SAMPLE_PLAYER_TYPE, entries, 1, sizeof(struct sample_entry));
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	for (index = 0; index < row_count; index++)
+	{
+		if (rows[index].table != _profile_net_table_entries)
+			continue;
+		if (rows[index].type == SAMPLE_ENTRY_TYPE && rows[index].key == (int)0xE1740005UL)
+		{
+			bytes[0] += rows[index].values[0];
+			check(rows[index].values[1] == 2, "a handle's entries are counted under it");
+		}
+		else if (rows[index].type == SAMPLE_ENTRY_TYPE && rows[index].key == PROFILE_NET_KEY_NONE)
+		{
+			bytes[1] += rows[index].values[0];
+			none_rows++;
+		}
+		else if (rows[index].type == SAMPLE_PLAYER_TYPE && rows[index].key == 3)
+		{
+			bytes[2] += rows[index].values[0];
+		}
+	}
+	check(bytes[0] == 48 && bytes[1] == 24 && none_rows == 1 && bytes[2] == 24,
+		"a keyed entry counts its size under its key; -1 is no key, a player's index is");
+	for (index = 0; index < (unsigned long)snapshot.objects; index++)
+	{
+		const struct profile_net_object_entry *object = profile_net_object_entry((long)index);
+
+		if (object->key == (int)0xE1740005UL)
+			described++;
+		if (object->key == PROFILE_NET_KEY_NONE || object->key == 3)
+			keyed_players++;
+	}
+	check(described == 1 && keyed_players == 0, "a handle is described once; -1 and a player's index are no objects");
+	profile_net_recording_end();
+}
+
+/* the netcode's measured put (network_distributed.c's macro, extracted by
+test_profile.py): the bytes it writes are the plain function's, each
+argument is evaluated once, and a recording counts the field under its
+member's name once its entry is added */
+static unsigned char *distributed_put(unsigned char *cursor, void const *data, short size)
+{
+	memcpy(cursor, data, (size_t)size);
+	return cursor + size;
+}
+
+#include DISTRIBUTED_PUT_MACRO
+
+static int put_calls;
+
+static int put_argument(int value)
+{
+	put_calls++;
+	return value;
+}
+
+static void put_checks(void)
+{
+	struct profile_net_row rows[256];
+	struct profile_net_snapshot snapshot;
+	struct { int position[3]; short flags; unsigned char control[2]; } state = { { 1, 2, 3 }, 4, { 5, 6 } };
+	unsigned char measured[64], plain[64], *cursor, *other;
+	unsigned long row_count, index, position = 0, control = 0, header = 0;
+	long first_interval, intervals;
+	int round;
+
+	/* not recording: the same bytes, each argument evaluated once, nothing counted */
+	memset(measured, 0xEE, sizeof(measured));
+	memset(plain, 0xEE, sizeof(plain));
+	put_calls = 0;
+	cursor = measured;
+	for (round = 0; round < 2; round++)
+	{
+		cursor = distributed_put(cursor + put_argument(0), &state.position, (short)put_argument(sizeof(state.position)));
+		cursor = distributed_put(cursor, &state.flags, sizeof(state.flags));
+		cursor = distributed_put(cursor, &state.control[1], sizeof(state.control[1]));
+	}
+	other = plain;
+	for (round = 0; round < 2; round++)
+	{
+		memcpy(other, &state.position, sizeof(state.position));
+		other += sizeof(state.position);
+		memcpy(other, &state.flags, sizeof(state.flags));
+		other += sizeof(state.flags);
+		memcpy(other, &state.control[1], 1);
+		other += 1;
+	}
+	check(put_calls == 4, "a put evaluates its cursor and its size once");
+	check(cursor - measured == other - plain && memcmp(measured, plain, sizeof(measured)) == 0,
+		"the measured put writes the bytes the plain one does");
+
+	/* recording: an entry's puts are counted when it is added, dropped when it is not; what they leave is the header */
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	put_calls = 0;
+	cursor = distributed_put(measured, &state.position, (short)put_argument(sizeof(state.position)));
+	cursor = distributed_put(cursor, &state.control[0], sizeof(state.control[0]));
+	check(put_calls == 1, "a recording evaluates the size once too");
+	check(memcmp(measured, &state.position, sizeof(state.position)) == 0 && measured[12] == 5 && cursor == measured + 13,
+		"and writes the same bytes");
+	profile_net_packed_entry(0, 2, 1, 15, 1);
+	cursor = distributed_put(measured, &state.control[1], sizeof(state.control[1]));
+	profile_net_packed_entry(0, 2, 1, 1, 0);
+	cursor = distributed_put(measured, &state.position, sizeof(state.position));
+	profile_net_packed_entry(0, 2, 2, 14, 1);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	for (index = 0; index < row_count; index++)
+	{
+		const struct profile_net_field_entry *field;
+
+		if (rows[index].table != _profile_net_table_field_bytes)
+			continue;
+		field = profile_net_field_entry(rows[index].site);
+		if (strcmp(field->name, "position") == 0)
+			position += rows[index].values[0];
+		else if (strcmp(field->name, "control") == 0)
+			control += rows[index].values[0];
+		else if (strcmp(field->name, "header") == 0)
+			header += rows[index].values[0];
+	}
+	check(position == 24 && control == 1 && header == 4, "the fields of the added entries are counted by member, the rest as header");
+	profile_net_recording_end();
+}
+
+/* the sum of one value of a table's rows */
+static unsigned long net_table_sum(struct profile_net_row const *rows, unsigned long count, int table, int value)
+{
+	unsigned long index, total = 0;
+
+	for (index = 0; index < count; index++)
+	{
+		if (rows[index].table == table)
+			total += rows[index].values[value];
+	}
+	return total;
+}
+
+struct site_reader
+{
+	long count;
+	long bad;
+};
+
+static void *site_reader_thread(void *argument)
+{
+	struct site_reader *reader = argument;
+	long index;
+
+	for (index = 0; index < reader->count; index++)
+	{
+		struct profile_net_site_entry const *entry = profile_net_site_entry((int)index);
+
+		if (!entry || !entry->function || !entry->function[0])
+			reader->bad++;
+	}
+	return NULL;
+}
+
+static void net_sender_checks(void)
+{
+	struct profile_net_row rows[256];
+	struct profile_net_snapshot snapshot;
+	struct site_reader reader;
+	pthread_t thread;
+	unsigned long row_count, index, failed = 0;
+	long first_interval, intervals;
+	int sender, last = 0;
+	/* (a site keeps its function name's pointer) */
+	static char names[MAXIMUM_PROFILE_NET_SITES + 8][24];
+
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	/* every batch index the netcode has: a client's messages to its host go
+	out as sender 128 (HOST_SENDER) */
+	for (sender = 127; sender <= 128; sender++)
+	{
+		profile_net_batch_append(sender, sender == 128 ? PROFILE_NET_HOST : sender, 6, 50, 2);
+		profile_net_batch_flush(sender, sender == 128 ? PROFILE_NET_HOST : sender, 58, 1);
+	}
+	/* a flush that failed books its reason and not its messages, and the next
+	flush starts without the reason */
+	profile_net_batch_append(5, 5, 6, 50, 2);
+	profile_net_send_failed(_profile_net_failure_no_connection);
+	profile_net_batch_flush(5, 5, 58, 0);
+	profile_net_batch_append(5, 5, 6, 20, 1);
+	profile_net_batch_flush(5, 5, 28, 0);
+	profile_net_batch_append(5, 5, 6, 20, 1);
+	profile_net_batch_flush(5, 5, 28, 1);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_table_sum(rows, row_count, _profile_net_table_messages, 0) == 2 * 58 + 28,
+		"messages of the last sender indices are counted, those of a failed flush are not");
+	check(net_table_sum(rows, row_count, _profile_net_table_datagrams, 0) == 2 * 58 + 58 + 28 + 28, "datagrams of every flush");
+	for (index = 0; index < row_count; index++)
+	{
+		if (rows[index].table == _profile_net_table_send_failures)
+		{
+			failed++;
+			check(rows[index].aux == (rows[index].values[1] == 58 ? _profile_net_failure_no_connection :
+				_profile_net_failure_write_failed), "a failure's reason is reset after its flush");
+		}
+	}
+	check(failed == 2, "two failed flushes, two rows");
+	profile_net_recording_end();
+
+	/* sites are interned outside a recording and stay valid across them. The
+	table is fixed and an entry is written before the count passes it, so the
+	writer's reads below a part's count are safe with a concurrent append; a
+	full table answers NO_SITE, which is not negative, so a call site's static
+	id does not look it up again */
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	reader.count = snapshot.sites;
+	reader.bad = 0;
+	check(reader.count >= 2, "sites are known at the part's cut");
+	pthread_create(&thread, NULL, site_reader_thread, &reader);
+	for (index = 0; index < MAXIMUM_PROFILE_NET_SITES + 8; index++)
+	{
+		snprintf(names[index], sizeof(names[index]), "late%lu", index);
+		last = profile_net_site(names[index], 100000 + (long)index);
+	}
+	pthread_join(thread, NULL);
+	profile_net_recording_end();
+	check(reader.bad == 0, "a part reads its sites while the game thread adds");
+	check(last == PROFILE_NET_NO_SITE, "a full sites table answers no site");
+}
+
+/* the report's invariant (the datagrams handed on are the message rows and
+the header) must not break where the netcode's batches and the recording
+disagree: a batch begun before the recording, and one the netcode threw away */
+static void net_batch_seam_checks(void)
+{
+	struct profile_net_row rows[64];
+	struct profile_net_snapshot snapshot;
+	unsigned long row_count;
+	long first_interval, intervals;
+
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 64, 0, 0);
+	/* the batch held 50 bytes past its header when the recording began: only
+	the 20 after are seen, and the datagram is 8 + 50 + 20 */
+	profile_net_batch_append(3, 3, 6, 20, 1);
+	profile_net_batch_flush(3, 3, 78, 1);
+	profile_net_batch_append(3, 3, 6, 20, 1);
+	profile_net_batch_flush(3, 3, 28, 1);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_table_sum(rows, row_count, _profile_net_table_datagrams, 0) == 28 &&
+		net_table_sum(rows, row_count, _profile_net_table_messages, 0) == 28,
+		"a batch that began before the recording is not booked, the next one is");
+
+	/* new_game empties the batches without a flush: the rows pending for them go too */
+	profile_net_part_begin(rows, 64, 1000000000ULL, 0);
+	profile_net_batch_append(4, 4, 6, 50, 1);
+	profile_net_batch_discard(4);
+	profile_net_batch_append(4, 4, 6, 20, 1);
+	profile_net_batch_flush(4, 4, 28, 1);
+	profile_net_part_end(2000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	check(net_table_sum(rows, row_count, _profile_net_table_datagrams, 0) == 28 &&
+		net_table_sum(rows, row_count, _profile_net_table_messages, 0) == 28,
+		"the rows of a batch the netcode threw away are not added to the next one's");
+	profile_net_recording_end();
+
+	/* a flush that does not add up is expected in the recording's first second
+	only (its start, mid-batch): later it is counted, for the report to say */
+	{
+		struct profile_net_counts counts;
+
+		profile_net_recording_begin();
+		profile_net_part_begin(rows, 64, 0, 0);
+		profile_net_batch_append(3, 3, 6, 20, 1);
+		profile_net_batch_flush(3, 3, 99, 1);
+		profile_net_frame(1100000000ULL, 1);
+		profile_net_batch_append(3, 3, 6, 20, 1);
+		profile_net_batch_flush(3, 3, 99, 1);
+		profile_net_batch_append(3, 3, 6, 20, 1);
+		profile_net_batch_flush(3, 3, 28, 1);
+		profile_net_part_end(1200000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+		profile_net_counters(&counts);
+		check(counts.batches_unbooked == 1, "a flush that does not add up is counted after the first second, not in it");
+		profile_net_recording_end();
+	}
+}
+
 static void lifetime_checks(void)
 {
 	int cycle;
@@ -753,6 +1355,7 @@ static void file_checks(const char *folder)
 	struct profile_trace_status status;
 	int frame_index;
 	int quoted;
+	unsigned char entries[8];
 
 	fake_folder = folder;
 	profile_trace_set_writer(NULL);
@@ -782,6 +1385,15 @@ static void file_checks(const char *folder)
 		advance(100);
 		profile_trace_end(name_aggregate_child);
 		profile_trace_end(name_texture);
+		/* (salted datum handles are negative: the part's entries and objects tables carry them as they are) */
+		{
+			int handle = (int)(0xE1740000UL + (unsigned long)(frame_index % 5));
+
+			memcpy(entries, &handle, 4);
+			profile_net_entries(0, 6, entries, 1, 8);
+		}
+		profile_net_field_put(profile_net_field("&state->position"), 12);
+		profile_net_packed_entry(0, 2, 1, 20, 1);
 		profile_trace_begin(quoted);
 		advance(10);
 		profile_trace_end(quoted);
@@ -842,6 +1454,79 @@ static void unwritable_checks(const char *folder)
 	fake_folder = folder;
 }
 
+/* what the received table holds for one type, reason and machine: bytes and
+messages */
+static void received_row(struct profile_net_row const *rows, unsigned long count, int type, int reason, int machine,
+	unsigned long *bytes, unsigned long *messages)
+{
+	unsigned long index;
+
+	*bytes = *messages = 0;
+	for (index = 0; index < count; index++)
+	{
+		if (rows[index].table == _profile_net_table_received && rows[index].type == type &&
+			rows[index].aux == reason && rows[index].machine == machine)
+		{
+			*bytes += rows[index].values[0];
+			*messages += rows[index].values[1];
+		}
+	}
+}
+
+/* the receive path's rows: a message by its type, each drop reason beside
+its message's row, a batch's header and its inner messages, and machines at
+the top of the netcode's range and the host's own (a client's NONE) */
+static void net_received_checks(void)
+{
+	struct profile_net_row rows[256];
+	struct profile_net_snapshot snapshot;
+	unsigned char message[64] = { 0 };
+	unsigned long row_count, bytes, messages;
+	long first_interval, intervals;
+	int reason;
+
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 256, 0, 0);
+	message[2] = 6;
+	message[3] = 3;
+	profile_net_received(127, message, 40, _profile_net_received_message, _profile_net_drop_handled);
+	profile_net_received(127, message, 40, _profile_net_received_message, _profile_net_drop_handled);
+	for (reason = _profile_net_drop_not_in_game; reason < NUMBER_OF_PROFILE_NET_DROPS; reason++)
+		profile_net_received(PROFILE_NET_HOST, message, 10 * reason, _profile_net_received_message, reason);
+	/* a datagram shorter than a message header: a type of its own */
+	profile_net_received(PROFILE_NET_HOST, message, 3, _profile_net_received_message, _profile_net_drop_bad_size);
+	/* a batch's datagram is its header; the messages in it are inner, and a
+	length that did not fit drops the batch's rest */
+	message[2] = PROFILE_NET_BATCH_HEADER;
+	profile_net_received(5, message, 100, _profile_net_received_batch, _profile_net_drop_handled);
+	profile_net_received(5, message, 100, _profile_net_received_batch, _profile_net_drop_bad_size);
+	message[2] = 6;
+	profile_net_received(5, message, 30, _profile_net_received_inner, _profile_net_drop_handled);
+	profile_net_received(5, message, 20, _profile_net_received_inner, _profile_net_drop_stale);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+
+	received_row(rows, row_count, 6, _profile_net_drop_handled, 127, &bytes, &messages);
+	check(bytes == 80 && messages == 2, "received messages of the top machine are counted by type");
+	received_row(rows, row_count, 6, _profile_net_drop_handled, PROFILE_NET_HOST, &bytes, &messages);
+	check(messages == NUMBER_OF_PROFILE_NET_DROPS - 1, "each dropped message keeps its row beside its reason row");
+	for (reason = _profile_net_drop_not_in_game; reason < NUMBER_OF_PROFILE_NET_DROPS; reason++)
+	{
+		received_row(rows, row_count, 6, reason, PROFILE_NET_HOST, &bytes, &messages);
+		check(bytes == (unsigned long)(10 * reason) && messages == 1, "a drop reason has a row of its message's bytes");
+	}
+	received_row(rows, row_count, 255, _profile_net_drop_bad_size, PROFILE_NET_HOST, &bytes, &messages);
+	check(bytes == 3 && messages == 1, "a datagram shorter than a header is its own type, dropped as bad_size");
+	received_row(rows, row_count, PROFILE_NET_BATCH_HEADER, _profile_net_drop_handled, 5, &bytes, &messages);
+	check(bytes == 2 * PROFILE_NET_MESSAGE_HEADER_SIZE && messages == 2, "a batch counts its header, not its datagram");
+	received_row(rows, row_count, PROFILE_NET_BATCH_HEADER, _profile_net_drop_bad_size, 5, &bytes, &messages);
+	check(bytes == 100 && messages == 1, "a batch that did not fit is dropped as bad_size on its header row");
+	received_row(rows, row_count, 6, _profile_net_drop_handled, 5, &bytes, &messages);
+	check(bytes == 50 && messages == 2, "a batch's inner messages are counted by their own type");
+	received_row(rows, row_count, 6, _profile_net_drop_stale, 5, &bytes, &messages);
+	check(bytes == 20 && messages == 1, "an inner message keeps its drop reason");
+	profile_net_recording_end();
+}
+
 static int refusing_writer_start(void)
 {
 	return 0;
@@ -877,7 +1562,7 @@ static void release_path_checks(void)
 			check(outstanding() == 0, text);
 			check(status.state == _profile_trace_idle, text);
 			check(strstr(last_notice, fail == 0 ? "no memory for 4 MB" : "the writer thread cannot start") != NULL, text);
-			check(!profile_trace_recording(), text);
+			check(!profile_net_recording && !profile_trace_recording(), text);
 			frame(1);
 			profile_trace_status(&status);
 			check(status.state == _profile_trace_idle && outstanding() == 0, text);
@@ -942,6 +1627,52 @@ static void worst_frame_checks(void)
 		"the worst frame runs its two ticks under game_time_update and names the scopes with the most time of their own");
 	check(row && strstr(row, "[1, 0.100, 5.000, 0, []]"), "a frame with no scopes in it has no ticks and no longest");
 	free(part);
+}
+
+/* the tables that cannot grow past their sizes count what no longer fits (the
+header carries it to the report), and keep every machine the netcode has */
+static void net_table_overflow_checks(void)
+{
+	static const struct profile_net_layout_member filler[] = { { "filler", 0, 4, _profile_net_key_none } };
+	struct profile_net_row *rows = calloc(20000, sizeof(*rows));
+	struct profile_net_snapshot snapshot;
+	struct profile_net_counts counts;
+	unsigned long row_count;
+	long first_interval, intervals;
+	unsigned char entries[8];
+	char name[24];
+	int index;
+
+	profile_net_recording_begin();
+	profile_net_part_begin(rows, 20000, 0, 0);
+	for (index = 0; index < MAXIMUM_PROFILE_NET_OBJECTS + 10; index++)
+	{
+		int handle = (int)(0x80000000UL + (unsigned long)index);
+
+		memset(entries, 0, sizeof(entries));
+		memcpy(entries, &handle, 4);
+		profile_net_entries(0, 6, entries, 1, 8);
+	}
+	for (index = 0; index < MAXIMUM_PROFILE_NET_FIELDS + 5; index++)
+	{
+		snprintf(name, sizeof(name), "overflow_%d", index);
+		profile_net_field(name);
+	}
+	for (index = 0; index < MAXIMUM_PROFILE_NET_TYPES + 5; index++)
+		profile_net_layout(200 + index % 50, filler, 1, 4);
+	profile_net_part_end(1000000000ULL, &row_count, &first_interval, &intervals, &snapshot);
+	profile_net_counters(&counts);
+	check(snapshot.objects == MAXIMUM_PROFILE_NET_OBJECTS && counts.objects_overflowed == 10,
+		"object keys past the table are counted");
+	check(counts.fields_overflowed >= 5, "field names past the table are counted");
+	check(counts.layouts_overflowed >= 5, "layouts past the table are counted");
+	check(counts.sites_overflowed >= 8, "sending sites past the table are counted (net_sender_checks filled it)");
+	/* (the run's tables: the count stays until the process ends, in every part) */
+	profile_net_counters(&counts);
+	check(counts.sites_overflowed >= 8 && counts.fields_overflowed >= 5,
+		"a recording's counts start over at each part, the run's tables' do not");
+	profile_net_recording_end();
+	free(rows);
 }
 
 /* the reset race: a p2p pass begun in one recording ends, from inside
@@ -1013,6 +1744,53 @@ static void reset_race_checks(void)
 	profile_trace_set_allocator(fake_allocate, fake_release);
 }
 
+/* a thread that is not the game's reaches a funnel hook while recordings
+start and stop: its events are counted, and ThreadSanitizer sees no race on
+the flag or the counter */
+static int foreign_stop;
+static long foreign_calls;
+
+static void *foreign_thread(void *unused)
+{
+	(void)unused;
+	while (!__atomic_load_n(&foreign_stop, __ATOMIC_RELAXED))
+	{
+		profile_net_built(6);
+		__atomic_fetch_add(&foreign_calls, 1, __ATOMIC_RELAXED);
+		usleep(10);
+	}
+	return NULL;
+}
+
+static void foreign_thread_checks(void)
+{
+	pthread_t thread;
+	unsigned long counted = 0;
+	int round, index;
+
+	foreign_stop = 0;
+	pthread_create(&thread, NULL, foreign_thread, NULL);
+	for (round = 0; round < 20; round++)
+	{
+		forget_written();
+		profile_trace_request_start(0.0, _profile_trace_when_now, 4);
+		for (index = 0; index < 50; index++)
+		{
+			frame(2);
+			usleep(200);
+		}
+		profile_trace_request_stop();
+		profile_trace_frame_boundary();
+		finish();
+		counted += written.foreign_events;
+	}
+	__atomic_store_n(&foreign_stop, 1, __ATOMIC_RELAXED);
+	pthread_join(thread, NULL);
+	/* (a thousand frames of 200 us with a call every 10 us: the thread cannot miss every recording) */
+	check(counted > 0, "an event of the foreign thread is counted while recording");
+	check(foreign_calls > 0 && outstanding() == 0, "the foreign thread ran, and nothing is left allocated");
+}
+
 int main(int argc, char **argv)
 {
 	profile_trace_set_clock(fake_clock);
@@ -1044,11 +1822,20 @@ int main(int argc, char **argv)
 	state_checks();
 	stop_answer_checks();
 	part_checks();
+	net_checks();
+	layout_checks();
+	put_checks();
+	net_sender_checks();
+	net_batch_seam_checks();
+	net_received_checks();
+	reliable_entry_checks();
 	straddle_checks();
 	lifetime_checks();
+	net_table_overflow_checks();
 	worst_frame_checks();
 	release_path_checks();
 	reset_race_checks();
+	foreign_thread_checks();
 	if (argc > 1)
 	{
 		file_checks(argv[1]);

@@ -310,6 +310,19 @@ static void profile_trace_open_part(
 	profile_trace_globals.current = arena;
 }
 
+static void profile_trace_open_rows(
+	int arena,
+	unsigned long long now)
+{
+	char *base = profile_trace_globals.arenas[arena];
+	unsigned long scope_bytes = profile_trace_globals.game_bytes + profile_trace_globals.p2p_bytes;
+
+	profile_trace_globals.parts[arena].rows = (struct profile_net_row *)(base + scope_bytes);
+	profile_net_part_begin(profile_trace_globals.parts[arena].rows,
+		(profile_trace_globals.arena_size - scope_bytes) / sizeof(struct profile_net_row),
+		now - profile_trace_globals.origin, profile_trace_globals.tick);
+}
+
 static void profile_trace_emit_aggregates(
 	void)
 {
@@ -372,6 +385,8 @@ static void profile_trace_cut(
 	/* (read under the lock, after the wait for the writer: the p2p thread appends to this
 	arena until here, and every record it appended ended before this time) */
 	now = profile_trace_seams.now();
+	profile_net_part_end(now - profile_trace_globals.origin, &part->row_count, &part->first_interval,
+		&part->intervals, &part->net);
 	for (track = 0; track < NUMBER_OF_PROFILE_TRACKS; track++)
 	{
 		struct profile_trace_track *source = &profile_trace_tracks[track];
@@ -411,18 +426,23 @@ static void profile_trace_cut(
 	strcpy(part->start_utc, profile_trace_globals.start_utc);
 	part->clock_read_ns = profile_trace_globals.clock_read_ns;
 	part->memory_used = (unsigned long)(part->record_counts[0] + part->record_counts[1]) *
-		sizeof(struct profile_trace_record);
+		sizeof(struct profile_trace_record) + part->row_count * sizeof(struct profile_net_row);
 	part->memory_limit = profile_trace_globals.arena_size;
 	part->writer_wait_ms = profile_trace_globals.writer_wait_ms;
 	part->foreign_scopes = __atomic_exchange_n(&profile_trace_foreign_scopes, 0, __ATOMIC_RELAXED);
+	profile_net_counters(&part->counts);
 	pthread_mutex_lock(&profile_trace_names_lock);
 	part->name_count = profile_trace_name_count;
 	pthread_mutex_unlock(&profile_trace_names_lock);
 
-	if (!last && waited)
+	if (!last)
 	{
-		profile_trace_append(&profile_trace_tracks[_profile_track_game], wait_start - profile_trace_globals.origin,
-			now - wait_start, profile_trace_wait_name, 0);
+		profile_trace_open_rows(next, now);
+		if (waited)
+		{
+			profile_trace_append(&profile_trace_tracks[_profile_track_game], wait_start - profile_trace_globals.origin,
+				now - wait_start, profile_trace_wait_name, 0);
+		}
 	}
 
 	pthread_mutex_lock(&profile_trace_globals.writer_lock);
@@ -433,6 +453,7 @@ static void profile_trace_cut(
 
 	if (last)
 	{
+		profile_net_recording_end();
 		profile_trace_globals.state = _profile_trace_finishing;
 		profile_trace_log("writing %s, %ld parts", profile_trace_globals.name, profile_trace_globals.part_number);
 	}
@@ -469,7 +490,7 @@ static void profile_trace_start_recording(
 {
 	unsigned long long memory = (unsigned long long)profile_trace_globals.memory_megabytes * 1024 * 1024;
 	unsigned long size = (unsigned long)(memory / 2) & ~63UL;
-	unsigned long scope_bytes = size;
+	unsigned long scope_bytes = size / 4 * 3;
 	unsigned long long now;
 	int track, sample;
 
@@ -493,7 +514,7 @@ static void profile_trace_start_recording(
 		return;
 	}
 	profile_trace_globals.arena_size = size;
-	/* the scopes: seven eighths the game track's, an eighth
+	/* the scopes' three quarters: seven eighths the game track's, an eighth
 	the p2p track's (whole records each) */
 	profile_trace_globals.game_bytes = scope_bytes / 8 * 7 / sizeof(struct profile_trace_record) *
 		sizeof(struct profile_trace_record);
@@ -523,6 +544,7 @@ static void profile_trace_start_recording(
 	now = profile_trace_seams.now();
 	profile_trace_globals.origin = now;
 	profile_trace_globals.frame_start = now;
+	profile_net_recording_begin();
 	profile_trace_seams.lock();
 	/* (under the lock: a p2p pass of the last recording may end, and count, meanwhile) */
 	for (track = 0; track < NUMBER_OF_PROFILE_TRACKS; track++)
@@ -533,12 +555,14 @@ static void profile_trace_start_recording(
 	}
 	profile_trace_open_part(0, now);
 	profile_trace_seams.unlock();
+	profile_trace_open_rows(0, now);
 	if (!profile_trace_seams.start_writer())
 	{
 		profile_trace_seams.lock();
 		for (track = 0; track < NUMBER_OF_PROFILE_TRACKS; track++)
 			profile_trace_tracks[track].records = NULL;
 		profile_trace_seams.unlock();
+		profile_net_recording_end();
 		profile_trace_seams.release(profile_trace_globals.arenas[0]);
 		profile_trace_seams.release(profile_trace_globals.arenas[1]);
 		profile_trace_globals.arenas[0] = profile_trace_globals.arenas[1] = NULL;
@@ -635,6 +659,12 @@ void profile_trace_thread_register(
 		return;
 	profile_trace_tracks[track].index = track;
 	profile_trace_thread_track = &profile_trace_tracks[track];
+}
+
+int profile_trace_on_game_thread(
+	void)
+{
+	return profile_trace_thread_track == &profile_trace_tracks[_profile_track_game];
 }
 
 int profile_trace_name(
@@ -813,6 +843,7 @@ void profile_trace_frame_boundary(
 		profile_trace_emit_aggregates();
 		profile_trace_globals.frame++;
 		profile_trace_globals.frame_start = now;
+		profile_net_frame(now - profile_trace_globals.origin, profile_trace_globals.tick);
 		if (!profile_trace_globals.stop_reason && profile_trace_globals.seconds > 0.0 &&
 			(double)(now - profile_trace_globals.origin) >= profile_trace_globals.seconds * 1000000000.0)
 		{
@@ -823,7 +854,7 @@ void profile_trace_frame_boundary(
 			profile_trace_cut(1, profile_trace_globals.stop_reason);
 		}
 		else if (profile_trace_track_full(&profile_trace_tracks[_profile_track_game]) ||
-			profile_trace_track_full(&profile_trace_tracks[_profile_track_p2p]))
+			profile_trace_track_full(&profile_trace_tracks[_profile_track_p2p]) || profile_net_part_full())
 		{
 			profile_trace_cut(0, _profile_trace_stop_none);
 		}
@@ -843,9 +874,17 @@ void profile_trace_frame_boundary(
 void profile_trace_tick(
 	void)
 {
+	struct profile_trace_track *game = &profile_trace_tracks[_profile_track_game];
+	unsigned long out, in;
+	unsigned long long now;
+
 	if (profile_trace_globals.state != _profile_trace_recording)
 		return;
 	profile_trace_globals.tick++;
+	profile_net_take_tick_bytes(&out, &in);
+	now = profile_trace_seams.now() - profile_trace_globals.origin;
+	profile_trace_append(game, now, out, 0, PROFILE_TRACE_DEPTH_NET_OUT);
+	profile_trace_append(game, now, in, 0, PROFILE_TRACE_DEPTH_NET_IN);
 }
 
 int profile_trace_request_start(

@@ -11,6 +11,9 @@ Connect profiling commands and launch settings to game recordings.
 #include "game/game_engine.h"
 #include "main/console.h"
 #include "networking/network_game_globals.h"
+#include "objects/objects.h"
+#include "objects/object_types.h"
+#include "tag_files/tag_files.h"
 #include "network_distributed.h"
 #include "profile_console.h"
 #include "profile_console_gametype.h"
@@ -161,6 +164,36 @@ static void profile_console_sample_session(
 			session->players++;
 }
 
+/* an object's type and its definition's tag name, the first time a
+recording sees its datum index (networked objects have the same index on
+every machine); FALSE when no object has it any more, or the key is not a
+handle: a real one has a salt (above bit 15), and a key without one (a
+cutscene flag's index, in a coop event) would have datum_try_and_get skip its
+salt check and name whatever object is in that slot. Not between maps, when
+the objects' array is gone or not valid */
+static int profile_console_describe(
+	long key,
+	char *object_type,
+	int object_type_size,
+	char *tag,
+	int tag_size)
+{
+	struct object_datum *object;
+	char const *name;
+
+	if ((key >> 16) == 0 || !object_header_data || !object_header_data->valid)
+		return FALSE;
+	object = object_try_and_get(key);
+	if (!object)
+		return FALSE;
+	strncpy(object_type, object_type_get_name(object->object.type), object_type_size - 1);
+	object_type[object_type_size - 1] = 0;
+	name = tag_get_name(object->definition_index);
+	strncpy(tag, name ? name : "", tag_size - 1);
+	tag[tag_size - 1] = 0;
+	return TRUE;
+}
+
 /* the recording's seams. Not left to the first frame: init.txt's
 profile_record is handled before it, and the recording's name (folder and
 role) is chosen from the session when it is requested */
@@ -176,6 +209,8 @@ static void profile_console_install(
 	profile_trace_set_session(profile_console_session);
 	profile_trace_set_session_sampler(profile_console_sample_session);
 	profile_trace_set_track_lock(p2p_profile_lock, p2p_profile_unlock);
+	network_distributed_profile_register();
+	profile_net_set_object_describe(profile_console_describe);
 	/* (the window's close, debug.exit_after and XLaunchNewImage end the
 	process with exit(), which main_exit never sees) */
 	atexit(profile_trace_shutdown);
@@ -217,6 +252,7 @@ void profile_console_launch(
 	strcpy(profile_console_map, profile_console_next_map);
 	profile_console_install();
 	profile_trace_thread_register(_profile_track_game);
+	platform_log("profile: network version %d", HALO_PORT_NETWORK_VERSION);
 	if (strcmp(when, "start") != 0 && strcmp(when, "game") != 0)
 		platform_log("profile: debug.profile_record_when is \"%s\": \"start\" taken", when);
 	if (config_boolean("debug.profile_record"))

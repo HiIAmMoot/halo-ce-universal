@@ -114,7 +114,7 @@ Give these options to `configure.py`:
 | `--lto=thin`, `--lto=off` | Less link-time optimization. The link is faster. |
 | `--pgo=off` | No profile-guided optimization. |
 | `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
-| `--profile` | A profiling build. It records CPU times. Refer to "Profiling builds". |
+| `--profile` | A profiling build. It records CPU times, network messages and fields. Refer to "Profiling builds". |
 
 Without `--portable`, the Linux and Windows builds use all the instructions
 of the processor that builds them (`-march=native`). Such a build does not
@@ -142,7 +142,9 @@ data must be in `assets/`.
 
 ### Profiling builds
 
-A profiling build records where the game spends its time.
+A profiling build records where the game spends its time and where its
+message and field bytes go. Connection and tunnel measurements are not yet
+recorded.
 
 1. Enter `python configure.py --profile`, then build as usual.
 2. Start a recording. Enter `profile_record` in the console (or the telnet

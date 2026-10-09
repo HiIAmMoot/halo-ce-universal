@@ -4,7 +4,8 @@
 # map: levels\a30\a30, players: 3 at start, 4 most
 # recorded: 2026-10-05 14:22:33 UTC, 6.0 s, 180 ticks, 360 frames, stopped: command
 # problems: none
-# units: ms = milliseconds
+# units: ms = milliseconds; B/s = bytes per second, mean over the recording (or the # window);
+#        KB/s = 1000 B/s; % = share of a table's total (see share%)
 
 ## columns
 scope        CPU scope name (a profile section or frame timer); nested names use "."
@@ -19,6 +20,23 @@ at_s         seconds from the start of the recording to that frame
 frame_ms     that frame's duration
 ticks        game ticks that frame ran
 longest scopes (ms)  the frame's three scopes, at any depth, with the most time of their own (children not counted), name and that time
+B/s          bytes per second, mean over the selected seconds
+dir          out or in
+type         distributed message type (the netcode's message kind)
+msgs/s       messages per second (a message split across datagrams counts per piece)
+entries/s    entries (objects, players, events) per second
+bytes/msg    B/s / msgs/s
+share%       message types: share of that direction's B/s; fields: share of that message type's field B/s
+function:line  sending function and source line that decided to send
+built/s      messages built per second, before fan-out to machines
+sent/s       messages sent per second, summed over machines
+handler      receiving function that handles the type
+dropped/s    received messages discarded before their handler, per second (also counted in the received tables' msgs/s and B/s)
+reason       why a received message was discarded: not_in_game (loading or menus), bad_type, bad_size (shorter than its header or entries; on batch_header a batch cut short, its whole datagram counted), wrong_direction (a host message from a client or the reverse), stale (older than one already taken), fast_clock (a prediction from a machine whose game runs fast)
+object_type  biped, vehicle, weapon, equipment, ...; player = a player's entries, other = objects past the key limit, unknown = a handle with no object row (also object keys past the table, counted per interval: see problems)
+tag          the object type's definition's tag name
+field        part of an entry; header = bytes written outside the named fields
+source       measured = counted as written; layout = member size x entries
 
 ## cpu scopes (top 40 by total_ms)
 scope                     count  total_ms  mean_ms  max_ms  per_frame  per_tick_ms
@@ -33,3 +51,50 @@ frame  at_s  frame_ms  ticks  longest scopes (ms)
    12  0.20     40.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
   132  2.20     39.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
   252  4.20     38.20      2  game_tick.objects 12.1, render 9.8, network_distributed_tick 4.0
+
+## message types
+dir  type            msgs/s  entries/s   B/s  bytes/msg  share%
+out  object_states     60.0       60.0  2640       44.0    54.8
+out  unit_states       60.0      120.0  1200       20.0    24.9
+out  object_changes     1.0        4.0   500      500.0    10.4
+out  batch_header      60.0        0.0   480        8.0    10.0
+in   player_inputs     60.0       60.0  1800       30.0    78.9
+in   batch_header      60.0        0.0   480        8.0    21.1
+
+## sending functions
+function:line                       type            built/s  sent/s   B/s
+distributed_host_send_states:1112   object_states      30.0    60.0  2640
+distributed_host_send_players:2757  unit_states        30.0    60.0  1200
+network_objects_send_changes:700    object_changes      1.0     1.0   500
+
+## handlers (received)
+handler                    type           msgs/s   B/s  dropped/s
+distributed_handle_inputs  player_inputs    60.0  1800        2.0
+
+## dropped (received)
+type           reason  msgs/s
+player_inputs  stale      2.0
+
+## object types (top 15)
+object_type  tag                     entries/s   B/s
+biped        characters\elite\elite       30.0  1320
+vehicle      vehicles\ghost\ghost         30.0  1320
+other        -                             5.0   100
+player       -                             7.0   100
+unknown      -                             2.0    44
+
+## fields (top 10 per type)
+type           field                   source    B/s  share%
+object_states  position                layout    816    27.3
+object_states  angular_velocity        layout    408    13.6
+object_states  forward                 layout    408    13.6
+object_states  translational_velocity  layout    408    13.6
+object_states  up                      layout    408    13.6
+object_states  object_index            layout    272     9.1
+object_states  time                    layout    136     4.5
+object_states  flags                   layout     68     2.3
+object_states  pad                     layout     68     2.3
+unit_states    position                measured  720    60.0
+unit_states    header                  measured  480    40.0
+player_inputs  buttons                 layout     12    75.0
+player_inputs  player_index            layout      4    25.0

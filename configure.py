@@ -36,7 +36,7 @@ parser.add_argument(
 parser.add_argument(
     "--profile",
     action="store_true",
-    help="profiling builds (Linux, Windows, Android): CPU scopes recorded on a "
+    help="profiling builds (Linux, Windows, Android): CPU scopes and network message/field bytes recorded on a "
     "console command or launch setting (README, \"Profiling builds\"); not with --pgo=train",
 )
 parser.add_argument(
