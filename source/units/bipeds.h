@@ -103,6 +103,11 @@ typedef char biped_datum_size_assert[sizeof(struct biped_datum) == BIPED_DATUM_S
 settings; off, no biped keeps riding state */
 void bipeds_riding_latch(void);
 
+/* port: a biped that updates after the main loop, and a unit's velocity
+relative to the deck it rides (vehicle_riding.c) */
+boolean biped_riding_deferred(long biped_index);
+void biped_riding_relative_velocity(long unit_index, real_vector3d *velocity);
+
 char animation_left_foot_frame_index(
 	struct animation const *animation);
 char animation_right_foot_frame_index(

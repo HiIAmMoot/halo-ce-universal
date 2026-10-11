@@ -1606,6 +1606,81 @@ short collision_move_pill(
 	return result;
 }
 
+/* port: the features of one object taken out of a list */
+static void collision_features_remove_object(
+	struct collision_feature_list *features,
+	long object_index)
+{
+	short kept;
+	short index;
+
+	for (kept = 0, index = 0; index < features->count[_collision_feature_sphere]; index++)
+	{
+		if (features->spheres[index].object_index != object_index)
+			features->spheres[kept++] = features->spheres[index];
+	}
+	features->count[_collision_feature_sphere] = kept;
+	for (kept = 0, index = 0; index < features->count[_collision_feature_cylinder]; index++)
+	{
+		if (features->cylinders[index].object_index != object_index)
+			features->cylinders[kept++] = features->cylinders[index];
+	}
+	features->count[_collision_feature_cylinder] = kept;
+	for (kept = 0, index = 0; index < features->count[_collision_feature_prism]; index++)
+	{
+		if (features->prisms[index].object_index != object_index)
+			features->prisms[kept++] = features->prisms[index];
+	}
+	features->count[_collision_feature_prism] = kept;
+}
+
+/* port: a biped standing on a vehicle carried by the vehicle's motion
+(vehicle_riding.c): its pill moved as collision_move_pill moves it, through
+everything but that vehicle and itself, sliding along what it meets */
+void collision_move_pill_carry(
+	unsigned long flags,
+	real_point3d const *position,
+	real_vector3d const *displacement,
+	real height,
+	real radius,
+	long biped_index,
+	long vehicle_index,
+	real_point3d *carried_position)
+{
+	struct collision_feature_list features;
+	struct collision_plane collisions[16];
+	real_point3d start = *position;
+	real_point3d center;
+	real_vector3d clipped_velocity;
+
+	match_assert("c:\\halo\\SOURCE\\physics\\collisions.c", 1214, global_current_collision_user_depth < MAXIMUM_COLLISION_USER_STACK_DEPTH);
+	global_current_collision_users[global_current_collision_user_depth++] = 7;
+
+	center.x = start.x + displacement->i * 0.5f;
+	center.y = start.y + displacement->j * 0.5f;
+	center.z = height * 0.5f + (start.z + displacement->k * 0.5f);
+
+	if (collision_get_features_in_sphere(
+		flags,
+		&center,
+		magnitude3d(displacement) * 0.5f + height * 0.5f + radius,
+		height,
+		radius,
+		vehicle_index,
+		&features))
+	{
+		collision_features_remove_object(&features, biped_index);
+		collision_move_point(&start, displacement, &features, carried_position, &clipped_velocity, 16, collisions);
+	}
+	else
+	{
+		add_vectors3d((real_vector3d const *)&start, displacement, (real_vector3d *)carried_position);
+	}
+
+	match_assert("c:\\halo\\SOURCE\\physics\\collisions.c", 1230, global_current_collision_user_depth > 1);
+	--global_current_collision_user_depth;
+}
+
 /* ---------- private code */
 
 static boolean object_test_point(

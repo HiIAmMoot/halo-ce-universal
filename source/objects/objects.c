@@ -53,6 +53,7 @@ OBJECTS.C
 #include "sound/game_sound.h"
 #include "structures/structure_bsp_definitions.h"
 #include "units/units.h"
+#include "units/bipeds.h" /* port: vehicle riding */
 /* port: object_bounds_cache.c's */
 void object_bounds_cache_update(long object_index, real_point3d const *center, real radius);
 /* port: port/linux/game/first_person_legs.c's */
@@ -4531,11 +4532,11 @@ static void objects_update_passes(
 	}
 }
 
-/* port: no biped deferred until the riding wiring (vehicle_riding.c) */
+/* port: a biped in a vehicle's window updates after the main loop (vehicle_riding.c) */
 static boolean object_update_deferred(
 	long object_index)
 {
-	return FALSE;
+	return object_get_type(object_index) == _object_type_biped && biped_riding_deferred(object_index);
 }
 
 void objects_update(

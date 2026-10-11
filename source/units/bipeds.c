@@ -433,6 +433,19 @@ struct biped_physics
 	real_vector3d new_velocity;
 	real landing_velocity;
 	real collision_velocity;
+	/* port: (vehicle_riding.c) the deck it rides and the frame velocity the
+	seed took off; the deck it is tracked to in the window and that deck's
+	velocity at its spot; what it ended supported by, and that support's
+	velocity */
+	boolean riding_applies;
+	long riding_object_index;
+	real_vector3d riding_frame_velocity;
+	long tracked_object_index;
+	real_vector3d tracked_deck_velocity;
+	long support_object_index;
+	short support_node_index;
+	word pad_support;
+	real_vector3d support_velocity;
 };
 
 struct animation_frame_info_dx_dy
@@ -644,6 +657,232 @@ void bipeds_riding_latch(
 	{
 		biped_riding_clear(biped);
 	}
+}
+
+/* port: (vehicle_riding.c) */
+static boolean biped_riding_applies(
+	struct biped_datum const *biped)
+{
+	return vehicle_riding_applies(
+		biped->unit.player_index != NONE,
+		TEST_FLAG(biped->object.damage_flags, _object_dead_bit));
+}
+
+/* port: a vehicle as the riding code sees it, posed as its node (NONE: as
+itself); FALSE: none, or not a vehicle */
+static boolean biped_riding_vehicle(
+	long vehicle_index,
+	short node_index,
+	struct vehicle_riding_vehicle *vehicle)
+{
+	struct unit_datum *unit;
+
+	if (vehicle_index == NONE)
+		return FALSE;
+	unit = (struct unit_datum *)object_try_and_get_and_verify_type(vehicle_index, _object_mask_vehicle);
+	if (!unit)
+		return FALSE;
+	vehicle->object_index = vehicle_index;
+	vehicle->node_index = node_index;
+	object_get_origin(vehicle_index, &vehicle->origin);
+	if (node_index != NONE)
+	{
+		/* (the node's matrix as of the vehicle's last update: a turret its
+		gunner turned is posed where it turned) */
+		real_matrix4x3 const *matrix = object_get_node_matrix(vehicle_index, node_index);
+
+		vehicle->position = matrix->position;
+		vehicle->forward = matrix->forward;
+		vehicle->up = matrix->up;
+	}
+	else
+	{
+		vehicle->position = vehicle->origin;
+		object_get_orientation(vehicle_index, &vehicle->forward, &vehicle->up);
+	}
+	vehicle->updates = object_update_count(vehicle_index);
+	vehicle->translational_velocity = unit->object.translational_velocity;
+	vehicle->angular_velocity = unit->object.angular_velocity;
+	vehicle->bounding_sphere_center = unit->object.bounding_sphere_center;
+	vehicle->bounding_sphere_radius = unit->object.bounding_sphere_radius;
+	vehicle->has_player = unit->unit.player_index != NONE;
+	return TRUE;
+}
+
+/* port: the flags biped_update_physics sweeps a living biped with (the in flags
+biped_update_moving sets), for the carry */
+static unsigned long biped_riding_collision_flags(
+	struct biped_datum const *biped,
+	struct biped_definition const *definition)
+{
+	unsigned long flags = TEST_FLAG(definition->biped.flags, _biped_passes_through_bipeds_bit) ?
+		_collision_test_for_bipeds_passthrough_living_flags :
+		_collision_test_for_bipeds_living_flags;
+
+	if (biped->unit.player_index != NONE && !network_coop_player_collisions())
+		flags |= FLAG(_collision_test_skip_player_bipeds_bit);
+	return flags;
+}
+
+/* port: the pill base carried by the deck's motion */
+static void biped_riding_carry(
+	long biped_index,
+	struct biped_datum const *biped,
+	struct biped_definition const *definition,
+	long vehicle_index,
+	real_vector3d const *displacement,
+	struct biped_physics *physics)
+{
+	if (TEST_FLAG(biped->biped.flags, _biped_no_collision_bit))
+	{
+		physics->position.x += displacement->i;
+		physics->position.y += displacement->j;
+		physics->position.z += displacement->k;
+		return;
+	}
+	collision_move_pill_carry(
+		biped_riding_collision_flags(biped, definition),
+		&physics->position,
+		displacement,
+		physics->height,
+		physics->width,
+		biped_index,
+		vehicle_index,
+		&physics->position);
+}
+
+/* port: the biped's facing, aim and look turned by its vehicle's yaw, so this
+tick's movement follows the turned facing */
+static void biped_riding_turn(
+	struct biped_datum *biped,
+	struct biped_physics *physics,
+	real dyaw)
+{
+	vehicle_riding_turn_vector(&biped->object.forward, dyaw);
+	vehicle_riding_turn_vector(&biped->unit.desired_facing_vector, dyaw);
+	vehicle_riding_turn_vector(&biped->unit.desired_aiming_vector, dyaw);
+	vehicle_riding_turn_vector(&biped->unit.aiming_vector, dyaw);
+	vehicle_riding_turn_vector(&biped->unit.desired_looking_vector, dyaw);
+	vehicle_riding_turn_vector(&biped->unit.looking_vector, dyaw);
+	vehicle_riding_turn_vector(&physics->forward, dyaw);
+	vehicle_riding_turn_vector(&physics->aiming, dyaw);
+}
+
+/* port: the node of a vehicle's collision model under a contact: a short test
+from the pill's base, where the sweep reports it, down through the surface
+it stands on (as the melee test reads a hit's node); NONE when it finds
+nothing */
+static short biped_riding_support_node(
+	long vehicle_index,
+	struct collision_plane const *collision,
+	real width)
+{
+	struct collision_model_instance instance;
+	struct collision_model_test_vector_result result;
+	real_point3d start;
+	real_vector3d down;
+
+	start.x = collision->point.x + collision->plane.n.i*0.01f;
+	start.y = collision->point.y + collision->plane.n.j*0.01f;
+	start.z = collision->point.z + collision->plane.n.k*0.01f;
+	down.i = -collision->plane.n.i*(width*2.f + 0.05f);
+	down.j = -collision->plane.n.j*(width*2.f + 0.05f);
+	down.k = -collision->plane.n.k*(width*2.f + 0.05f);
+	if (collision_model_instance_new(&instance, vehicle_index) &&
+		collision_model_test_vector(
+			&instance,
+			FLAG(_collision_test_front_facing_surfaces_bit),
+			&start,
+			&down,
+			&result))
+	{
+		return result.node_index;
+	}
+	return NONE;
+}
+
+/* port: what the biped landed on, the node of it, and that support's velocity */
+static void biped_riding_support(
+	struct biped_physics *physics,
+	struct collision_plane const *collision)
+{
+	struct vehicle_riding_vehicle vehicle;
+	real_point3d contact;
+	real_vector3d other;
+
+	physics->support_object_index = NONE;
+	physics->support_node_index = NONE;
+	physics->support_velocity = *global_zero_vector3d;
+	if (!physics->riding_applies || !biped_riding_vehicle(collision->object_index, NONE, &vehicle))
+		return;
+	physics->support_object_index = collision->object_index;
+	physics->support_node_index = biped_riding_support_node(collision->object_index, collision, physics->width);
+	/* (at the surface it stands on: the sweep reports the pill's base, a width above it) */
+	contact.x = collision->point.x - collision->plane.n.i*physics->width;
+	contact.y = collision->point.y - collision->plane.n.j*physics->width;
+	contact.z = collision->point.z - collision->plane.n.k*physics->width;
+	vehicle_riding_deck_point_velocity(&vehicle, &contact, game_players_are_double_speed(), &other);
+	vehicle_riding_support_velocity(
+		collision->object_index,
+		physics->riding_object_index,
+		&physics->riding_frame_velocity,
+		physics->tracked_object_index,
+		&physics->tracked_deck_velocity,
+		&other,
+		&physics->support_velocity);
+}
+
+/* port: (vehicle_riding.c) */
+static real biped_riding_falling_velocity(
+	struct biped_datum const *biped)
+{
+	struct vehicle_riding_state riding;
+
+	biped_riding_get(biped, &riding);
+	return vehicle_riding_falling_velocity(&riding, biped->object.translational_velocity.k);
+}
+
+/* port: (vehicle_riding.c) */
+boolean biped_riding_deferred(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct vehicle_riding_state riding;
+
+	biped_riding_get(biped, &riding);
+	return vehicle_riding_deferred(&riding, biped_riding_applies(biped));
+}
+
+/* port: (vehicle_riding.c) */
+void biped_riding_relative_velocity(
+	long unit_index,
+	real_vector3d *velocity)
+{
+	struct biped_datum *biped = biped_try_and_get(unit_index);
+	struct vehicle_riding_state riding;
+
+	*velocity = object_get(unit_index)->object.translational_velocity;
+	if (!biped || !biped_riding_applies(biped))
+		return;
+	biped_riding_get(biped, &riding);
+	if (vehicle_riding_is_riding(&riding))
+	{
+		velocity->i -= riding.velocity.i;
+		velocity->j -= riding.velocity.j;
+		velocity->k -= riding.velocity.k;
+	}
+}
+
+/* port: a biped in a seat rides nothing, and its view is not turned */
+static void biped_riding_seated(
+	long biped_index,
+	struct biped_datum *biped)
+{
+	short local_player_index = biped->unit.player_index != NONE ? unit_get_local_player_index(biped_index) : NONE;
+
+	biped_riding_clear(biped);
+	if (local_player_index != NONE)
+		vehicle_riding_look(local_player_index, FALSE, 0.f);
 }
 
 void bipeds_initialize(
@@ -869,7 +1108,8 @@ static void biped_falling_damage(
 	boolean immune =
 		TEST_FLAG(biped->unit.flags, _unit_no_falling_damage_bit) ||
 		TEST_FLAG(definition->biped.flags, _biped_immune_to_falling_damage_bit);
-	real falling_velocity = biped->object.translational_velocity.k;
+	/* port: relative to the deck while riding or falling from it (vehicle_riding.c) */
+	real falling_velocity = biped_riding_falling_velocity(biped);
 
 	if (!cheat.jetpack || biped->unit.player_index == NONE)
 	{
@@ -1928,6 +2168,9 @@ static boolean biped_jump(
 		long actor_index;
 		real_vector3d jump_velocity;
 		real jump_magnitude;
+		/* port: (vehicle_riding.c) */
+		struct vehicle_riding_state riding;
+		real_vector3d jump_frame;
 
 		jumped = TRUE;
 		jump_magnitude = definition->biped.jump_velocity;
@@ -1945,7 +2188,14 @@ static boolean biped_jump(
 		if (cheat.super_jump && biped->unit.player_index!=NONE)
 			jump_magnitude *= 4.f;
 
+		/* port: the jump is above the deck the biped stands on (vehicle_riding.c;
+		the state the recording of this tick left) */
+		biped_riding_get(biped, &riding);
+		vehicle_riding_jump_frame(&riding, &jump_frame);
 		jump_velocity = biped->object.translational_velocity;
+		jump_velocity.i -= jump_frame.i;
+		jump_velocity.j -= jump_frame.j;
+		jump_velocity.k -= jump_frame.k;
 		{
 			real upward_velocity =
 				jump_velocity.i*biped->object.up.i +
@@ -1961,6 +2211,10 @@ static boolean biped_jump(
 				jump_velocity.k += biped->object.up.k*velocity_delta;
 			}
 		}
+
+		jump_velocity.i += jump_frame.i;
+		jump_velocity.j += jump_frame.j;
+		jump_velocity.k += jump_frame.k;
 
 		actor_index = biped->unit.swarm_actor_index;
 		if (actor_index==NONE)
@@ -2263,11 +2517,15 @@ static void biped_update_slipping(
 	struct unit_animation_update_data *animation)
 {
 	struct biped_datum *biped = biped_get(biped_index);
+	/* port: (vehicle_riding.c) */
+	real_vector3d sliding_velocity;
 
 	biped_definition_get(biped->definition_index);
 
+	/* port: (relative to the deck it rides, vehicle_riding.c) */
+	biped_riding_relative_velocity(biped_index, &sliding_velocity);
 	if (biped->biped.slipping_ticks>3 &&
-		magnitude_squared3d(&biped->object.translational_velocity)>MINIMUM_SLIPPING_FOOTSTEP_VELOCITY_SQUARED)
+		magnitude_squared3d(&sliding_velocity)>MINIMUM_SLIPPING_FOOTSTEP_VELOCITY_SQUARED)
 	{
 		biped_make_footstep(biped_index, _material_effect_biped_sliding, 0);
 		biped_make_footstep(biped_index, _material_effect_biped_sliding, 1);
@@ -2988,10 +3246,18 @@ static void biped_update_physics(
 				SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, FALSE);
 				physics->ground_plane = collision->plane;
 				physics->support_surface_index = collision->surface_index;
+				/* port: (vehicle_riding.c) */
+				biped_riding_support(physics, collision);
 				if (physics->support_surface_index == NONE ||
 					physics->support_surface_index != physics->stick_surface_index)
 				{
-					physics->landing_velocity = -dot_product3d(&velocity, &physics->ground_plane.n);
+					/* port: measured against what it lands on (the original's
+					while nothing rides: no frame, no support velocity) */
+					physics->landing_velocity = vehicle_riding_landing_velocity(
+						&velocity,
+						&physics->riding_frame_velocity,
+						&physics->support_velocity,
+						&physics->ground_plane.n);
 				}
 				else
 				{
@@ -3594,6 +3860,14 @@ static void biped_update_moving(
 	struct biped_datum *biped;
 	real movement_scale;
 	word in_flags;
+	/* port: (vehicle_riding.c) */
+	struct vehicle_riding_state riding;
+	struct vehicle_riding_vehicle riding_vehicle;
+	struct vehicle_riding_step riding_step;
+	boolean riding_applies;
+	boolean riding_step_valid = FALSE;
+	boolean riding_carried;
+	short local_player_index;
 
 	biped = biped_get(biped_index);
 
@@ -3622,6 +3896,49 @@ static void biped_update_moving(
 		&physics.position,
 		&physics.height,
 		&physics.width);
+	/* port: carried by the vehicle the biped stands on (vehicle_riding.c):
+	the deck's motion since the biped's last tick, its turn of the view, and
+	the velocity taken in the deck's frame */
+	biped_riding_get(biped, &riding);
+	riding_applies = biped_riding_applies(biped);
+	if (!riding_applies)
+	{
+		vehicle_riding_clear(&riding);
+	}
+	else if (riding.ticks > 0)
+	{
+		riding_step_valid = vehicle_riding_snapshot_step(
+			&riding,
+			biped_riding_vehicle(riding.object_index, riding.node_index, &riding_vehicle) ? &riding_vehicle : NULL,
+			&physics.position,
+			physics.height,
+			physics.width,
+			game_players_are_double_speed(),
+			&riding_step);
+	}
+	riding_carried = riding_step_valid && vehicle_riding_is_riding(&riding);
+	if (riding_carried)
+	{
+		biped_riding_carry(biped_index, biped, definition, riding.object_index, &riding_step.displacement, &physics);
+	}
+	local_player_index = biped->unit.player_index != NONE ? unit_get_local_player_index(biped_index) : NONE;
+	/* (every local player's tick sets its kept turn, 0 when it is not carried) */
+	if (local_player_index != NONE)
+	{
+		real dyaw = vehicle_riding_look(local_player_index, riding_carried, riding_carried ? riding_step.dyaw : 0.f);
+
+		if (dyaw != 0.f)
+			biped_riding_turn(biped, &physics, dyaw);
+	}
+	vehicle_riding_seed(&riding, &biped->object.translational_velocity, &physics.velocity,
+		&physics.riding_frame_velocity);
+	physics.riding_applies = riding_applies;
+	physics.riding_object_index = riding_carried ? riding.object_index : NONE;
+	physics.tracked_object_index = riding_step_valid && !riding_carried ? riding.object_index : NONE;
+	physics.tracked_deck_velocity = riding_step_valid ? riding_step.tracked_deck_velocity : *global_zero_vector3d;
+	physics.support_object_index = NONE;
+	physics.support_node_index = NONE;
+	physics.support_velocity = *global_zero_vector3d;
 	physics.minimum_normal_k = definition->biped.runtime_minimum_normal_k;
 	physics.downhill_k0 = definition->biped.runtime_downhill_k0;
 	physics.downhill_k1 = definition->biped.runtime_downhill_k1;
@@ -4072,6 +4389,33 @@ static void biped_update_moving(
 		physics.velocity = *global_zero_vector3d;
 	}
 
+	/* port: what the biped stands on now, for its next tick
+	(vehicle_riding.c): the deck's motion added back, the vehicle it rides
+	and its snapshot, or its window running down */
+	if (riding_applies)
+	{
+		struct vehicle_riding_vehicle support;
+		boolean supported = !TEST_FLAG(physics.out_flags, _biped_physics_out_airborne_bit);
+
+		if (vehicle_riding_record(
+			&riding,
+			riding_step_valid ? &riding_step : NULL,
+			supported && biped_riding_vehicle(physics.support_object_index, physics.support_node_index, &support) ?
+				&support : NULL,
+			supported,
+			&physics.support_velocity,
+			&physics.ground_plane.n,
+			&physics.new_position,
+			TEST_FLAG(biped->unit.flags, _unit_suspended_bit),
+			&physics.new_velocity))
+		{
+			/* (the elevator moves a biped by these, device_machines.c, and would move a rider twice) */
+			biped->biped.elevator_object_index = NONE;
+			biped->biped.elevator_ticks = 0;
+		}
+	}
+	biped_riding_set(biped, &riding);
+
 	{
 		real_point3d new_biped_position = physics.new_position;
 		word out_flags = physics.out_flags;
@@ -4297,6 +4641,8 @@ boolean biped_update(
 	if (biped->object.parent_object_index!=NONE)
 	{
 		struct object_datum *parent = object_get(biped->object.parent_object_index);
+		/* port: (vehicle_riding.c) */
+		biped_riding_seated(biped_index, biped);
 
 		if (parent->object.type==_object_type_vehicle)
 		{
