@@ -124,9 +124,17 @@ int main(int argc, char **argv)
 		struct vehicle_riding_vehicle before = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10), after;
 		struct vehicle_riding_state state = riding_on(&before, point(1.f, 0.f, 0.f), vector(0.f, 0.f, 0.f));
 		real_point3d base = point(1.f, 0.f, 0.f);
-		after = before; after.translational_velocity = vector(.3f, 0.f, 0.f); after.updates++;
-		CHECK(vehicle_riding_snapshot_step(&state, &after, &base, 1.4f, .2f, FALSE, &step), "dropped");
-		NEAR(step.displacement.i, 0.f); NEAR(step.velocity_now.i, 0.f); return 0;
+		short tick;
+		after = before; after.translational_velocity = vector(.3f, 0.f, 0.f);
+		for (tick = 0; tick < 30; tick++)
+		{
+			after.updates++;
+			CHECK(vehicle_riding_snapshot_step(&state, &after, &base, 1.4f, .2f, FALSE, &step), "dropped");
+			NEAR(step.displacement.i, 0.f);
+			NEAR(step.velocity_now.i, 0.f);
+			state.vehicle_updates = after.updates;
+		}
+		return 0;
 	}
 	CASE("contact-point")
 	{
@@ -169,6 +177,11 @@ int main(int argc, char **argv)
 		CHECK(!vehicle_riding_snapshot_step(&state, NULL, &base, 1.4f, .2f, FALSE, &step), "gone kept");
 		CHECK(state.object_index == NONE && state.falling == 1, "falling frame lost");
 		NEAR(state.velocity.k, -.3f);
+		state = riding_on(&before, base, vector(0.f, 0.f, 0.f));
+		state.ticks = 30;
+		after = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 11);
+		base = point(5.f, 0.f, 0.f);
+		CHECK(!vehicle_riding_snapshot_step(&state, &after, &base, 1.4f, .2f, FALSE, &step), "far kept");
 		return 0;
 	}
 	CASE("gate")
@@ -181,11 +194,15 @@ int main(int argc, char **argv)
 	}
 	CASE("deferred")
 	{
-		struct vehicle_riding_state state;
-		vehicle_riding_clear(&state); state.ticks = 1;
-		CHECK(vehicle_riding_deferred(&state, TRUE), "window not deferred");
-		CHECK(!vehicle_riding_deferred(&state, FALSE), "deferred when not applicable");
-		state.ticks = 0; CHECK(!vehicle_riding_deferred(&state, TRUE), "outside window deferred"); return 0;
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(0.f, 0.f, 0.f));
+		CHECK(vehicle_riding_deferred(&state, TRUE), "a rider not deferred");
+		state.ticks = 1;
+		CHECK(vehicle_riding_deferred(&state, TRUE), "a biped in the window not deferred");
+		CHECK(!vehicle_riding_deferred(&state, FALSE), "deferred where riding does not apply");
+		state.ticks = 0;
+		CHECK(!vehicle_riding_deferred(&state, TRUE), "deferred outside any window");
+		return 0;
 	}
 	CASE("look-carry")
 	{
