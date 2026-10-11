@@ -263,6 +263,7 @@ symbols in this file:
 #include "units/bipeds.h"
 #include "units/vehicle_definitions.h"
 #include "units/vehicles.h"
+#include "vehicle_riding.h" /* port: port/linux/game/vehicle_riding.c */
 #include "physics/breakable_surfaces.h"
 #include "physics/collision_bsp.h"
 #include "physics/collision_bsp_definitions.h"
@@ -585,6 +586,66 @@ char animation_right_foot_frame_index(
 	return animation->private_right_foot_frame_index;
 }
 
+/* ---------- port: vehicle riding (vehicle_riding.c) */
+
+/* the biped's riding fields as the riding code's state */
+static void biped_riding_get(
+	struct biped_datum const *biped,
+	struct vehicle_riding_state *state)
+{
+	state->ticks = biped->biped.riding_ticks;
+	state->falling = biped->biped.riding_falling;
+	state->object_index = biped->biped.riding_object_index;
+	state->vehicle_updates = biped->biped.riding_vehicle_updates;
+	state->vehicle_position = biped->biped.riding_vehicle_position;
+	state->vehicle_forward = biped->biped.riding_vehicle_forward;
+	state->vehicle_up = biped->biped.riding_vehicle_up;
+	state->velocity = biped->biped.riding_velocity;
+	state->local_point = biped->biped.riding_local_point;
+	state->node_index = biped->biped.riding_node_index;
+}
+
+static void biped_riding_set(
+	struct biped_datum *biped,
+	struct vehicle_riding_state const *state)
+{
+	biped->biped.riding_ticks = state->ticks;
+	biped->biped.riding_falling = state->falling;
+	biped->biped.riding_object_index = state->object_index;
+	biped->biped.riding_vehicle_updates = state->vehicle_updates;
+	biped->biped.riding_vehicle_position = state->vehicle_position;
+	biped->biped.riding_vehicle_forward = state->vehicle_forward;
+	biped->biped.riding_vehicle_up = state->vehicle_up;
+	biped->biped.riding_velocity = state->velocity;
+	biped->biped.riding_local_point = state->local_point;
+	biped->biped.riding_node_index = state->node_index;
+	biped->biped.riding_pad = 0;
+}
+
+static void biped_riding_clear(
+	struct biped_datum *biped)
+{
+	struct vehicle_riding_state state;
+
+	vehicle_riding_clear(&state);
+	biped_riding_set(biped, &state);
+}
+
+void bipeds_riding_latch(
+	void)
+{
+	struct object_iterator iterator;
+	struct biped_datum *biped;
+
+	if (vehicle_riding_latch())
+		return;
+	object_iterator_new(&iterator, _object_mask_biped, 0);
+	while ((biped = (struct biped_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		biped_riding_clear(biped);
+	}
+}
+
 void bipeds_initialize(
 	void)
 {
@@ -593,6 +654,9 @@ void bipeds_initialize(
 void bipeds_initialize_for_new_map(
 	void)
 {
+	/* port: (no biped exists yet: the settings only) */
+	vehicle_riding_latch();
+
 	return;
 }
 
@@ -633,6 +697,9 @@ void biped_reset(
 	csmemset(&biped->biped, 0, sizeof(biped->biped));
 	biped->biped.ground_plane = depths_of_hell;
 	biped->biped.last_falling_communication_time = NONE;
+	/* port: (vehicle_riding.c) */
+	biped->biped.riding_object_index = NONE;
+	biped->biped.riding_node_index = NONE;
 
 	return;
 }
@@ -4171,6 +4238,8 @@ boolean biped_new(
 	biped_snap_facing(biped_index);
 	biped->biped.elevator_object_index = NONE;
 	biped->biped.elevator_ticks = 0;
+	/* port: (vehicle_riding.c) */
+	biped_riding_clear(biped);
 
 	return TRUE;
 }

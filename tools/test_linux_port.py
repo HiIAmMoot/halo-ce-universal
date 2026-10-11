@@ -491,3 +491,26 @@ def test_custom_edition_loader_and_validator_survive_damaged_maps():
     result = subprocess.run([str(MAP_VALIDATE), "--fuzz", "100", "--seed", "1", *map(str, chosen)],
                             capture_output=True, text=True, timeout=3600)
     assert result.returncode == 0, (result.stdout + result.stderr)[-6000:]
+def test_vehicle_riding_saved_games():
+    """The biped row is sized by BIPED_DATUM_SIZE, saved games of another layout are neither offered nor loaded, and
+    riding is latched at a game's start and after every load (vehicle_riding.c)."""
+    root = Path(__file__).resolve().parent.parent
+
+    def body(text, signature):
+        start = text.index(signature)
+        return text[start:text.index("\n}\n", start)]
+
+    object_types = (root / "source/objects/object_types.c").read_text(encoding="latin-1")
+    assert "\"biped\", 'bipd', BIPED_DATUM_SIZE," in object_types
+    game_state = (root / "source/saved games/game_state.c").read_text(encoding="latin-1")
+    initialize = body(game_state, "void game_state_initialize(")
+    assert initialize.index("crc_new(") < initialize.index("object_type_definitions[") < \
+        initialize.index("game_state_allocate_buffer(")
+    assert "allocation_size_checksum" in body(game_state, "boolean game_state_test_persistent_storage(")
+    procs = game_state[game_state.index("static game_state_after_load_proc after_load_procs[] ="):]
+    procs = procs[:procs.index("};")]
+    assert procs.rstrip().endswith("bipeds_riding_latch")
+    game = (root / "source/game/game.c").read_text(encoding="latin-1")
+    assert "bipeds_riding_latch();" in body(game, "void game_initial_pulse(")
+    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    assert "vehicle_riding_latch();" in body(bipeds, "void bipeds_initialize_for_new_map(")

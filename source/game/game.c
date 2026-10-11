@@ -181,6 +181,7 @@ struct game_options;
 #include "structures/structures.h"
 #include "units/units.h"
 #include "units/vehicles.h"
+#include "units/bipeds.h"
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #ifdef HALO_PROFILE
 #include "profile_console.h" /* port: port/linux/game/profile_console.c */
@@ -425,6 +426,9 @@ void game_initial_pulse(
 	void)
 {
 	struct data_iterator iterator;
+
+	/* port: (vehicle_riding.c) */
+	bipeds_riding_latch();
 
 	data_iterator_new(&iterator, player_data);
 	while (data_iterator_next(&iterator))
