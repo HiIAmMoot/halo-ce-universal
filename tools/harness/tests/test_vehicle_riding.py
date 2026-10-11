@@ -16,6 +16,7 @@ from harness import CHECK_FAILED, build, constant, enum_with, mutated, read, run
 CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guards", "gate", "deferred",
          "look-carry", "two-local-players", "latch"]
 
+# a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
     "last-from-vehicle-now": (("vehicle_riding_point_to_world(&state->vehicle_position, &state->vehicle_forward, "
                                "&state->vehicle_up, &state->local_point, &last);",
