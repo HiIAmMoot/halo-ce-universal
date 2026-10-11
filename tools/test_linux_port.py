@@ -12,6 +12,20 @@ import pytest
 from tools import linux_build, linux_link_check, linux_msvc_semantics
 
 
+def test_vehicle_riding_update_count():
+    """Every object update counts once (object_update calls object_count_update first in its do-not-update test),
+    and objects_update runs its main loop through objects_update_passes (vehicle_riding.c)."""
+    root = Path(__file__).resolve().parent.parent
+    objects = (root / "source/objects/objects.c").read_text(encoding="latin-1")
+    update = objects[objects.index("static boolean object_update("):]
+    update = update[:update.index("\n}\n")]
+    assert re.search(r"if \(!TEST_FLAG\(header->flags, _object_header_do_not_update_bit\)\)\n\t\{\n"
+                     r"(\t\t/\*[^\n]*\*/\n)?\t\tobject_count_update\(object_index\);", update)
+    loop = objects[objects.index("void objects_update(\n"):]
+    loop = loop[:loop.index("\n}\n")]
+    assert "objects_update_passes(dont_update_object, object_update_deferred, object_update);" in loop
+
+
 # ---------- MSVC semantics header
 
 
