@@ -311,6 +311,21 @@ def test_menu_settings_exist():
     assert controls == set(re.findall(r'\{ "(controls\.[a-z_]+)", L"', functions))
 
 
+def test_vehicle_riding_settings():
+    """Riding on a moving vehicle (port/linux/game/vehicle_riding.c): game.vehicle_riding is a player's setting,
+    documented; its tunables are debug. ones; stage 1 does not change the network version."""
+    root = Path(__file__).resolve().parent.parent
+    config = (root / "port/linux/src/port_config.c").read_text()
+    readme = (root / "port/linux/README.md").read_text(encoding="utf-8")
+    names = set(re.findall(r'^\t\{ "([a-z_]+\.[a-z_]+)", _config_', config, re.M))
+    assert "game.vehicle_riding" in names and "`game.vehicle_riding`" in readme
+    for tunable in ("riding_damage_speed", "riding_teleport_step", "riding_moved_alone", "riding_look_carry"):
+        assert f"debug.{tunable}" in names and f"`debug.{tunable}`" in readme
+        assert f"game.{tunable}" not in names
+    limits = (root / "port/linux/include/halo_port_limits.h").read_text()
+    assert re.search(r"#define HALO_PORT_NETWORK_VERSION 25\b", limits)
+
+
 def test_p2p_signatures_and_listings(tmp_path):
     """internet play's Ed25519 (RFC 8032), the X25519 key of a seed, and the
     server browser's listings from host to browser (tools/p2p_lobby_check.c),

@@ -298,6 +298,10 @@ static const struct config_setting config_settings[] =
 		"to throw and reload, and a player turns with the aim while throwing;\n"
 		"false: the original animations, which freeze the legs and stand a\n"
 		"rider up." },
+	{ "game.vehicle_riding", _config_boolean, "true", "HALO_VEHICLE_RIDING", _environment_value, _platform_all,
+		"A player standing on a moving vehicle is carried by it, turns with it\n"
+		"and keeps its motion when stepping off; the vehicle does not hurt it.\n"
+		"Local games only; false: the original game, where riders slide off." },
 	{ "game.custom_edition", _config_boolean, "true", "HALO_CUSTOM_EDITION", _environment_value, _platform_all,
 		"Load and run Halo Custom Edition maps (not those that need OpenSauce):\n"
 		"put them and Custom Edition's bitmaps.map, sounds.map and loc.map in\n"
@@ -536,6 +540,19 @@ static const struct config_setting config_settings[] =
 		"Seconds after the start before anything is damaged, so that a game can\n"
 		"be set up and started first (a host's messages to its own client are\n"
 		"damaged too)." },
+	{ "debug.riding_damage_speed", _config_real, "0.0", "HALO_RIDING_DAMAGE_SPEED", _environment_value, _platform_all,
+		"Riding: the closing speed (world units a tick) above which a vehicle\n"
+		"still hurts a player who just left it; 0 takes twice the player's own\n"
+		"run and jump speed." },
+	{ "debug.riding_teleport_step", _config_real, "4.0", "HALO_RIDING_TELEPORT_STEP", _environment_value, _platform_all,
+		"Riding: a vehicle that moves further in one update is teleported, and\n"
+		"its riders stay where they are." },
+	{ "debug.riding_moved_alone", _config_real, "0.25", "HALO_RIDING_MOVED_ALONE", _environment_value, _platform_all,
+		"Riding: a rider this far from where it ended its last tick was moved\n"
+		"by something else, and stops riding." },
+	{ "debug.riding_look_carry", _config_boolean, "true", "HALO_RIDING_LOOK_CARRY", _environment_value, _platform_all,
+		"Riding: the vehicle's turn turns the rider's view; false keeps the\n"
+		"view where the player put it (a test aid)." },
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); \"look:<seed>\" stands still, only turning and looking\n"
