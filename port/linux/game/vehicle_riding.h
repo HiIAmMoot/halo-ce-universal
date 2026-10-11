@@ -111,4 +111,27 @@ real vehicle_riding_look(short local_player_index, boolean carried, real dyaw);
 /* that turn, for the direct camera */
 real vehicle_riding_kept_dyaw(short local_player_index);
 
+/* the velocity the physics starts from: in the deck's frame while riding
+(the frame velocity taken off), else the world's */
+void vehicle_riding_seed(struct vehicle_riding_state const *state, real_vector3d const *world_velocity,
+	real_vector3d *velocity, real_vector3d *frame_velocity);
+/* the velocity of what a biped lands on: the ridden deck's frame, the
+tracked deck's, another vehicle's at the contact, or none */
+void vehicle_riding_support_velocity(long support_object_index, long riding_object_index,
+	real_vector3d const *riding_frame_velocity, long tracked_object_index, real_vector3d const *tracked_deck_velocity,
+	real_vector3d const *other_velocity, real_vector3d *support_velocity);
+/* the landing velocity against what is landed on */
+real vehicle_riding_landing_velocity(real_vector3d const *velocity, real_vector3d const *frame_velocity,
+	real_vector3d const *support_velocity, real_vector3d const *normal);
+/* what the biped stands on now, after its physics (step NULL: in no window;
+support NULL: not a vehicle); TRUE: clear its elevator fields */
+boolean vehicle_riding_record(struct vehicle_riding_state *state, struct vehicle_riding_step const *step,
+	struct vehicle_riding_vehicle const *support, boolean supported, real_vector3d const *support_velocity,
+	real_vector3d const *support_normal, real_point3d const *new_base, boolean suspended,
+	real_vector3d *new_velocity);
+/* the vertical velocity the falling kill judges */
+real vehicle_riding_falling_velocity(struct vehicle_riding_state const *state, real world_velocity_k);
+/* the velocity a jump is taken above */
+void vehicle_riding_jump_frame(struct vehicle_riding_state const *state, real_vector3d *jump_frame);
+
 #endif

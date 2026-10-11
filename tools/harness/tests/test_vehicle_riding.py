@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, constant, enum_with, mutated, read, run  # noqa: E402
 
 CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guards", "gate", "deferred",
-         "look-carry", "two-local-players", "latch"]
+         "look-carry", "two-local-players", "latch", "momentum", "no-double-count", "spans", "double-speed",
+         "landing-frame", "seat-exit-onto-deck", "refresh", "elevator", "local-frame", "node-change", "falling",
+         "jump-deck-frame"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -52,6 +54,37 @@ NEGATIVE_CONTROLS = {
     "impulse-to-first": (("player_control_permanent_impulse(local_player_index, &impulse);",
                           "player_control_permanent_impulse(0, &impulse);"), "two-local-players"),
     "latch-keeps-turn": (("\t\triding_kept_dyaws[local_player_index] = 0.f;\n", "\n"), "latch"),
+    "no-momentum": (("\t\t\triding_add(new_velocity, &step->velocity_now);\n", "\t\t\t;\n"), "momentum"),
+    "seed-no-subtraction": (("riding_subtract(world_velocity, frame_velocity, velocity);",
+                             "*velocity = *world_velocity;"), "no-double-count"),
+    "no-span-divisor": (("per_tick = 1.f/(step->updates*riding_period(vehicle, double_speed));",
+                         "per_tick = 1.f/riding_period(vehicle, double_speed);"), "spans"),
+    "no-period": (("per_tick = 1.f/(step->updates*riding_period(vehicle, double_speed));",
+                   "per_tick = 1.f/step->updates;"), "double-speed"),
+    "skipped-tick-not-held": (("\t\tstep->tracked_deck_velocity = state->velocity;\n",
+                               "\t\tstep->tracked_deck_velocity = step->displacement;\n"), "double-speed"),
+    "deck-point-per-update": (("riding_scale(velocity, 1.f/riding_period(vehicle, double_speed));", ""),
+                              "double-speed"),
+    "frame-not-added": (("riding_sum(velocity, frame_velocity, &relative);", "relative = *velocity;"),
+                        "landing-frame"),
+    "support-ridden-always": (("else if (support_object_index == riding_object_index)",
+                               "else if (support_object_index != NONE)"), "landing-frame"),
+    "unclipped": (("riding_clip(new_velocity, support_velocity, support_normal);", ";"), "landing-frame"),
+    "refresh-only-on-landing": (("\t\tstate->velocity = step->velocity_now;\n\t\tif (supported",
+                                 "\t\tif (supported"), "refresh"),
+    "no-elevator-clear": (("\t\t\t&state->local_point);\n\t\treturn TRUE;",
+                           "\t\t\t&state->local_point);\n\t\treturn FALSE;"), "elevator"),
+    "node-not-taken": (("\t\tstate->node_index = support->node_index;\n", "\n"), "node-change"),
+    "left-sign-in-world": (("+ left.i*local->y", "- left.i*local->y"), "local-frame"),
+    "window-rederives-place": (("\t\triding_snapshot(state, &step->vehicle);\n",
+                                "\t\triding_snapshot(state, &step->vehicle);\n"
+                                "\t\tvehicle_riding_point_to_local(&step->vehicle.position, &step->vehicle.forward, "
+                                "&step->vehicle.up, new_base, &state->local_point);\n"), "local-frame"),
+    "falling-only-while-riding": (("if (vehicle_riding_is_riding(state) || state->falling)",
+                                   "if (vehicle_riding_is_riding(state))"), "falling"),
+    "falling-whole-window": (("if (vehicle_riding_is_riding(state) || state->falling)",
+                              "if (state->ticks > 0 || state->falling)"), "falling"),
+    "jump-world": (("\t\t*jump_frame = state->velocity;\n", "\n"), "jump-deck-frame"),
 }
 
 

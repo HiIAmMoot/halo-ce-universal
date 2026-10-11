@@ -113,6 +113,64 @@ static real riding_period(
 	return double_speed && !vehicle->has_player ? 2.f : 1.f;
 }
 
+static void riding_sum(
+	real_vector3d const *a,
+	real_vector3d const *b,
+	real_vector3d *result)
+{
+	result->i = a->i + b->i;
+	result->j = a->j + b->j;
+	result->k = a->k + b->k;
+}
+
+static void riding_subtract(
+	real_vector3d const *a,
+	real_vector3d const *b,
+	real_vector3d *result)
+{
+	result->i = a->i - b->i;
+	result->j = a->j - b->j;
+	result->k = a->k - b->k;
+}
+
+static void riding_add(
+	real_vector3d *vector,
+	real_vector3d const *added)
+{
+	riding_sum(vector, added, vector);
+}
+
+/* the part of a velocity into a support's plane, measured against the
+support's own motion, taken off: the landing on it is counted once */
+static void riding_clip(
+	real_vector3d *velocity,
+	real_vector3d const *support_velocity,
+	real_vector3d const *normal)
+{
+	real_vector3d relative;
+	real into;
+
+	riding_subtract(velocity, support_velocity, &relative);
+	into = riding_dot(&relative, normal);
+	if (into < 0.f)
+	{
+		velocity->i -= normal->i*into;
+		velocity->j -= normal->j*into;
+		velocity->k -= normal->k*into;
+	}
+}
+
+/* the vehicle's pose and update count as they are now */
+static void riding_snapshot(
+	struct vehicle_riding_state *state,
+	struct vehicle_riding_vehicle const *vehicle)
+{
+	state->vehicle_position = vehicle->position;
+	state->vehicle_forward = vehicle->forward;
+	state->vehicle_up = vehicle->up;
+	state->vehicle_updates = vehicle->updates;
+}
+
 /* ---------- public code */
 
 boolean vehicle_riding_latch(
@@ -384,6 +442,129 @@ boolean vehicle_riding_snapshot_step(
 	step->dyaw = vehicle_riding_yaw(&state->vehicle_forward, &state->vehicle_up, &vehicle->forward, &vehicle->up);
 
 	return TRUE;
+}
+
+void vehicle_riding_seed(
+	struct vehicle_riding_state const *state,
+	real_vector3d const *world_velocity,
+	real_vector3d *velocity,
+	real_vector3d *frame_velocity)
+{
+	frame_velocity->i = frame_velocity->j = frame_velocity->k = 0.f;
+	if (vehicle_riding_is_riding(state))
+		*frame_velocity = state->velocity;
+	riding_subtract(world_velocity, frame_velocity, velocity);
+}
+
+void vehicle_riding_support_velocity(
+	long support_object_index,
+	long riding_object_index,
+	real_vector3d const *riding_frame_velocity,
+	long tracked_object_index,
+	real_vector3d const *tracked_deck_velocity,
+	real_vector3d const *other_velocity,
+	real_vector3d *support_velocity)
+{
+	if (support_object_index == NONE)
+		support_velocity->i = support_velocity->j = support_velocity->k = 0.f;
+	else if (support_object_index == riding_object_index)
+		*support_velocity = *riding_frame_velocity;
+	else if (support_object_index == tracked_object_index)
+		*support_velocity = *tracked_deck_velocity;
+	else
+		*support_velocity = *other_velocity;
+}
+
+real vehicle_riding_landing_velocity(
+	real_vector3d const *velocity,
+	real_vector3d const *frame_velocity,
+	real_vector3d const *support_velocity,
+	real_vector3d const *normal)
+{
+	real_vector3d relative;
+
+	/* (the physics' velocity is in the ridden deck's frame: back to the
+	world's, then into the frame of what it lands on) */
+	riding_sum(velocity, frame_velocity, &relative);
+	riding_subtract(&relative, support_velocity, &relative);
+	return -riding_dot(&relative, normal);
+}
+
+boolean vehicle_riding_record(
+	struct vehicle_riding_state *state,
+	struct vehicle_riding_step const *step,
+	struct vehicle_riding_vehicle const *support,
+	boolean supported,
+	real_vector3d const *support_velocity,
+	real_vector3d const *support_normal,
+	real_point3d const *new_base,
+	boolean suspended,
+	real_vector3d *new_velocity)
+{
+	boolean started_riding = vehicle_riding_is_riding(state);
+
+	if (started_riding)
+	{
+		/* (the deck's motion, taken off at the seed, added back: the world velocity) */
+		if (suspended)
+			*new_velocity = step->velocity_now;
+		else
+			riding_add(new_velocity, &step->velocity_now);
+		state->velocity = step->velocity_now;
+		if (supported && (!support || support->object_index != state->object_index))
+			riding_clip(new_velocity, support_velocity, support_normal);
+	}
+
+	if (support)
+	{
+		if (step && support->object_index == state->object_index)
+			state->velocity = started_riding ? step->velocity_now : step->tracked_deck_velocity;
+		else
+			state->velocity = *support_velocity;
+		state->ticks = RIDING_TICKS;
+		state->falling = 0;
+		state->object_index = support->object_index;
+		state->node_index = support->node_index;
+		riding_snapshot(state, support);
+		vehicle_riding_point_to_local(&support->position, &support->forward, &support->up, new_base,
+			&state->local_point);
+		return TRUE;
+	}
+
+	if (supported)
+		state->falling = 0;
+	else if (started_riding)
+		state->falling = 1;
+	if (step)
+	{
+		/* (its place on the deck is kept and the snapshot follows the deck:
+		a landing back then has the deck's motion of that tick only) */
+		riding_snapshot(state, &step->vehicle);
+		if (--state->ticks <= 0)
+			vehicle_riding_drop(state);
+	}
+
+	return FALSE;
+}
+
+real vehicle_riding_falling_velocity(
+	struct vehicle_riding_state const *state,
+	real world_velocity_k)
+{
+	if (vehicle_riding_is_riding(state) || state->falling)
+		return world_velocity_k - state->velocity.k;
+	return world_velocity_k;
+}
+
+void vehicle_riding_jump_frame(
+	struct vehicle_riding_state const *state,
+	real_vector3d *jump_frame)
+{
+	jump_frame->i = jump_frame->j = jump_frame->k = 0.f;
+	if (vehicle_riding_is_riding(state))
+	{
+		*jump_frame = state->velocity;
+	}
 }
 
 real vehicle_riding_look(

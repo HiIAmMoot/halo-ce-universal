@@ -132,6 +132,32 @@ static real_vector3d pitched(real_vector3d v, real angle)
 	return vector(v.i*(real)cos(angle) + v.k*(real)sin(angle), v.j, -v.i*(real)sin(angle) + v.k*(real)cos(angle));
 }
 
+/* the world velocity after a tick in which a biped riding at velocity relative
+to its deck (no friction, no gravity) was carried and recorded on support */
+static real_vector3d riding_tick(struct vehicle_riding_state *state, struct vehicle_riding_vehicle const *vehicle,
+	real_point3d *base, real_vector3d world_velocity, struct vehicle_riding_vehicle const *support, boolean supported,
+	real_vector3d support_velocity)
+{
+	struct vehicle_riding_step tick_step;
+	real_vector3d velocity, frame;
+	boolean valid = state->ticks > 0 &&
+		vehicle_riding_snapshot_step(state, vehicle, base, 1.4f, .2f, FALSE, &tick_step);
+
+	if (valid && vehicle_riding_is_riding(state))
+	{
+		base->x += tick_step.displacement.i;
+		base->y += tick_step.displacement.j;
+		base->z += tick_step.displacement.k;
+	}
+	vehicle_riding_seed(state, &world_velocity, &velocity, &frame);
+	base->x += velocity.i;
+	base->y += velocity.j;
+	base->z += velocity.k;
+	vehicle_riding_record(state, valid ? &tick_step : NULL, support, supported, &support_velocity, &up, base, FALSE,
+		&velocity);
+	return velocity;
+}
+
 int main(int argc, char **argv)
 {
 	char const *case_name = argc > 1 ? argv[1] : "";
@@ -331,6 +357,333 @@ int main(int argc, char **argv)
 		NEAR(vehicle_riding_kept_dyaw(1), 0.f);
 		setting_riding = 1;
 		CHECK(vehicle_riding_latch(), "off");
+		return 0;
+	}
+	CASE("momentum")
+	{
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(.1f, 0.f, 0.f));
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d world;
+
+		/* the tick it steps off: its own velocity plus the deck's */
+		vehicle = vehicle_at(VEHICLE, .1f, 0.f, 0.f, 0.f, 11);
+		world = riding_tick(&state, &vehicle, &base, vector(.15f, 0.f, 0.f), NULL, FALSE, zero);
+		NEAR(world.i, .15f);
+		CHECK(state.falling == 1 && state.ticks == RIDING_TICKS - 1, "not left");
+		/* the next tick: no carry, the world velocity alone */
+		vehicle = vehicle_at(VEHICLE, .2f, 0.f, 0.f, 0.f, 12);
+		{
+			real start = base.x;
+
+			riding_tick(&state, &vehicle, &base, world, NULL, FALSE, zero);
+			NEAR(base.x - start, .15f);
+		}
+		return 0;
+	}
+	CASE("no-double-count")
+	{
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(.1f, 0.f, 0.f));
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d world = vector(.1f, 0.f, 0.f);
+		short tick;
+
+		for (tick = 1; tick <= 10; tick++)
+		{
+			vehicle = vehicle_at(VEHICLE, .1f*tick, 0.f, 0.f, 0.f, 10 + tick);
+			world = riding_tick(&state, &vehicle, &base, world, &vehicle, TRUE, zero);
+		}
+		NEAR(base.x, 1.f);
+		NEAR(world.i, .1f);
+		return 0;
+	}
+	CASE("spans")
+	{
+		/* landed before the vehicle's update in datum order: the next carry spans two */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity = vector(.1f, 0.f, 0.f);
+		real_vector3d deck = vector(.1f, 0.f, 0.f);
+
+		vehicle_riding_clear(&state);
+		vehicle.translational_velocity = deck;
+		CHECK(vehicle_riding_record(&state, NULL, &vehicle, TRUE, &deck, &up, &base, FALSE, &velocity), "no elevator clear");
+		vehicle = vehicle_at(VEHICLE, .2f, 0.f, 0.f, 0.f, 12);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		NEAR(step.velocity_now.i, .1f);
+		/* leaving then: the vehicle's speed, not twice it */
+		velocity = zero;
+		vehicle_riding_record(&state, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(velocity.i, .1f);
+		return 0;
+	}
+	CASE("double-speed")
+	{
+		/* a vehicle without a player, 0.2 an update, an update every other tick */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity;
+		real_vector3d deck;
+
+		/* first landing: the deck's motion per player tick */
+		vehicle.translational_velocity = vector(.2f, 0.f, 0.f);
+		vehicle_riding_deck_point_velocity(&vehicle, &base, TRUE, &deck);
+		NEAR(deck.i, .1f);
+		vehicle_riding_clear(&state);
+		velocity = deck;
+		vehicle_riding_record(&state, NULL, &vehicle, TRUE, &deck, &up, &base, FALSE, &velocity);
+		NEAR(state.velocity.i, .1f);
+		/* an even tick (the vehicle updated): 0.1 a tick */
+		vehicle = vehicle_at(VEHICLE, .2f, 0.f, 0.f, 0.f, 11);
+		base.x = .2f;
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, TRUE, &step), "dropped");
+		NEAR(step.velocity_now.i, .1f);
+		/* leaving on it */
+		velocity = zero;
+		vehicle_riding_record(&state, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(velocity.i, .1f);
+		/* an odd tick (no update): the frames hold, landing back gives 0.1 too */
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, TRUE, &step), "dropped");
+		NEAR(step.tracked_deck_velocity.i, .1f);
+		velocity = zero;
+		vehicle_riding_record(&state, &step, &vehicle, TRUE, &step.tracked_deck_velocity, &up, &base, FALSE, &velocity);
+		NEAR(state.velocity.i, .1f);
+		/* an odd tick, riding: no carry, 0.1 held */
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, TRUE, &step), "dropped");
+		NEAR(step.displacement.i, 0.f);
+		NEAR(step.velocity_now.i, .1f);
+		return 0;
+	}
+	CASE("landing-frame")
+	{
+		/* riding a deck descending 0.3 a tick, moving 0.05 across it */
+		real_vector3d frame = vector(0.f, 0.f, -.3f);
+		real_vector3d relative = vector(.05f, 0.f, 0.f);
+		real_vector3d other = vector(0.f, 0.f, -.1f);
+		real_vector3d support;
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_vehicle second = vehicle_at(OTHER_VEHICLE, 2.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity;
+
+		/* onto the ground: the world landing velocity */
+		vehicle_riding_support_velocity(NONE, VEHICLE, &frame, NONE, &zero, &zero, &support);
+		NEAR(vehicle_riding_landing_velocity(&relative, &frame, &support, &up), .3f);
+		/* onto a second vehicle descending 0.1: relative to it */
+		vehicle_riding_support_velocity(OTHER_VEHICLE, VEHICLE, &frame, NONE, &zero, &other, &support);
+		NEAR(vehicle_riding_landing_velocity(&relative, &frame, &support, &up), .2f);
+		/* back on the ridden deck: as before */
+		vehicle_riding_support_velocity(VEHICLE, VEHICLE, &frame, NONE, &zero, &other, &support);
+		NEAR(vehicle_riding_landing_velocity(&relative, &frame, &support, &up), 0.f);
+		/* recorded on the ground: no part into it left, so no second landing */
+		state = riding_on(&vehicle, base, frame);
+		vehicle = vehicle_at(VEHICLE, 0.f, 0.f, -.3f, 0.f, 11);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		velocity = relative;
+		vehicle_riding_record(&state, &step, NULL, TRUE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(velocity.k, 0.f);
+		NEAR(velocity.i, .05f);
+		/* recorded on the second vehicle: only its own descent left */
+		state = riding_on(&vehicle, base, frame);
+		vehicle = vehicle_at(VEHICLE, 0.f, 0.f, -.6f, 0.f, 12);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		velocity = relative;
+		vehicle_riding_record(&state, &step, &second, TRUE, &other, &up, &base, FALSE, &velocity);
+		NEAR(velocity.k, -.1f);
+		CHECK(state.object_index == OTHER_VEHICLE, "not riding the second vehicle");
+		NEAR(state.velocity.k, -.1f);
+		return 0;
+	}
+	CASE("seat-exit-onto-deck")
+	{
+		/* a seat exit leaves the biped with the vehicle's velocity: landing on the
+		same deck, it stands still on it */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(0.f, 0.f, 1.f);
+		real_vector3d deck = vector(.3f, 0.f, 0.f);
+		real_vector3d velocity = deck;
+		real_vector3d relative;
+		real_vector3d frame;
+
+		vehicle.translational_velocity = deck;
+		vehicle_riding_clear(&state);
+		vehicle_riding_record(&state, NULL, &vehicle, TRUE, &deck, &up, &base, FALSE, &velocity);
+		vehicle_riding_seed(&state, &velocity, &relative, &frame);
+		NEAR(relative.i, 0.f);
+		return 0;
+	}
+	CASE("refresh")
+	{
+		/* a deck accelerating upward: stepping off keeps this tick's deck velocity */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(0.f, 0.f, .1f));
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity = zero;
+
+		vehicle = vehicle_at(VEHICLE, 0.f, 0.f, .2f, 0.f, 11);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		vehicle_riding_record(&state, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(state.velocity.k, .2f);
+		return 0;
+	}
+	CASE("elevator")
+	{
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity = zero;
+
+		vehicle_riding_clear(&state);
+		CHECK(vehicle_riding_record(&state, NULL, &vehicle, TRUE, &zero, &up, &base, FALSE, &velocity),
+			"riding does not clear the elevator");
+		vehicle_riding_clear(&state);
+		CHECK(!vehicle_riding_record(&state, NULL, NULL, TRUE, &zero, &up, &base, FALSE, &velocity),
+			"the ground clears the elevator");
+		return 0;
+	}
+	CASE("local-frame")
+	{
+		/* a point into a yawed and pitched vehicle's frame and back */
+		real_vector3d forward = pitched(vector((real)cos(.3f), (real)sin(.3f), 0.f), .2f);
+		real_vector3d upward = pitched(up, .2f);
+		real_point3d origin = point(1.f, 2.f, 3.f);
+		real_point3d world = point(2.5f, -1.f, 4.f);
+		real_point3d local, back;
+
+		vehicle_riding_point_to_local(&origin, &forward, &upward, &world, &local);
+		vehicle_riding_point_to_world(&origin, &forward, &upward, &local, &back);
+		CHECK(fabs(local.y) > .1, "the case needs a point to the side");
+		NEAR(back.x, 2.5f);
+		NEAR(back.y, -1.f);
+		NEAR(back.z, 4.f);
+		/* 30 ticks in the air off a moving deck: its place on the deck stays */
+		{
+			struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+			struct vehicle_riding_state state = riding_on(&vehicle, point(1.f, 1.f, 0.f), vector(.1f, 0.f, 0.f));
+			real_point3d base = point(1.f, 1.f, 0.f);
+			real_point3d kept = state.local_point;
+			real_vector3d velocity = zero;
+			short tick;
+
+			for (tick = 1; tick <= 30; tick++)
+			{
+				vehicle = vehicle_at(VEHICLE, .1f*tick, 0.f, 0.f, 0.f, 10 + tick);
+				base.z += .05f;
+				CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+				vehicle_riding_record(&state, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+			}
+			NEAR(state.local_point.x, kept.x);
+			NEAR(state.local_point.y, kept.y);
+			NEAR(state.local_point.z, kept.z);
+		}
+		return 0;
+	}
+	CASE("node-change")
+	{
+		/* from the bed (node 1) onto the turret (node 2) of the same vehicle */
+		struct vehicle_riding_vehicle bed = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_vehicle turret = vehicle_at(VEHICLE, 1.f, 0.f, 1.f, .5f, 10);
+		struct vehicle_riding_state state;
+		real_point3d base = point(1.5f, .5f, 1.f);
+		real_vector3d velocity = zero;
+
+		bed.node_index = 1;
+		turret.node_index = 2;
+		turret.origin = bed.origin;
+		vehicle_riding_clear(&state);
+		vehicle_riding_record(&state, NULL, &bed, TRUE, &zero, &up, &base, FALSE, &velocity);
+		CHECK(state.node_index == 1, "node %d, not the bed's", state.node_index);
+		bed.updates = turret.updates = 11;
+		CHECK(vehicle_riding_snapshot_step(&state, &bed, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		vehicle_riding_record(&state, &step, &turret, TRUE, &zero, &up, &base, FALSE, &velocity);
+		CHECK(state.node_index == 2, "node %d, not the turret's", state.node_index);
+		/* both still: no carry, no jump from the change of frame */
+		turret.updates = 12;
+		CHECK(vehicle_riding_snapshot_step(&state, &turret, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		NEAR(step.displacement.i, 0.f);
+		NEAR(step.displacement.j, 0.f);
+		NEAR(step.displacement.k, 0.f);
+		return 0;
+	}
+	CASE("falling")
+	{
+		/* a deck descending 2 a tick, faster than any falling limit */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(0.f, 0.f, -2.f));
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity;
+		short tick;
+
+		NEAR(vehicle_riding_falling_velocity(&state, -2.05f), -.05f);
+		/* the tick it steps off: relative */
+		vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 11);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		step.velocity_now = vector(0.f, 0.f, -2.f);
+		velocity = zero;
+		vehicle_riding_record(&state, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(vehicle_riding_falling_velocity(&state, -2.05f), -.05f);
+		/* 90 ticks later, the window over, still in the air: relative */
+		for (tick = 0; tick < 90; tick++)
+		{
+			boolean valid;
+
+			vehicle.updates++;
+			valid = state.ticks > 0 && vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step);
+			vehicle_riding_record(&state, valid ? &step : NULL, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+		}
+		CHECK(state.ticks == 0 && state.falling == 1, "the falling frame did not outlast the window");
+		NEAR(vehicle_riding_falling_velocity(&state, -2.05f), -.05f);
+		/* landed on the ground beside a rising deck, in its window: the world's */
+		state = riding_on(&vehicle, base, vector(0.f, 0.f, 2.f));
+		state.ticks = 30;
+		state.falling = 1;
+		vehicle.updates++;
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		vehicle_riding_record(&state, &step, NULL, TRUE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(vehicle_riding_falling_velocity(&state, -1.f), -1.f);
+		return 0;
+	}
+	CASE("jump-deck-frame")
+	{
+		/* the jump as biped_jump takes it, above the frame (jump velocity 0.2) */
+		real decks[2] = { .3f, -.3f };
+		short index;
+
+		for (index = 0; index < 2; index++)
+		{
+			struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+			struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(0.f, 0.f, decks[index]));
+			real_vector3d velocity = vector(0.f, 0.f, decks[index]);
+			real_vector3d jump_frame;
+			real upward;
+
+			vehicle_riding_jump_frame(&state, &jump_frame);
+			velocity.k -= jump_frame.k;
+			upward = velocity.k;
+			if (upward < .2f)
+				velocity.k += .2f - upward;
+			velocity.k += jump_frame.k;
+			NEAR(velocity.k - decks[index], .2f);
+		}
+		/* stepped onto a rising deck this tick (recorded), jumping in the same tick */
+		{
+			struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+			struct vehicle_riding_state state;
+			real_point3d base = point(0.f, 0.f, 0.f);
+			real_vector3d deck = vector(0.f, 0.f, .3f);
+			real_vector3d velocity = zero;
+			real_vector3d jump_frame;
+
+			vehicle_riding_clear(&state);
+			vehicle_riding_record(&state, NULL, &vehicle, TRUE, &deck, &up, &base, FALSE, &velocity);
+			vehicle_riding_jump_frame(&state, &jump_frame);
+			NEAR(jump_frame.k, .3f);
+		}
 		return 0;
 	}
 	fprintf(stderr, "unknown case: %s\n", case_name);
