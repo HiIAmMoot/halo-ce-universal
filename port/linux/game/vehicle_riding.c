@@ -567,6 +567,74 @@ void vehicle_riding_jump_frame(
 	}
 }
 
+short vehicle_riding_collision_window(
+	struct vehicle_riding_state const *state,
+	boolean applies,
+	long vehicle_index)
+{
+	if (!applies || state->ticks <= 0 || state->object_index != vehicle_index)
+		return _vehicle_riding_collision_original;
+	if (vehicle_riding_is_riding(state))
+		return _vehicle_riding_collision_ignore;
+	return _vehicle_riding_collision_fix;
+}
+
+boolean vehicle_riding_window_damage(
+	real_vector3d const *biped_velocity,
+	real_vector3d const *deck_velocity,
+	real damage_speed)
+{
+	real_vector3d closing;
+
+	riding_subtract(biped_velocity, deck_velocity, &closing);
+	return riding_magnitude(&closing) > damage_speed;
+}
+
+boolean vehicle_riding_collision_damage(
+	short decision,
+	boolean original_damage)
+{
+	if (decision == _vehicle_riding_collision_original)
+		return original_damage;
+	/* (in the window the closing speed alone decides, whether the fix
+	succeeded or not) */
+	return decision == _vehicle_riding_collision_fix_and_damage;
+}
+
+real vehicle_riding_damage_speed(
+	boolean have_information,
+	real run_forward,
+	real run_backward,
+	real run_sideways,
+	boolean double_speed,
+	real double_speed_multiplier,
+	real player_speed_multiplier,
+	real jump_velocity)
+{
+	real run = 0.f;
+	real speed;
+
+	if (riding_damage_speed != 0.f)
+		return riding_damage_speed;
+	/* (as bipeds.c moves a player: forward or back and sideways at once) */
+	if (have_information)
+	{
+		real forward = run_forward > run_backward ? run_forward : run_backward;
+
+		run = (real)sqrt(forward*forward + run_sideways*run_sideways)/TICKS_PER_SECOND;
+		if (double_speed && double_speed_multiplier > 1.f)
+			run *= double_speed_multiplier;
+	}
+	if (player_speed_multiplier > 1.f)
+		run *= player_speed_multiplier;
+	speed = 2.f*(real)sqrt(run*run + jump_velocity*jump_velocity);
+	/* (so written that a tag's speed not a number is none) */
+	if (!(speed >= 0.f))
+		speed = 0.f;
+
+	return speed;
+}
+
 real vehicle_riding_look(
 	short local_player_index,
 	boolean carried,

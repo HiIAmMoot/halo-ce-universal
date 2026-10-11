@@ -16,7 +16,7 @@ from harness import CHECK_FAILED, build, constant, enum_with, mutated, read, run
 CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guards", "gate", "deferred",
          "look-carry", "two-local-players", "latch", "momentum", "no-double-count", "spans", "double-speed",
          "landing-frame", "seat-exit-onto-deck", "refresh", "elevator", "local-frame", "node-change", "falling",
-         "jump-deck-frame"]
+         "jump-deck-frame", "collision-decision", "collision-others", "damage-speed-default"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -85,6 +85,16 @@ NEGATIVE_CONTROLS = {
     "falling-whole-window": (("if (vehicle_riding_is_riding(state) || state->falling)",
                               "if (state->ticks > 0 || state->falling)"), "falling"),
     "jump-world": (("\t\t*jump_frame = state->velocity;\n", "\n"), "jump-deck-frame"),
+    "centre-velocity": (("riding_cross(&vehicle->angular_velocity, &offset, &turning);",
+                         "turning.i = turning.j = turning.k = 0.f;"), "collision-decision"),
+    "window-for-every-vehicle": (("state->object_index != vehicle_index", "FALSE"), "collision-others"),
+    "window-where-not-applied": (("if (!applies || state->ticks <= 0 ||", "if (state->ticks <= 0 ||"),
+                                 "collision-others"),
+    "no-factor-two": (("speed = 2.f*(real)sqrt(", "speed = (real)sqrt("), "damage-speed-default"),
+    "damage-on-failed-fix": (("return decision == _vehicle_riding_collision_fix_and_damage;",
+                              "return original_damage || decision == _vehicle_riding_collision_fix_and_damage;"),
+                             "collision-decision"),
+    "per-second": (("/TICKS_PER_SECOND;", ";"), "damage-speed-default"),
 }
 
 

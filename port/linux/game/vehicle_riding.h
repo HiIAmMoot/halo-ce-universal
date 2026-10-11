@@ -134,4 +134,19 @@ real vehicle_riding_falling_velocity(struct vehicle_riding_state const *state, r
 /* the velocity a jump is taken above */
 void vehicle_riding_jump_frame(struct vehicle_riding_state const *state, real_vector3d *jump_frame);
 
+/* how the vehicle's collision treats a biped: as the original, not at all
+(it rides it), or fixed out of it without a push (in its window) */
+short vehicle_riding_collision_window(struct vehicle_riding_state const *state, boolean applies, long vehicle_index);
+/* whether a biped in the vehicle's window is hurt: closing faster than the
+damage speed, in world units a player tick */
+boolean vehicle_riding_window_damage(real_vector3d const *biped_velocity, real_vector3d const *deck_velocity,
+	real damage_speed);
+/* whether the vehicle's collision hurts the biped: the original's verdict
+(a fix that failed hurts) unless the riding decision overrides it */
+boolean vehicle_riding_collision_damage(short decision, boolean original_damage);
+/* debug.riding_damage_speed, or when 0, twice the biped's own run and jump
+speed a tick (as network_distributed.c figures a player's) */
+real vehicle_riding_damage_speed(boolean have_information, real run_forward, real run_backward, real run_sideways,
+	boolean double_speed, real double_speed_multiplier, real player_speed_multiplier, real jump_velocity);
+
 #endif

@@ -686,6 +686,86 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
+	CASE("collision-decision")
+	{
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), zero);
+		real_vector3d deck;
+		real_point3d base;
+
+		CHECK(vehicle_riding_collision_window(&state, TRUE, VEHICLE) == _vehicle_riding_collision_ignore, "rider hit");
+		state.ticks = 30;
+		CHECK(vehicle_riding_collision_window(&state, TRUE, VEHICLE) == _vehicle_riding_collision_fix, "window pushed");
+		/* closing below and above the damage speed */
+		deck = vector(.1f, 0.f, 0.f);
+		{
+			real_vector3d slow = vector(.1f, 0.f, 0.f);
+			real_vector3d fast = vector(.5f, 0.f, 0.f);
+
+			CHECK(!vehicle_riding_window_damage(&slow, &deck, .25f), "hurt at the deck's speed");
+			CHECK(vehicle_riding_window_damage(&fast, &deck, .25f), "not hurt closing at 0.4");
+		}
+		/* a large deck turning 0.05 a tick, the biped 4 from its origin moving with it */
+		vehicle.angular_velocity = vector(0.f, 0.f, .05f);
+		base = point(4.f, 0.f, 0.f);
+		vehicle_riding_deck_point_velocity(&vehicle, &base, FALSE, &deck);
+		{
+			real_vector3d with_it = vector(0.f, .2f, 0.f);
+
+			CHECK(!vehicle_riding_window_damage(&with_it, &deck, .1f), "hurt by the deck's turn");
+		}
+		/* double speed: a vehicle without a player 0.2 an update, the biped with it at 0.1 a tick */
+		vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		vehicle.translational_velocity = vector(.2f, 0.f, 0.f);
+		vehicle_riding_deck_point_velocity(&vehicle, &base, TRUE, &deck);
+		{
+			real_vector3d with_it = vector(.1f, 0.f, 0.f);
+
+			CHECK(!vehicle_riding_window_damage(&with_it, &deck, .05f), "hurt in double speed");
+		}
+		/* the verdict: a failed fix hurts a pedestrian (the original), not a biped in the window */
+		CHECK(vehicle_riding_collision_damage(_vehicle_riding_collision_original, TRUE), "pedestrian spared");
+		CHECK(!vehicle_riding_collision_damage(_vehicle_riding_collision_original, FALSE), "pedestrian hurt");
+		CHECK(!vehicle_riding_collision_damage(_vehicle_riding_collision_fix, TRUE), "hurt on a failed fix in the window");
+		CHECK(vehicle_riding_collision_damage(_vehicle_riding_collision_fix_and_damage, FALSE), "closing hit spared");
+		return 0;
+	}
+	CASE("collision-others")
+	{
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state;
+
+		/* never rode */
+		vehicle_riding_clear(&state);
+		CHECK(vehicle_riding_collision_window(&state, TRUE, VEHICLE) == _vehicle_riding_collision_original, "pedestrian");
+		/* in another vehicle's window */
+		state = riding_on(&vehicle, point(0.f, 0.f, 0.f), zero);
+		state.ticks = 30;
+		CHECK(vehicle_riding_collision_window(&state, TRUE, OTHER_VEHICLE) == _vehicle_riding_collision_original,
+			"another vehicle's window");
+		/* riding where riding does not apply (an AI, a network game) */
+		CHECK(vehicle_riding_collision_window(&state, FALSE, VEHICLE) == _vehicle_riding_collision_original, "AI");
+		return 0;
+	}
+	CASE("damage-speed-default")
+	{
+		real run = (real)sqrt(3.f*3.f + 2.75f*2.75f)/30.f;
+
+		setting_damage_speed = 0.0;
+		vehicle_riding_latch();
+		NEAR(vehicle_riding_damage_speed(TRUE, 3.f, 2.5f, 2.75f, FALSE, 1.5f, 1.f, .1f),
+			2.f*(real)sqrt(run*run + .01f));
+		NEAR(vehicle_riding_damage_speed(TRUE, 3.f, 2.5f, 2.75f, TRUE, 1.5f, 1.f, .1f),
+			2.f*(real)sqrt(1.5f*run*1.5f*run + .01f));
+		NEAR(vehicle_riding_damage_speed(TRUE, 3.f, 2.5f, 2.75f, TRUE, 1.5f, 1.5f, .1f),
+			2.f*(real)sqrt(2.25f*run*2.25f*run + .01f));
+		NEAR(vehicle_riding_damage_speed(FALSE, 3.f, 2.5f, 2.75f, FALSE, 1.f, 1.f, .1f), .2f);
+		NEAR(vehicle_riding_damage_speed(TRUE, 3.f, 2.5f, (real)NAN, FALSE, 1.f, 1.f, .1f), 0.f);
+		setting_damage_speed = 0.4;
+		vehicle_riding_latch();
+		NEAR(vehicle_riding_damage_speed(TRUE, 3.f, 2.5f, 2.75f, FALSE, 1.f, 1.f, .1f), .4f);
+		return 0;
+	}
 	fprintf(stderr, "unknown case: %s\n", case_name);
 	return 2;
 }
