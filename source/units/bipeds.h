@@ -108,6 +108,10 @@ relative to the deck it rides (vehicle_riding.c) */
 boolean biped_riding_deferred(long biped_index);
 void biped_riding_relative_velocity(long unit_index, real_vector3d *velocity);
 
+/* port: how a vehicle's collision treats a biped standing on it or just
+off it: an enum vehicle_riding_collision (vehicle_riding.h) */
+short biped_riding_collision(long biped_index, long vehicle_index);
+
 char animation_left_foot_frame_index(
 	struct animation const *animation);
 char animation_right_foot_frame_index(

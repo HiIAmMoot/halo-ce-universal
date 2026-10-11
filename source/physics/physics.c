@@ -117,6 +117,7 @@ symbols in this file:
 #include "units/bipeds.h"
 #include "units/unit_definitions.h"
 #include "units/vehicles.h"
+#include "vehicle_riding.h" /* port: port/linux/game/vehicle_riding.c */
 
 /* ---------- constants */
 
@@ -1103,6 +1104,12 @@ static boolean physics_compute_biped_collision(
 		real_vector3d acceleration;
 		real_point3d new_position;
 		boolean cause_damage = TRUE;
+		/* port: a biped standing on this vehicle, or just off it (vehicle_riding.c) */
+		short riding = biped_riding_collision(biped_index, instance->object_index);
+
+		/* port: (the vehicle it stands on neither pushes nor hurts it) */
+		if (riding == _vehicle_riding_collision_ignore)
+			return collision;
 
 		vector_from_points3d(
 			&vehicle->object.bounding_sphere_center,
@@ -1114,11 +1121,16 @@ static boolean physics_compute_biped_collision(
 		scale_vector3d(&acceleration, MAX(vehicle_speed, 0.1f), &acceleration);
 		add_vectors3d(&acceleration, &vehicle->object.translational_velocity, &acceleration);
 		scale_vector3d(&acceleration, 0.5f, &acceleration);
-		biped_accelerate(biped_index, &acceleration);
+		/* port: (in the window of the vehicle it just left: fixed out of it
+		where it stands, not pushed) */
+		if (riding == _vehicle_riding_collision_original)
+		{
+			biped_accelerate(biped_index, &acceleration);
 
-		base.x += acceleration.i*2.0f;
-		base.y += acceleration.j*2.0f;
-		base.z += acceleration.k*2.0f;
+			base.x += acceleration.i*2.0f;
+			base.y += acceleration.j*2.0f;
+			base.z += acceleration.k*2.0f;
+		}
 
 		if (collision_fix_pill(
 				_collision_test_for_bipeds_living_flags,
@@ -1140,6 +1152,8 @@ static boolean physics_compute_biped_collision(
 						(real_point3d const *)&vehicle->object.translational_velocity,
 						(real_point3d const *)&biped->object.translational_velocity) > 0.0011111111f);
 		}
+		/* port: (vehicle_riding.c: in the window the closing speed alone decides) */
+		cause_damage = vehicle_riding_collision_damage(riding, cause_damage);
 
 		if (cause_damage)
 		{

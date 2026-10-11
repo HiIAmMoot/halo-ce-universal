@@ -873,6 +873,62 @@ void biped_riding_relative_velocity(
 	}
 }
 
+/* port: twice the biped's own run and jump speed a tick, from its tags (only on
+the window's path: the tags are not read for anything else) */
+static real biped_riding_damage_speed(
+	struct biped_datum const *biped)
+{
+	struct game_globals *globals = scenario_get_game_globals();
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct game_globals_player_information *information = NULL;
+	real player_speed_multiplier = 1.f;
+
+	if (globals && globals->player_information.count > 0)
+	{
+		information = TAG_BLOCK_GET_ELEMENT(&globals->player_information, 0,
+			struct game_globals_player_information);
+	}
+	if (biped->unit.player_index != NONE)
+		player_speed_multiplier = player_get(biped->unit.player_index)->speed_multiplier;
+	return vehicle_riding_damage_speed(
+		information != NULL,
+		information ? information->run_forward_speed : 0.f,
+		information ? information->run_backward_speed : 0.f,
+		information ? information->run_sideways_speed : 0.f,
+		game_players_are_double_speed(),
+		information ? information->double_speed_multiplier : 1.f,
+		player_speed_multiplier,
+		definition->biped.jump_velocity);
+}
+
+/* port: how the ridden vehicle treats this biped (vehicle_riding.c) */
+short biped_riding_collision(
+	long biped_index,
+	long vehicle_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct vehicle_riding_state riding;
+	struct vehicle_riding_vehicle vehicle;
+	real_vector3d deck_velocity;
+	real_point3d base;
+	real height;
+	real width;
+	short decision;
+
+	biped_riding_get(biped, &riding);
+	decision = vehicle_riding_collision_window(&riding, biped_riding_applies(biped), vehicle_index);
+	if (decision != _vehicle_riding_collision_fix)
+		return decision;
+	if (!biped_riding_vehicle(vehicle_index, NONE, &vehicle))
+		return _vehicle_riding_collision_original;
+	biped_get_physics_pill(biped_index, &base, &height, &width);
+	vehicle_riding_deck_point_velocity(&vehicle, &base, game_players_are_double_speed(), &deck_velocity);
+	return vehicle_riding_window_damage(&biped->object.translational_velocity, &deck_velocity,
+		biped_riding_damage_speed(biped)) ?
+		_vehicle_riding_collision_fix_and_damage :
+		_vehicle_riding_collision_fix;
+}
+
 /* port: a biped in a seat rides nothing, and its view is not turned */
 static void biped_riding_seated(
 	long biped_index,
