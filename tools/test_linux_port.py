@@ -337,7 +337,7 @@ def test_vehicle_riding_settings():
         assert f"debug.{tunable}" in names and f"`debug.{tunable}`" in readme
         assert f"game.{tunable}" not in names
     limits = (root / "port/linux/include/halo_port_limits.h").read_text()
-    assert re.search(r"#define HALO_PORT_NETWORK_VERSION 25\b", limits)
+    assert re.search(r"#define HALO_PORT_NETWORK_VERSION 27\b", limits)
 
 
 def test_p2p_signatures_and_listings(tmp_path):
