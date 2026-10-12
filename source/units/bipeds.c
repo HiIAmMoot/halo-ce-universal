@@ -832,7 +832,7 @@ static void biped_riding_support(
 		&physics->support_velocity);
 }
 
-/* the hit that carries the biped (vehicle_riding_claim): the ridden
+/* port: the hit that carries the biped (vehicle_riding_claim): the ridden
 vehicle's while it still holds the biped up */
 static short biped_riding_claimed_support(
 	struct biped_physics const *physics,

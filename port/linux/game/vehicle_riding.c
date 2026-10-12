@@ -42,68 +42,6 @@ static real riding_kept_dyaws[MAXIMUM_LOCAL_PLAYERS];
 
 /* ---------- private code */
 
-static real riding_dot(
-	real_vector3d const *a,
-	real_vector3d const *b)
-{
-	return a->i*b->i + a->j*b->j + a->k*b->k;
-}
-
-static real riding_magnitude(
-	real_vector3d const *vector)
-{
-	return (real)sqrt(riding_dot(vector, vector));
-}
-
-static void riding_cross(
-	real_vector3d const *a,
-	real_vector3d const *b,
-	real_vector3d *result)
-{
-	real_vector3d cross;
-
-	cross.i = a->j*b->k - a->k*b->j;
-	cross.j = a->k*b->i - a->i*b->k;
-	cross.k = a->i*b->j - a->j*b->i;
-	*result = cross;
-}
-
-static void riding_between(
-	real_point3d const *from,
-	real_point3d const *to,
-	real_vector3d *result)
-{
-	result->i = to->x - from->x;
-	result->j = to->y - from->y;
-	result->k = to->z - from->z;
-}
-
-static real riding_distance(
-	real_point3d const *a,
-	real_point3d const *b)
-{
-	real_vector3d between;
-
-	riding_between(a, b, &between);
-	return riding_magnitude(&between);
-}
-
-static void riding_scale(
-	real_vector3d *vector,
-	real scale)
-{
-	vector->i *= scale;
-	vector->j *= scale;
-	vector->k *= scale;
-}
-
-static real riding_component(
-	real_vector3d const *vector,
-	short axis)
-{
-	return axis == 0 ? vector->i : axis == 1 ? vector->j : vector->k;
-}
-
 /* (a vehicle without a player updates every other tick in double speed, so
 its velocities and moves are for two player ticks) */
 static real riding_period(
@@ -111,33 +49,6 @@ static real riding_period(
 	boolean double_speed)
 {
 	return double_speed && !vehicle->has_player ? 2.f : 1.f;
-}
-
-static void riding_sum(
-	real_vector3d const *a,
-	real_vector3d const *b,
-	real_vector3d *result)
-{
-	result->i = a->i + b->i;
-	result->j = a->j + b->j;
-	result->k = a->k + b->k;
-}
-
-static void riding_subtract(
-	real_vector3d const *a,
-	real_vector3d const *b,
-	real_vector3d *result)
-{
-	result->i = a->i - b->i;
-	result->j = a->j - b->j;
-	result->k = a->k - b->k;
-}
-
-static void riding_add(
-	real_vector3d *vector,
-	real_vector3d const *added)
-{
-	riding_sum(vector, added, vector);
 }
 
 /* the part of a velocity into a support's plane, measured against the
@@ -150,13 +61,12 @@ static void riding_clip(
 	real_vector3d relative;
 	real into;
 
-	riding_subtract(velocity, support_velocity, &relative);
-	into = riding_dot(&relative, normal);
+	subtract_vectors3d(velocity, support_velocity, &relative);
+	into = dot_product3d(&relative, normal);
 	if (into < 0.f)
 	{
-		velocity->i -= normal->i*into;
-		velocity->j -= normal->j*into;
-		velocity->k -= normal->k*into;
+		scale_vector3d(normal, into, &relative);
+		subtract_vectors3d(velocity, &relative, velocity);
 	}
 }
 
@@ -255,14 +165,10 @@ void vehicle_riding_point_to_local(
 	real_point3d const *point,
 	real_point3d *local)
 {
-	real_vector3d left;
-	real_vector3d offset;
+	real_matrix4x3 frame;
 
-	riding_cross(up, forward, &left);
-	riding_between(origin, point, &offset);
-	local->x = riding_dot(&offset, forward);
-	local->y = riding_dot(&offset, &left);
-	local->z = riding_dot(&offset, up);
+	matrix4x3_from_point_and_vectors(&frame, origin, forward, up);
+	matrix4x3_inverse_transform_point(&frame, point, local);
 }
 
 void vehicle_riding_point_to_world(
@@ -272,14 +178,10 @@ void vehicle_riding_point_to_world(
 	real_point3d const *local,
 	real_point3d *point)
 {
-	real_vector3d left;
-	real_point3d result;
+	real_matrix4x3 frame;
 
-	riding_cross(up, forward, &left);
-	result.x = origin->x + forward->i*local->x + left.i*local->y + up->i*local->z;
-	result.y = origin->y + forward->j*local->x + left.j*local->y + up->j*local->z;
-	result.z = origin->z + forward->k*local->x + left.k*local->y + up->k*local->z;
-	*point = result;
+	matrix4x3_from_point_and_vectors(&frame, origin, forward, up);
+	matrix4x3_transform_point(&frame, local, point);
 }
 
 real vehicle_riding_yaw(
@@ -288,52 +190,17 @@ real vehicle_riding_yaw(
 	real_vector3d const *to_forward,
 	real_vector3d const *to_up)
 {
-	real_vector3d from_left;
-	real_vector3d to_left;
-	real_vector3d const *from_basis[3];
-	real_vector3d const *to_basis[3];
-	real rotation[3][3];
-	real_vector3d axis;
-	real sine2;
-	real cosine;
-	real angle;
-	short row;
-	short column;
-	short basis;
+	static real_point3d const origin = { 0.f, 0.f, 0.f };
+	real_matrix4x3 from;
+	real_matrix4x3 to;
+	real_vector3d rotation;
 
-	riding_cross(from_up, from_forward, &from_left);
-	riding_cross(to_up, to_forward, &to_left);
-	from_basis[0] = from_forward;
-	from_basis[1] = &from_left;
-	from_basis[2] = from_up;
-	to_basis[0] = to_forward;
-	to_basis[1] = &to_left;
-	to_basis[2] = to_up;
-	/* (the rotation that takes the old basis onto the new one) */
-	for (row = 0; row < 3; row++)
-	{
-		for (column = 0; column < 3; column++)
-		{
-			rotation[row][column] = 0.f;
-			for (basis = 0; basis < 3; basis++)
-			{
-				rotation[row][column] +=
-					riding_component(to_basis[basis], row)*riding_component(from_basis[basis], column);
-			}
-		}
-	}
-
-	axis.i = rotation[2][1] - rotation[1][2];
-	axis.j = rotation[0][2] - rotation[2][0];
-	axis.k = rotation[1][0] - rotation[0][1];
-	sine2 = riding_magnitude(&axis);
-	if (sine2 < 0.000001f)
-		return 0.f;
-	cosine = (rotation[0][0] + rotation[1][1] + rotation[2][2] - 1.f)*0.5f;
-	angle = (real)atan2(sine2*0.5f, cosine);
-	/* (the rotation's axis times its angle, projected on global up: the
-	vehicle's yaw alone, whatever its pitch) */
-	return angle*axis.k/sine2;
+	matrix4x3_from_point_and_vectors(&from, &origin, from_forward, from_up);
+	matrix4x3_from_point_and_vectors(&to, &origin, to_forward, to_up);
+	vector_from_matrices4x3(&from, &to, &rotation);
+	/* (the rotation's axis times its angle, its k: the vehicle's yaw
+	alone, whatever its pitch) */
+	return rotation.k;
 }
 
 void vehicle_riding_turn_vector(
@@ -358,12 +225,10 @@ void vehicle_riding_deck_point_velocity(
 	real_vector3d turning;
 
 	/* (about the vehicle's own origin: its velocities are the body's, not a node's) */
-	riding_between(&vehicle->origin, point, &offset);
-	riding_cross(&vehicle->angular_velocity, &offset, &turning);
-	velocity->i = vehicle->translational_velocity.i + turning.i;
-	velocity->j = vehicle->translational_velocity.j + turning.j;
-	velocity->k = vehicle->translational_velocity.k + turning.k;
-	riding_scale(velocity, 1.f/riding_period(vehicle, double_speed));
+	vector_from_points3d(&vehicle->origin, point, &offset);
+	cross_product3d(&vehicle->angular_velocity, &offset, &turning);
+	add_vectors3d(&vehicle->translational_velocity, &turning, velocity);
+	scale_vector3d(velocity, 1.f/riding_period(vehicle, double_speed), velocity);
 }
 
 boolean vehicle_riding_snapshot_step(
@@ -391,14 +256,14 @@ boolean vehicle_riding_snapshot_step(
 	/* (where it ended its last tick, from its place on the deck as the deck was then) */
 	vehicle_riding_point_to_world(&state->vehicle_position, &state->vehicle_forward, &state->vehicle_up, &state->local_point, &last);
 	/* (moved by something else since its last tick: a script, a cutscene, a teleport) */
-	if (riding && riding_distance(base, &last) > riding_moved_alone)
+	if (riding && distance3d(base, &last) > riding_moved_alone)
 	{
 		vehicle_riding_drop(state);
 		return FALSE;
 	}
 	/* (as an elevator only moves bipeds in its own sphere, device_machines.c) */
 	if (!riding &&
-		riding_distance(base, &vehicle->bounding_sphere_center) > vehicle->bounding_sphere_radius + pill_height + pill_width)
+		distance3d(base, &vehicle->bounding_sphere_center) > vehicle->bounding_sphere_radius + pill_height + pill_width)
 	{
 		vehicle_riding_drop(state);
 		return FALSE;
@@ -412,8 +277,8 @@ boolean vehicle_riding_snapshot_step(
 	vehicle_riding_point_to_local(&state->vehicle_position, &state->vehicle_forward, &state->vehicle_up, base,
 		&local_base);
 	vehicle_riding_point_to_world(&vehicle->position, &vehicle->forward, &vehicle->up, &local_base, &moved_base);
-	riding_between(&last, &carried, &step->displacement);
-	distance = riding_magnitude(&step->displacement);
+	vector_from_points3d(&last, &carried, &step->displacement);
+	distance = magnitude3d(&step->displacement);
 	/* (a teleport, or a move without an update: stage 1 does not carry it) */
 	if (step->updates < 0 ||
 		(step->updates == 0 && distance > 0.000001f) ||
@@ -435,10 +300,9 @@ boolean vehicle_riding_snapshot_step(
 	}
 
 	per_tick = 1.f/(step->updates*riding_period(vehicle, double_speed));
-	step->velocity_now = step->displacement;
-	riding_scale(&step->velocity_now, per_tick);
-	riding_between(base, &moved_base, &step->tracked_deck_velocity);
-	riding_scale(&step->tracked_deck_velocity, per_tick);
+	scale_vector3d(&step->displacement, per_tick, &step->velocity_now);
+	vector_from_points3d(base, &moved_base, &step->tracked_deck_velocity);
+	scale_vector3d(&step->tracked_deck_velocity, per_tick, &step->tracked_deck_velocity);
 	step->dyaw = vehicle_riding_yaw(&state->vehicle_forward, &state->vehicle_up, &vehicle->forward, &vehicle->up);
 
 	return TRUE;
@@ -453,7 +317,7 @@ void vehicle_riding_seed(
 	frame_velocity->i = frame_velocity->j = frame_velocity->k = 0.f;
 	if (vehicle_riding_is_riding(state))
 		*frame_velocity = state->velocity;
-	riding_subtract(world_velocity, frame_velocity, velocity);
+	subtract_vectors3d(world_velocity, frame_velocity, velocity);
 }
 
 void vehicle_riding_support_velocity(
@@ -485,9 +349,9 @@ real vehicle_riding_landing_velocity(
 
 	/* (the physics' velocity is in the ridden deck's frame: back to the
 	world's, then into the frame of what it lands on) */
-	riding_sum(velocity, frame_velocity, &relative);
-	riding_subtract(&relative, support_velocity, &relative);
-	return -riding_dot(&relative, normal);
+	add_vectors3d(velocity, frame_velocity, &relative);
+	subtract_vectors3d(&relative, support_velocity, &relative);
+	return -dot_product3d(&relative, normal);
 }
 
 boolean vehicle_riding_record(
@@ -509,7 +373,7 @@ boolean vehicle_riding_record(
 		if (suspended)
 			*new_velocity = step->velocity_now;
 		else
-			riding_add(new_velocity, &step->velocity_now);
+			add_vectors3d(new_velocity, &step->velocity_now, new_velocity);
 		state->velocity = step->velocity_now;
 		if (supported && (!support || support->object_index != state->object_index))
 			riding_clip(new_velocity, support_velocity, support_normal);
@@ -600,8 +464,8 @@ boolean vehicle_riding_window_damage(
 {
 	real_vector3d closing;
 
-	riding_subtract(biped_velocity, deck_velocity, &closing);
-	return riding_magnitude(&closing) > damage_speed;
+	subtract_vectors3d(biped_velocity, deck_velocity, &closing);
+	return magnitude3d(&closing) > damage_speed;
 }
 
 boolean vehicle_riding_collision_damage(

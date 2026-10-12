@@ -10,6 +10,7 @@ code (under_test.inc) and the enums (enums.inc) from the sources.
 #include "harness.h"
 #include <math.h>
 #include "enums.inc"
+#include "engine.inc"
 
 typedef struct { real yaw, pitch; } real_euler_angles2d;
 #define TICKS_PER_SECOND 30
@@ -779,6 +780,11 @@ int main(int argc, char **argv)
 		CHECK(vehicle_riding_claim(NONE, 3, objects, normal_ks, .7f, 0) == 0, "claimed while not riding");
 		/* the best already the ridden one */
 		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, 1) == 1, "the best ridden deck lost");
+		/* no best hit at all */
+		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, NONE) == NONE, "claimed with no best");
+		/* the ridden deck hit exactly at the limit still holds the rider */
+		normal_ks[1] = .7f;
+		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, 0) == 1, "the limit lost the rider");
 		return 0;
 	}
 	CASE("collision-others")
