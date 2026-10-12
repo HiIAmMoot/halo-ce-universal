@@ -832,6 +832,27 @@ static void biped_riding_support(
 		&physics->support_velocity);
 }
 
+/* the hit that carries the biped (vehicle_riding_claim): the ridden
+vehicle's while it still holds the biped up */
+static short biped_riding_claimed_support(
+	struct biped_physics const *physics,
+	struct collision_plane const *collisions,
+	short collision_count,
+	short best)
+{
+	long objects[16];
+	real normal_ks[16];
+	short index;
+
+	for (index = 0; index < collision_count && index < 16; index++)
+	{
+		objects[index] = collisions[index].object_index;
+		normal_ks[index] = collisions[index].plane.n.k;
+	}
+	return vehicle_riding_claim(physics->riding_object_index, index, objects, normal_ks,
+		physics->minimum_normal_k, best);
+}
+
 /* port: (vehicle_riding.c) */
 static real biped_riding_falling_velocity(
 	struct biped_datum const *biped)
@@ -3302,8 +3323,9 @@ static void biped_update_physics(
 				SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, FALSE);
 				physics->ground_plane = collision->plane;
 				physics->support_surface_index = collision->surface_index;
-				/* port: (vehicle_riding.c) */
-				biped_riding_support(physics, collision);
+				/* port: (vehicle_riding.c: the ridden vehicle keeps its rider while it holds it up) */
+				biped_riding_support(physics,
+					&collisions[biped_riding_claimed_support(physics, collisions, collision_count, best_collision_index)]);
 				if (physics->support_surface_index == NONE ||
 					physics->support_surface_index != physics->stick_surface_index)
 				{

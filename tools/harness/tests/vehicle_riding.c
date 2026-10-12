@@ -764,6 +764,23 @@ int main(int argc, char **argv)
 		CHECK(vehicle_riding_collision_damage(_vehicle_riding_collision_fix_and_damage, FALSE), "closing hit spared");
 		return 0;
 	}
+	CASE("claim")
+	{
+		/* the best hit is the other Warthog's deck (0), the ridden one's deck is hit too (1) */
+		long objects[3] = { OTHER_VEHICLE, VEHICLE, NONE };
+		real normal_ks[3] = { 1.f, .95f, 1.f };
+
+		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, 0) == 1, "the ridden deck lost its rider");
+		/* the ridden vehicle hit only on a wall: the best takes over */
+		normal_ks[1] = .2f;
+		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, 0) == 0, "a wall kept the rider");
+		/* not riding: the best */
+		normal_ks[1] = .95f;
+		CHECK(vehicle_riding_claim(NONE, 3, objects, normal_ks, .7f, 0) == 0, "claimed while not riding");
+		/* the best already the ridden one */
+		CHECK(vehicle_riding_claim(VEHICLE, 3, objects, normal_ks, .7f, 1) == 1, "the best ridden deck lost");
+		return 0;
+	}
 	CASE("collision-others")
 	{
 		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
@@ -779,6 +796,10 @@ int main(int argc, char **argv)
 			"another vehicle's window");
 		/* riding where riding does not apply (an AI, a network game) */
 		CHECK(vehicle_riding_collision_window(&state, FALSE, VEHICLE) == _vehicle_riding_collision_original, "AI");
+		/* riding one Warthog, a second one alongside: never as a pedestrian */
+		state = riding_on(&vehicle, point(0.f, 0.f, 0.f), zero);
+		CHECK(vehicle_riding_collision_window(&state, TRUE, OTHER_VEHICLE) == _vehicle_riding_collision_fix,
+			"a second vehicle treats its rider as a pedestrian");
 		return 0;
 	}
 	CASE("damage-speed-default")

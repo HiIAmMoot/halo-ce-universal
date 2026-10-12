@@ -149,4 +149,9 @@ speed a tick (as network_distributed.c figures a player's) */
 real vehicle_riding_damage_speed(boolean have_information, real run_forward, real run_backward, real run_sideways,
 	boolean double_speed, real double_speed_multiplier, real player_speed_multiplier, real jump_velocity);
 
+/* which of a sweep's hits carries the biped: the vehicle it rides while
+any hit on it is steep enough to stand on, else the physics' best */
+short vehicle_riding_claim(long riding_object_index, short count, long const *objects, real const *normal_ks,
+	real minimum_normal_k, short best);
+
 #endif

@@ -580,8 +580,14 @@ short vehicle_riding_collision_window(
 	boolean applies,
 	long vehicle_index)
 {
-	if (!applies || state->ticks <= 0 || state->object_index != vehicle_index)
+	if (!applies || state->ticks <= 0)
 		return _vehicle_riding_collision_original;
+	if (state->object_index != vehicle_index)
+	{
+		/* (a vehicle beside the one it rides, in a convoy: judged on the
+		closing speed, never as a pedestrian) */
+		return vehicle_riding_is_riding(state) ? _vehicle_riding_collision_fix : _vehicle_riding_collision_original;
+	}
 	if (vehicle_riding_is_riding(state))
 		return _vehicle_riding_collision_ignore;
 	return _vehicle_riding_collision_fix;
@@ -671,4 +677,26 @@ real vehicle_riding_kept_dyaw(
 	if (local_player_index < 0 || local_player_index >= MAXIMUM_LOCAL_PLAYERS)
 		return 0.f;
 	return riding_kept_dyaws[local_player_index];
+}
+
+short vehicle_riding_claim(
+	long riding_object_index,
+	short count,
+	long const *objects,
+	real const *normal_ks,
+	real minimum_normal_k,
+	short best)
+{
+	short index;
+
+	if (riding_object_index == NONE || best < 0 || objects[best] == riding_object_index)
+		return best;
+	/* (two decks side by side: the one it rides keeps it, so the carry does
+	not swap between them from tick to tick) */
+	for (index = 0; index < count; index++)
+	{
+		if (objects[index] == riding_object_index && normal_ks[index] >= minimum_normal_k)
+			return index;
+	}
+	return best;
 }
