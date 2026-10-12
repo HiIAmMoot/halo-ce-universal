@@ -16,10 +16,16 @@ from harness import CHECK_FAILED, build, constant, enum_with, mutated, read, run
 CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guards", "gate", "deferred",
          "look-carry", "two-local-players", "latch", "momentum", "no-double-count", "spans", "double-speed",
          "landing-frame", "seat-exit-onto-deck", "refresh", "elevator", "local-frame", "node-change", "falling",
-         "jump-deck-frame", "collision-decision", "collision-others", "damage-speed-default"]
+         "jump-deck-frame", "collision-decision", "collision-others", "damage-speed-default", "suspended"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
+    "falling-stricter-off-rising": (("return relative > world_velocity_k ? relative : world_velocity_k;",
+                                     "return relative;"), "falling"),
+    "tracked-not-used": (("\telse if (support_object_index == tracked_object_index)\n\t\t*support_velocity = *tracked_deck_velocity;\n",
+                          ""), "landing-frame"),
+    "suspended-adds": (("\t\t\t*new_velocity = step->velocity_now;\n", "\t\t\triding_add(new_velocity, &step->velocity_now);\n"),
+                       "suspended"),
     "last-from-vehicle-now": (("vehicle_riding_point_to_world(&state->vehicle_position, &state->vehicle_forward, "
                                "&state->vehicle_up, &state->local_point, &last);",
                                "vehicle_riding_point_to_world(&vehicle->position, &vehicle->forward, "

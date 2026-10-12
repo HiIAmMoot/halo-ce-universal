@@ -106,7 +106,7 @@ symbols in this file:
 #include "scenario.h"
 #include "main.h"
 #include "objects.h"
-#include "objects/object_types.h"
+#include "objects/object_types.h" /* port: object_type_definitions (the saved game's layout checksum) */
 #include "game_sound.h"
 #include "sound_manager.h"
 #include "observer.h"

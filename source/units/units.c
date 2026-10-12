@@ -11196,8 +11196,8 @@ static void unit_grenade_throw_keep_legs_moving(
 		unit_index,
 		airborne ? 1.f : 0.f);
 
-	/* port: the unit's real speed along its facing and to its left, per second
-	(relative to the deck it rides, vehicle_riding.c) */
+	/* the unit's real speed along its facing and to its left, per second
+	(port: relative to the deck it rides, vehicle_riding.c) */
 	biped_riding_relative_velocity(unit_index, &relative_velocity);
 	cross_product3d(&unit->object.up, &unit->object.forward, &left);
 	forward_speed = dot_product3d(&relative_velocity, &unit->object.forward) * TICKS_PER_SECOND;

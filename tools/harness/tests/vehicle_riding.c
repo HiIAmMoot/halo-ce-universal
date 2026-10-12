@@ -496,6 +496,13 @@ int main(int argc, char **argv)
 		NEAR(velocity.k, -.1f);
 		CHECK(state.object_index == OTHER_VEHICLE, "not riding the second vehicle");
 		NEAR(state.velocity.k, -.1f);
+		/* landing back on the tracked deck (in its window, not riding): its tracked velocity */
+		{
+			real_vector3d tracked = vector(0.f, 0.f, -.2f);
+
+			vehicle_riding_support_velocity(VEHICLE, NONE, &zero, VEHICLE, &tracked, &other, &support);
+			NEAR(support.k, -.2f);
+		}
 		return 0;
 	}
 	CASE("seat-exit-onto-deck")
@@ -610,6 +617,20 @@ int main(int argc, char **argv)
 		NEAR(step.displacement.k, 0.f);
 		return 0;
 	}
+	CASE("suspended")
+	{
+		/* a suspended rider (a cutscene holds it): the carried place stands and its velocity is the deck's */
+		struct vehicle_riding_vehicle vehicle = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state state = riding_on(&vehicle, point(0.f, 0.f, 0.f), vector(.1f, 0.f, 0.f));
+		real_point3d base = point(0.f, 0.f, 0.f);
+		real_vector3d velocity = vector(.5f, 0.f, 0.f);
+
+		vehicle = vehicle_at(VEHICLE, .1f, 0.f, 0.f, 0.f, 11);
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		vehicle_riding_record(&state, &step, &vehicle, TRUE, &zero, &up, &base, TRUE, &velocity);
+		NEAR(velocity.i, .1f);
+		return 0;
+	}
 	CASE("falling")
 	{
 		/* a deck descending 2 a tick, faster than any falling limit */
@@ -645,6 +666,19 @@ int main(int argc, char **argv)
 		vehicle.updates++;
 		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
 		vehicle_riding_record(&state, &step, NULL, TRUE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(vehicle_riding_falling_velocity(&state, -1.f), -1.f);
+		/* landed beside a descending deck, in its window: the world's too */
+		state = riding_on(&vehicle, base, vector(0.f, 0.f, -2.f));
+		state.ticks = 30;
+		state.falling = 1;
+		vehicle.updates++;
+		CHECK(vehicle_riding_snapshot_step(&state, &vehicle, &base, 1.4f, .2f, FALSE, &step), "dropped");
+		vehicle_riding_record(&state, &step, NULL, TRUE, &zero, &up, &base, FALSE, &velocity);
+		NEAR(vehicle_riding_falling_velocity(&state, -1.f), -1.f);
+		/* off a deck rising 0.1 a tick: never stricter than the world */
+		state = riding_on(&vehicle, base, vector(0.f, 0.f, .1f));
+		state.ticks = 30;
+		state.falling = 1;
 		NEAR(vehicle_riding_falling_velocity(&state, -1.f), -1.f);
 		return 0;
 	}

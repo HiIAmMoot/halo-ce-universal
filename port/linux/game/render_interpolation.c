@@ -717,8 +717,8 @@ static struct observer_result const *render_interpolation_direct_camera(
 	if (!TEST_FLAG(object_get(unit_index)->object.damage_flags, _object_dead_bit))
 	{
 		/* (the facing holds this tick's whole turn by the vehicle the player
-		stands on, which is drawn only part of the way into the tick
-		(vehicle_riding.c)) */
+		stands on, which is drawn only part of the way into the tick;
+		vehicle_riding.c) */
 		vehicle_riding_turn_vector(&direct->forward,
 			-(1.0f - render_interpolation_fraction())*vehicle_riding_kept_dyaw(local_player_index));
 	}

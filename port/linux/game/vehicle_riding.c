@@ -551,8 +551,16 @@ real vehicle_riding_falling_velocity(
 	struct vehicle_riding_state const *state,
 	real world_velocity_k)
 {
+	real relative;
+
 	if (vehicle_riding_is_riding(state) || state->falling)
-		return world_velocity_k - state->velocity.k;
+	{
+		relative = world_velocity_k - state->velocity.k;
+		/* (the more lenient of the two: a descending deck is judged
+		relative to it, a rising one never makes a fall deadlier than in
+		the original game) */
+		return relative > world_velocity_k ? relative : world_velocity_k;
+	}
 	return world_velocity_k;
 }
 
