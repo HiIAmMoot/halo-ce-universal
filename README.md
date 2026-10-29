@@ -1,5 +1,28 @@
 # OpenCE - Halo: Combat Evolved for Linux, Windows, Android and the web
 
+## Input recording (prototype)
+
+Records what a local player does and plays it back, to repeat a situation exactly. Type these in the in-game console:
+
+| Command | What it does |
+| --- | --- |
+| `tape_record` | Starts recording the local players' input from the current tick. From the main menu it waits for the next game. It goes on in a new file for each map and game until `tape_stop`, and never records in the main menu. |
+| `tape_stop` | Ends the recording (or a playback) and prints the last file. |
+| `tape_play <number>` | Plays tape number `<number>` (`tape_play 1` and `tape_play 0001` are the same). `tape_play last` or `tape_play` alone plays the highest number. A file name works too. |
+| `tape_list` | Lists the last ten numbered tapes. |
+
+**Where tapes are saved:** the `tapes` folder of the data root (the folder that contains `maps/`), made when it is missing, as `tapes/<number>_<date and time>_<map>_<game type>.tape`, for example `0002_20261029-091500_bloodgulch_slayer.tape`. The number counts up from the highest already there. The first line of a tape is a header with the date, map, game type, difficulty, number of local players, the map file's hash and the game variant. The console prints the real path when a recording starts.
+
+**Playing back:** `tape_play` starts the tape's own game, finding its map by the map file's hash (maps can share a name), with its difficulty, game type and players. It then runs the game fast to the tape's first tick, puts each player back as they were (position, speed, vehicle and seat, weapons and ammunition, grenades, the random numbers' seed) and gives the input back at the same ticks. The camera is smoothed between ticks. `debug.txt` says when playback finished, and when it stops matching the recording ("out of step at tick N", with whether the random seed or the world differed first).
+
+**Notes**
+- Keep your hands off the mouse and keyboard while a tape plays: live input adds to it.
+- The pause menu works, and time spent paused is not recorded.
+- Best matches come from recording a game from its start and playing it from its start. A replay only matches as far as the game is the same: same map, difficulty and game type, one machine, nothing different before the start.
+- Local and hosted games only. Fast-forward and playback do nothing for a client of someone else's game.
+- `debug.input_tape` (`HALO_INPUT_TAPE`) starts a recording or playback at launch instead: `record:<file>`, `record@<tick>:<file>` or `play:<file>`, with the file written as `d:\tapes\<name>.tape`. Refer to `port/linux/README.md`.
+
+
 <p align="center">
   <img src="port/assets/icon/opence-icon.png" alt="OpenCE" width="128">
 </p>
