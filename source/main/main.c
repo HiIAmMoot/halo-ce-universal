@@ -683,6 +683,7 @@ typedef char screenshot_and_framerate_globals_size_assert[
 	sizeof(struct _screenshot_and_framerate_globals) == 0x38B ? 1 : -1];
 
 void network_test_update(boolean main_menu_loaded, real seconds);
+void network_test_tape_frame(boolean main_menu_loaded);
 #include "server_director.h" /* port: port/linux/game/server_director.c */
 
 /* ---------- prototypes */
@@ -3575,6 +3576,8 @@ static boolean main_loop_iteration(
 		{
 			render_frame = TRUE;
 
+			/* port: the input tape's recording follows the games, its playback's camera the frames (port/linux/game/network_test.c) */
+			network_test_tape_frame(main_globals.main_menu_scenario_loaded);
 			/* automated system link tests (port/linux/game/network_test.c) */
 			network_test_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
 			/* port: a dedicated server's hosting, rotation and commands

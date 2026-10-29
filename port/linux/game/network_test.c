@@ -80,6 +80,13 @@ Called from the main loop every frame (main.c).
 #include "tag_files/tag_files.h"
 #include "camera/observer.h"
 #include "hs/hs.h"
+#include "main/console.h"
+#include "cseries/errors.h"
+#include "scenario/scenario_definitions.h"
+#include "units/vehicle_datum.h"
+#include "units/bipeds.h"
+#include "custom_edition_cache.h"
+#include "profile_console_gametype.h"
 
 #include "../src/p2p.h" /* port: port/linux/src/p2p.c, p2p_lobby.c */
 #include "network_chat.h"
@@ -89,6 +96,7 @@ Called from the main loop every frame (main.c).
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -99,6 +107,15 @@ double config_real(char const *name);
 long config_integer(char const *name);
 int config_write(char const *name, char const *value);
 void platform_log(char const *format, ...);
+/* the data root and its folders, and the game's name for a path (xbox_files.c, posix.h) */
+const char *platform_data_root(void);
+void platform_translate_path(const char *xbox_path, char *host_path, unsigned long host_path_size);
+void *posix_directory_open(const char *path);
+int posix_directory_next(void *directory, char *name, unsigned long name_size);
+void posix_directory_close(void *directory);
+int posix_make_directory(const char *path);
+/* game_time.c's */
+real game_time_get_tick_fraction(void);
 /* damage.c's */
 void damage_kill_object_for_player(long object_index, long player_index);
 /* network_distributed.c's */
@@ -1139,6 +1156,1497 @@ static void network_test_probe_answer(
 		fflush(stdout);
 		exit(1);
 	}
+}
+
+/* ---------- input tape */
+
+/* the console's tape_record, tape_stop and tape_play <file> (input_tape_command) and debug.input_tape: "record:<file>" writes each local player's input of every tick (from tick N with
+"record@N:<file>"), with the pose the player started it from; "play:<file>" runs the game fast to that tick (a local or
+hosted game only), puts the player back in the pose and gives the input back at the same ticks. A replay matches the
+recording only as far as the game is the same: map, difficulty, one machine, no other input before the start */
+enum
+{
+	INPUT_TAPE_MAXIMUM = 200000,
+	INPUT_TAPE_PATH_LENGTH = 512,
+	/* (a local game runs 7 ticks in a frame at most: slowing down this far ahead of the start cannot overshoot it) */
+	INPUT_TAPE_SLOW_AHEAD = 8,
+	INPUT_TAPE_HEADER_LENGTH = 1024,
+	/* (the clock of a game not yet started: any game's ticks are before it) */
+	INPUT_TAPE_NEVER = 0x7fffffff
+};
+
+struct input_tape_entry
+{
+	long key;
+	unsigned char bytes[sizeof(struct player_action)];
+};
+
+/* the vehicle a player was in, and where it was and how it moved: found again by its index (a game of the same map
+and ticks gives it the same), else by its kind and nearest place */
+struct input_tape_vehicle
+{
+	long present;
+	long object_index;
+	long definition_index;
+	long seat_index;
+	struct _vehicle_datum state;
+	real_point3d position;
+	real_vector3d forward;
+	real_vector3d up;
+	real_vector3d velocity;
+	real_vector3d angular_velocity;
+};
+
+/* a weapon the player carried: its kind and how much it had left (by slot, as the unit carries them) */
+struct input_tape_weapon
+{
+	long definition_index;
+	short rounds_total[2];
+	short rounds_loaded[2];
+	real heat;
+	real age;
+};
+
+/* the motion a player's body had besides its velocity: whether it was in the air or slipping, landing, crouched */
+struct input_tape_momentum
+{
+	unsigned long flags;
+	char landing_recovery_counter;
+	char landing_recovery_time;
+	char state;
+	char airborne_ticks;
+	char slipping_ticks;
+	char stop_ticks;
+	char jump_recovery_timer;
+	short landing;
+	real crouch;
+	real bank;
+	real_plane3d ground_plane;
+	real_vector3d angular_velocity;
+};
+
+/* what the player carried: the weapons, which was in hand, and the grenades */
+struct input_tape_loadout
+{
+	struct input_tape_weapon weapons[MAXIMUM_WEAPONS_PER_UNIT];
+	short current_weapon;
+	char grenade_counts[NUMBER_OF_UNIT_GRENADE_TYPES];
+	char current_grenade;
+};
+
+struct input_tape_pose
+{
+	real_point3d position;
+	real_vector3d forward;
+	real_vector3d up;
+	real_vector3d velocity;
+	real_vector3d aiming;
+	real_vector3d looking;
+	struct input_tape_vehicle vehicle;
+	struct input_tape_loadout loadout;
+	struct input_tape_momentum momentum;
+	unsigned long random_seed;
+};
+
+static struct
+{
+	boolean armed;
+	boolean recording;
+	boolean playing;
+	boolean ended;
+	boolean skipping;
+	boolean waiting;
+	boolean record_auto;
+	char segment_map[2*INPUT_TAPE_PATH_LENGTH];
+	char path[INPUT_TAPE_PATH_LENGTH];
+	char last_path[INPUT_TAPE_PATH_LENGTH];
+	char header[INPUT_TAPE_HEADER_LENGTH];
+	FILE *file;
+	long record_from;
+	long start_tick;
+	long last_tick;
+	real saved_speed;
+	long last_key[MAXIMUM_LOCAL_PLAYERS];
+	boolean started[MAXIMUM_LOCAL_PLAYERS];
+	boolean pose_valid[MAXIMUM_LOCAL_PLAYERS];
+	boolean pose_applied[MAXIMUM_LOCAL_PLAYERS];
+	long pose_tick[MAXIMUM_LOCAL_PLAYERS];
+	struct input_tape_pose pose[MAXIMUM_LOCAL_PLAYERS];
+	long count;
+} input_tape;
+
+static struct input_tape_entry input_tape_entries[INPUT_TAPE_MAXIMUM];
+
+/* a checkpoint every INPUT_TAPE_CHECK_EVERY ticks: the game's random seed and a hash of where the vehicles and bodies are,
+to tell on playback where it stops being the recorded game, and whether the random numbers or the world went first */
+enum
+{
+	INPUT_TAPE_CHECK_MAXIMUM = 40000,
+	INPUT_TAPE_CHECK_EVERY = 15
+};
+
+struct input_tape_check
+{
+	long tick;
+	unsigned int seed;
+	unsigned int world;
+};
+
+static struct input_tape_check input_tape_checks[INPUT_TAPE_CHECK_MAXIMUM];
+static long input_tape_check_count;
+static long input_tape_check_last = NONE;
+static boolean input_tape_desync_reported;
+
+/* a tape's order: the tick, then the local player */
+static long input_tape_key(
+	long tick,
+	short local_player_index)
+{
+	return tick*MAXIMUM_LOCAL_PLAYERS + local_player_index;
+}
+
+static void input_tape_hex_write(
+	FILE *file,
+	void const *data,
+	size_t size)
+{
+	unsigned char const *bytes = (unsigned char const *)data;
+	size_t index;
+
+	for (index = 0; index < size; index++)
+		fprintf(file, "%02x", (unsigned)bytes[index]);
+	fprintf(file, "\n");
+}
+
+static int input_tape_hex(
+	char digit)
+{
+	if (digit >= '0' && digit <= '9')
+		return digit - '0';
+	if (digit >= 'a' && digit <= 'f')
+		return digit - 'a' + 10;
+	return NONE;
+}
+
+/* FALSE for hex that is not exactly size bytes */
+static boolean input_tape_hex_read(
+	char const *text,
+	void *data,
+	size_t size)
+{
+	unsigned char *bytes = (unsigned char *)data;
+	size_t index;
+
+	for (index = 0; index < size; index++)
+	{
+		int high = input_tape_hex(text[2*index]);
+		int low = high == NONE ? NONE : input_tape_hex(text[2*index + 1]);
+
+		if (low == NONE)
+			return FALSE;
+		bytes[index] = (unsigned char)(high*16 + low);
+	}
+	return text[2*size] == '\n' || text[2*size] == '\r' || text[2*size] == '\0';
+}
+
+static void input_tape_line_write(
+	FILE *file,
+	long key,
+	struct player_action const *action)
+{
+	fprintf(file, "%ld ", key);
+	input_tape_hex_write(file, action, sizeof(struct player_action));
+}
+
+/* FALSE for a line that is not one of input_tape_line_write's */
+static boolean input_tape_line_read(
+	char const *line,
+	long *key,
+	unsigned char *bytes)
+{
+	int offset = 0;
+
+	if (sscanf(line, "%ld %n", key, &offset) != 1 || *key < 0)
+		return FALSE;
+	return input_tape_hex_read(line + offset, bytes, sizeof(struct player_action));
+}
+
+static void input_tape_pose_write(
+	FILE *file,
+	short local_player_index,
+	long tick,
+	struct input_tape_pose const *pose)
+{
+	fprintf(file, "pose %d %ld ", (int)local_player_index, tick);
+	input_tape_hex_write(file, pose, sizeof(struct input_tape_pose));
+}
+
+static boolean input_tape_pose_read(
+	char const *line,
+	short *local_player_index,
+	long *tick,
+	struct input_tape_pose *pose)
+{
+	int player;
+	int offset = 0;
+
+	if (sscanf(line, "pose %d %ld %n", &player, tick, &offset) != 2 || player < 0 || player >= MAXIMUM_LOCAL_PLAYERS ||
+		*tick < 0)
+	{
+		return FALSE;
+	}
+	*local_player_index = (short)player;
+	return input_tape_hex_read(line + offset, pose, sizeof(struct input_tape_pose));
+}
+
+static unsigned int input_tape_world_hash(
+	void)
+{
+	unsigned int hash = 2166136261u;
+	struct object_iterator iterator;
+
+	object_iterator_new(&iterator, _object_mask_vehicle | _object_mask_biped, 0);
+	while (object_iterator_next(&iterator))
+	{
+		struct object_datum *object = object_get(iterator.index);
+		unsigned int words[6];
+		short index;
+
+		csmemcpy(&words[0], &object->object.position, 3*sizeof(unsigned int));
+		csmemcpy(&words[3], &object->object.forward, 3*sizeof(unsigned int));
+		for (index = 0; index < 6; index++)
+			hash = (hash ^ words[index])*16777619u;
+	}
+	return hash;
+}
+
+static void input_tape_load(
+	void)
+{
+	FILE *file = fopen(input_tape.path, "r");
+	char line[INPUT_TAPE_HEADER_LENGTH + 16];
+
+	input_tape.playing = FALSE;
+	if (!file)
+	{
+		error(_error_silent, "input_tape: cannot open '%s'", input_tape.path);
+		return;
+	}
+	while (fgets(line, sizeof(line), file))
+	{
+		struct input_tape_entry *entry = &input_tape_entries[input_tape.count];
+		short player;
+		long tick;
+		boolean good;
+
+		if (!strncmp(line, "tape ", 5))
+		{
+			snprintf(input_tape.header, sizeof(input_tape.header), "%s", line + 5);
+			input_tape.header[strcspn(input_tape.header, "\r\n")] = '\0';
+			continue;
+		}
+		if (!strncmp(line, "check ", 6))
+		{
+			struct input_tape_check *check = &input_tape_checks[input_tape_check_count];
+
+			if (input_tape_check_count < INPUT_TAPE_CHECK_MAXIMUM &&
+				sscanf(line, "check %ld %x %x", &check->tick, &check->seed, &check->world) == 3)
+			{
+				input_tape_check_count++;
+				continue;
+			}
+			good = FALSE;
+		}
+		else if (!strncmp(line, "pose ", 5))
+		{
+			struct input_tape_pose pose;
+
+			good = input_tape_pose_read(line, &player, &tick, &pose);
+			if (good)
+			{
+				input_tape.pose[player] = pose;
+				input_tape.pose_tick[player] = tick;
+				input_tape.pose_valid[player] = TRUE;
+			}
+		}
+		else
+		{
+			good = input_tape.count < INPUT_TAPE_MAXIMUM && input_tape_line_read(line, &entry->key, entry->bytes) &&
+				(input_tape.count == 0 || entry->key > entry[-1].key);
+			if (good)
+				input_tape.count++;
+		}
+		if (!good)
+		{
+			error(_error_silent, "input_tape: '%s' is malformed or too long after %ld inputs", input_tape.path,
+				input_tape.count);
+			input_tape.count = 0;
+			break;
+		}
+	}
+	fclose(file);
+	input_tape.playing = input_tape.count > 0;
+	if (input_tape.playing)
+	{
+		short player;
+
+		input_tape.start_tick = input_tape_entries[0].key/MAXIMUM_LOCAL_PLAYERS;
+		for (player = 0; player < MAXIMUM_LOCAL_PLAYERS; player++)
+		{
+			/* (the poses are of a tick of the tape's first) */
+			if (input_tape.pose_valid[player] && input_tape.pose_tick[player] < input_tape.start_tick)
+				input_tape.start_tick = input_tape.pose_tick[player];
+		}
+		error(_error_silent, "input_tape: playing %ld inputs from tick %ld of '%s'", input_tape.count,
+			input_tape.start_tick, input_tape.path);
+	}
+}
+
+static void input_tape_arm(
+	void)
+{
+	char const *setting = config_string("debug.input_tape");
+	char const *path = NULL;
+	long from = 0;
+	int offset = 0;
+
+	input_tape.armed = TRUE;
+	if (strlen(setting) >= INPUT_TAPE_PATH_LENGTH + 16)
+		setting = "";
+	if (!strncmp(setting, "record:", 7))
+		path = setting + 7;
+	else if (sscanf(setting, "record@%ld:%n", &from, &offset) == 1 && from >= 0 && offset > 0)
+		path = setting + offset;
+	if (path)
+	{
+		input_tape.recording = TRUE;
+		input_tape.record_from = from;
+		snprintf(input_tape.path, sizeof(input_tape.path), "%s", path);
+	}
+	else if (!strncmp(setting, "play:", 5))
+	{
+		snprintf(input_tape.path, sizeof(input_tape.path), "%s", setting + 5);
+		input_tape_load();
+	}
+	else if (setting[0])
+		error(_error_silent, "input_tape: setting must be record:<file>, record@<tick>:<file> or play:<file>");
+}
+
+/* the map's file name part and the game's type, as the recording's name and header give them */
+static void input_tape_component(
+	char const *text,
+	char *name,
+	size_t size)
+{
+	char const *component = text;
+	char const *cursor;
+	size_t used = 0;
+
+	for (cursor = text; *cursor; cursor++)
+	{
+		if (*cursor == '/' || *cursor == '\\')
+			component = cursor + 1;
+	}
+	for (cursor = component; *cursor && used + 1 < size; cursor++)
+	{
+		char character = *cursor >= 'A' && *cursor <= 'Z' ? (char)(*cursor - 'A' + 'a') : *cursor;
+
+		name[used++] = (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
+			character == '_' || character == '-' ? character : '-';
+	}
+	name[used] = '\0';
+}
+
+/* the name the running game's map was loaded by: a multiplayer map's is not the solo map name's (which keeps the last
+campaign level's) */
+static char const *input_tape_scenario(
+	void)
+{
+	return global_scenario_get()->type == _scenario_type_multiplayer ? main_get_multiplayer_map_name() :
+		main_get_map_name();
+}
+
+/* how many local players the game has */
+static short input_tape_local_players(
+	void)
+{
+	short player;
+	short count = 0;
+
+	for (player = 0; player < MAXIMUM_LOCAL_PLAYERS; player++)
+	{
+		if (local_player_get_player_index(player) != NONE)
+			count++;
+	}
+	return count;
+}
+
+/* whether the map is a multiplayer one: a game engine can be set up on a campaign map too (a game variant outlives its
+game), and a variant given to a campaign map starts it as a multiplayer game that has no spawn points */
+static boolean input_tape_multiplayer(
+	void)
+{
+	return game_engine_running() && global_scenario_get()->type == _scenario_type_multiplayer;
+}
+
+static void input_tape_description(
+	char *map,
+	size_t map_size,
+	char *gametype,
+	size_t gametype_size)
+{
+	char const *scenario = input_tape_scenario();
+
+	input_tape_component(scenario ? scenario : "", map, map_size);
+	snprintf(gametype, gametype_size, "%s", !input_tape_multiplayer() ? "campaign" :
+		profile_console_engine_gametype(TRUE, game_engine_get_variant()->game_engine_index));
+}
+
+/* a Custom Edition map's version (the first 32 bits of its file's hash: maps of one name differ by it, and the game's
+own maps have none, 0) */
+static unsigned long input_tape_map_version(
+	char const *scenario)
+{
+	return custom_edition_level_name(scenario) ? custom_edition_map_version(scenario) : 0;
+}
+
+/* the line after "tape ": what a person reads first, then what tape_play starts the game with (the variant of a
+multiplayer game, as the bytes the game keeps), the scenario last (it is the rest of the line) */
+static void input_tape_header_make(
+	long from_tick)
+{
+	char map[64];
+	char gametype[32];
+	char date[32];
+	char variant[2*sizeof(struct game_variant) + 1] = "";
+	char const *scenario = input_tape_scenario();
+	time_t now = time(NULL);
+	struct tm *local = localtime(&now);
+
+	input_tape_description(map, sizeof(map), gametype, sizeof(gametype));
+	if (!local || !strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", local))
+		snprintf(date, sizeof(date), "unknown");
+	if (input_tape_multiplayer())
+	{
+		unsigned char const *bytes = (unsigned char const *)game_engine_get_variant();
+		size_t index;
+
+		for (index = 0; index < sizeof(struct game_variant); index++)
+			snprintf(variant + 2*index, 3, "%02x", (unsigned)bytes[index]);
+	}
+	snprintf(input_tape.header, sizeof(input_tape.header),
+		"date=\"%s\" map=%s gametype=%s from_tick=%ld map_version=%08lx difficulty=%d players=%d variant=%s scenario=%s",
+		date, map, gametype, from_tick, input_tape_map_version(scenario ? scenario : ""), (int)main_get_difficulty(),
+		(int)input_tape_local_players(), variant, scenario ? scenario : "");
+}
+
+/* a field of the header: the text after " name=" up to a space, or to the end of the line for the scenario */
+static boolean input_tape_field(
+	char const *header,
+	char const *name,
+	boolean to_end,
+	char *value,
+	size_t size)
+{
+	char key[24];
+	char const *found;
+	size_t length;
+
+	snprintf(key, sizeof(key), " %s=", name);
+	found = strstr(header, key);
+	if (!found)
+		return FALSE;
+	found += strlen(key);
+	length = to_end ? strlen(found) : strcspn(found, " ");
+	if (length >= size)
+		return FALSE;
+	csmemcpy(value, found, length);
+	value[length] = '\0';
+	return TRUE;
+}
+
+/* a tape's path as the disk has it, for what the player is told */
+static char const *input_tape_host_path(
+	char const *path)
+{
+	static char host[1024];
+
+	platform_translate_path(path, host, sizeof(host));
+	return host;
+}
+
+static void input_tape_stop(
+	char const *why)
+{
+	if (input_tape.file)
+		fclose(input_tape.file);
+	input_tape.file = NULL;
+	input_tape.recording = FALSE;
+	error(_error_silent, "input_tape: recording of '%s' stopped (%s)", input_tape.path, why);
+}
+
+/* a new game's ticks count from the start again, so the tape starts again with it */
+static void input_tape_restart(
+	void)
+{
+	short player;
+
+	input_tape.ended = FALSE;
+	input_tape.skipping = FALSE;
+	input_tape_check_last = NONE;
+	input_tape_desync_reported = FALSE;
+	for (player = 0; player < MAXIMUM_LOCAL_PLAYERS; player++)
+	{
+		input_tape.last_key[player] = NONE;
+		input_tape.started[player] = FALSE;
+		input_tape.pose_applied[player] = FALSE;
+		if (input_tape.recording)
+			input_tape.pose_valid[player] = FALSE;
+	}
+	if (input_tape.recording)
+	{
+		if (input_tape.file)
+			fclose(input_tape.file);
+		input_tape.file = fopen(input_tape.path, "w");
+		if (!input_tape.file)
+		{
+			error(_error_silent, "input_tape: cannot write '%s'", input_tape.path);
+			console_printf(FALSE, "tape: cannot write %s, recording stopped", input_tape_host_path(input_tape.path));
+			input_tape.recording = FALSE;
+			input_tape.record_auto = FALSE;
+		}
+		else
+		{
+			input_tape_header_make(input_tape.record_from);
+			fprintf(input_tape.file, "tape %s\n", input_tape.header);
+		}
+	}
+}
+
+/* the local player's body, FALSE while it has none (or is carried by something that is no vehicle) */
+static boolean input_tape_body(
+	short local_player_index,
+	long *unit_index)
+{
+	long player_index = local_player_get_player_index(local_player_index);
+	struct player_datum *player = player_index != NONE ? player_try_and_get(player_index) : NULL;
+
+	if (!player || player->unit_index == NONE ||
+		!object_try_and_get_and_verify_type(player->unit_index, _object_mask_biped))
+	{
+		return FALSE;
+	}
+	if (object_get(player->unit_index)->object.parent_object_index != NONE &&
+		!object_try_and_get_and_verify_type(object_get(player->unit_index)->object.parent_object_index,
+			_object_mask_vehicle))
+	{
+		return FALSE;
+	}
+	*unit_index = player->unit_index;
+	return TRUE;
+}
+
+static void input_tape_pose_take(
+	long unit_index,
+	struct input_tape_pose *pose)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	struct biped_datum *biped = (struct biped_datum *)unit;
+	short slot;
+
+	csmemset(pose, 0, sizeof(*pose));
+	pose->random_seed = get_random_seed();
+	pose->momentum.flags = biped->biped.flags;
+	pose->momentum.landing_recovery_counter = biped->biped.landing_recovery_counter;
+	pose->momentum.landing_recovery_time = biped->biped.landing_recovery_time;
+	pose->momentum.state = biped->biped.state;
+	pose->momentum.airborne_ticks = biped->biped.airborne_ticks;
+	pose->momentum.slipping_ticks = biped->biped.slipping_ticks;
+	pose->momentum.stop_ticks = biped->biped.stop_ticks;
+	pose->momentum.jump_recovery_timer = biped->biped.jump_recovery_timer;
+	pose->momentum.landing = biped->biped.landing;
+	pose->momentum.crouch = biped->biped.crouch;
+	pose->momentum.bank = biped->biped.bank;
+	pose->momentum.ground_plane = biped->biped.ground_plane;
+	pose->momentum.angular_velocity = unit->object.angular_velocity;
+	pose->position = unit->object.position;
+	pose->forward = unit->object.forward;
+	pose->up = unit->object.up;
+	pose->velocity = unit->object.translational_velocity;
+	pose->aiming = unit->unit.aiming_vector;
+	pose->looking = unit->unit.looking_vector;
+	csmemset(&pose->loadout, 0, sizeof(pose->loadout));
+	pose->loadout.current_weapon = unit->unit.current_weapon_index;
+	pose->loadout.current_grenade = unit->unit.current_grenade_index;
+	for (slot = 0; slot < NUMBER_OF_UNIT_GRENADE_TYPES; slot++)
+		pose->loadout.grenade_counts[slot] = unit->unit.grenade_counts[slot];
+	for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
+	{
+		struct weapon_datum *weapon = unit->unit.weapon_object_indices[slot] == NONE ? NULL :
+			weapon_try_and_get(unit->unit.weapon_object_indices[slot]);
+		short magazine;
+
+		pose->loadout.weapons[slot].definition_index = weapon ? weapon->definition_index : NONE;
+		if (!weapon)
+			continue;
+		for (magazine = 0; magazine < 2; magazine++)
+		{
+			pose->loadout.weapons[slot].rounds_total[magazine] = weapon->weapon.magazines[magazine].rounds_total;
+			pose->loadout.weapons[slot].rounds_loaded[magazine] = weapon->weapon.magazines[magazine].rounds_loaded;
+		}
+		pose->loadout.weapons[slot].heat = weapon->weapon.heat;
+		pose->loadout.weapons[slot].age = weapon->weapon.age;
+	}
+	csmemset(&pose->vehicle, 0, sizeof(pose->vehicle));
+	if (unit->object.parent_object_index != NONE)
+	{
+		struct object_datum *vehicle = object_get(unit->object.parent_object_index);
+
+		pose->vehicle.present = TRUE;
+		pose->vehicle.object_index = unit->object.parent_object_index;
+		pose->vehicle.state = vehicle_datum_get(unit->object.parent_object_index)->vehicle;
+		pose->vehicle.definition_index = vehicle->definition_index;
+		pose->vehicle.seat_index = unit->unit.parent_seat_index;
+		pose->vehicle.position = vehicle->object.position;
+		pose->vehicle.forward = vehicle->object.forward;
+		pose->vehicle.up = vehicle->object.up;
+		pose->vehicle.velocity = vehicle->object.translational_velocity;
+		pose->vehicle.angular_velocity = vehicle->object.angular_velocity;
+	}
+}
+
+/* the player's weapons and grenades as they were: new weapons of the recorded kinds with the recorded ammunition, the one
+in hand readied again (a weapon that was not the first is drawn, as a player changing to it would) */
+static void input_tape_loadout_put(
+	long unit_index,
+	struct input_tape_loadout const *loadout)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	boolean first = TRUE;
+	boolean same = TRUE;
+	short slot;
+	short added = 0;
+	short in_hand = NONE;
+
+	/* (the weapons a player already carries are the recorded ones in a game of the same start: new ones would be drawn, and
+	fire a few ticks after the recorded ones did) */
+	for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
+	{
+		struct weapon_datum *carried = unit->unit.weapon_object_indices[slot] == NONE ? NULL :
+			weapon_try_and_get(unit->unit.weapon_object_indices[slot]);
+
+		if ((carried ? carried->definition_index : NONE) != loadout->weapons[slot].definition_index)
+			same = FALSE;
+	}
+	if (same)
+	{
+		for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
+		{
+			struct weapon_datum *carried = loadout->weapons[slot].definition_index == NONE ? NULL :
+				weapon_get(unit->unit.weapon_object_indices[slot]);
+			short magazine;
+
+			if (!carried)
+				continue;
+			for (magazine = 0; magazine < 2; magazine++)
+			{
+				carried->weapon.magazines[magazine].rounds_total = loadout->weapons[slot].rounds_total[magazine];
+				carried->weapon.magazines[magazine].rounds_loaded = loadout->weapons[slot].rounds_loaded[magazine];
+			}
+			carried->weapon.heat = loadout->weapons[slot].heat;
+			carried->weapon.age = loadout->weapons[slot].age;
+		}
+		if (unit->unit.current_weapon_index != loadout->current_weapon)
+			unit->unit.desired_weapon_index = loadout->current_weapon;
+		for (slot = 0; slot < NUMBER_OF_UNIT_GRENADE_TYPES; slot++)
+			unit->unit.grenade_counts[slot] = loadout->grenade_counts[slot];
+		unit->unit.current_grenade_index = unit->unit.desired_grenade_index = loadout->current_grenade;
+		return;
+	}
+	unit_delete_all_weapons(unit_index);
+	for (slot = 0; slot < MAXIMUM_WEAPONS_PER_UNIT; slot++)
+	{
+		struct input_tape_weapon const *recorded = &loadout->weapons[slot];
+		struct object_placement_data placement_data;
+		struct weapon_datum *weapon;
+		long weapon_index;
+		short magazine;
+
+		if (recorded->definition_index == NONE)
+			continue;
+		object_placement_data_new(&placement_data, recorded->definition_index, NONE);
+		weapon_index = object_new(&placement_data);
+		if (weapon_index == NONE)
+			continue;
+		weapon = weapon_get(weapon_index);
+		for (magazine = 0; magazine < 2; magazine++)
+		{
+			weapon->weapon.magazines[magazine].rounds_total = recorded->rounds_total[magazine];
+			weapon->weapon.magazines[magazine].rounds_loaded = recorded->rounds_loaded[magazine];
+		}
+		weapon->weapon.heat = recorded->heat;
+		weapon->weapon.age = recorded->age;
+		if (!unit_add_weapon_to_inventory(unit_index, weapon_index, first ? 2 : 0))
+		{
+			object_delete(weapon_index);
+			error(_error_silent, "input_tape: the player cannot carry %s", tag_get_name(recorded->definition_index));
+			continue;
+		}
+		first = FALSE;
+		if (slot == loadout->current_weapon)
+			in_hand = added;
+		added++;
+	}
+	if (in_hand != NONE)
+		unit->unit.desired_weapon_index = in_hand;
+	for (slot = 0; slot < NUMBER_OF_UNIT_GRENADE_TYPES; slot++)
+		unit->unit.grenade_counts[slot] = loadout->grenade_counts[slot];
+	unit->unit.current_grenade_index = unit->unit.desired_grenade_index = loadout->current_grenade;
+}
+
+/* the recorded vehicle: the object of its index if that is a vehicle of its kind, else the one of the kind nearest to
+where it was; NONE if there is none */
+static long input_tape_vehicle_find(
+	struct input_tape_vehicle const *recorded)
+{
+	struct object_iterator vehicles;
+	long nearest = NONE;
+	real nearest_distance = 0.f;
+
+	if (object_try_and_get_and_verify_type(recorded->object_index, _object_mask_vehicle) &&
+		object_get(recorded->object_index)->definition_index == recorded->definition_index)
+	{
+		return recorded->object_index;
+	}
+	error(_error_silent, "input_tape: vehicle %lx is not the recorded kind, the nearest of the kind is taken",
+		recorded->object_index);
+	object_iterator_new(&vehicles, _object_mask_vehicle, 0);
+	while (object_iterator_next(&vehicles))
+	{
+		real distance;
+
+		if (object_get(vehicles.index)->definition_index != recorded->definition_index)
+			continue;
+		distance = distance_squared3d(&object_get(vehicles.index)->object.position, &recorded->position);
+		if (nearest == NONE || distance < nearest_distance)
+		{
+			nearest = vehicles.index;
+			nearest_distance = distance;
+		}
+	}
+	return nearest;
+}
+
+/* the player's body, or the vehicle it was in put back and the player seated in it as it was; FALSE when the recorded
+vehicle is not in this game */
+static boolean input_tape_pose_put(
+	long unit_index,
+	struct input_tape_pose const *pose)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+
+	input_tape_loadout_put(unit_index, &pose->loadout);
+	if (pose->vehicle.present)
+	{
+		long vehicle_index = input_tape_vehicle_find(&pose->vehicle);
+		struct object_datum *vehicle;
+
+		if (vehicle_index == NONE)
+			return FALSE;
+		vehicle = object_get(vehicle_index);
+		if (unit->object.parent_object_index != NONE && unit->object.parent_object_index != vehicle_index)
+			unit_exit_seat_end(unit_index);
+		object_set_position(vehicle_index, &pose->vehicle.position, &pose->vehicle.forward, &pose->vehicle.up);
+		vehicle->object.translational_velocity = pose->vehicle.velocity;
+		vehicle->object.angular_velocity = pose->vehicle.angular_velocity;
+		vehicle_datum_get(vehicle_index)->vehicle = pose->vehicle.state;
+		if (unit->object.parent_object_index != vehicle_index &&
+			!unit_enter_seat(unit_index, vehicle_index, (short)pose->vehicle.seat_index))
+		{
+			error(_error_silent, "input_tape: the player cannot take seat %ld of vehicle %lx", pose->vehicle.seat_index,
+				vehicle_index);
+			return FALSE;
+		}
+		unit->unit.aiming_vector = unit->unit.desired_aiming_vector = pose->aiming;
+		unit->unit.looking_vector = unit->unit.desired_looking_vector = pose->looking;
+		csmemset(&unit->unit.aiming_velocity, 0, sizeof(unit->unit.aiming_velocity));
+		csmemset(&unit->unit.looking_velocity, 0, sizeof(unit->unit.looking_velocity));
+		return TRUE;
+	}
+	/* (moving a body that is where it was only disturbs it: its ground, its animation, what it stands on) */
+	if (unit->object.parent_object_index == NONE &&
+		!memcmp(&unit->object.position, &pose->position, sizeof(pose->position)) &&
+		!memcmp(&unit->object.forward, &pose->forward, sizeof(pose->forward)) &&
+		!memcmp(&unit->object.up, &pose->up, sizeof(pose->up)) &&
+		!memcmp(&unit->object.translational_velocity, &pose->velocity, sizeof(pose->velocity)))
+	{
+		return TRUE;
+	}
+	if (unit->object.parent_object_index != NONE)
+		unit_exit_seat_end(unit_index);
+	object_set_position(unit_index, &pose->position, &pose->forward, &pose->up);
+	unit->object.translational_velocity = pose->velocity;
+	{
+		struct biped_datum *biped = (struct biped_datum *)unit;
+
+		unit->object.angular_velocity = pose->momentum.angular_velocity;
+		biped->biped.flags = pose->momentum.flags;
+		biped->biped.landing_recovery_counter = pose->momentum.landing_recovery_counter;
+		biped->biped.landing_recovery_time = pose->momentum.landing_recovery_time;
+		biped->biped.state = pose->momentum.state;
+		biped->biped.airborne_ticks = pose->momentum.airborne_ticks;
+		biped->biped.slipping_ticks = pose->momentum.slipping_ticks;
+		biped->biped.stop_ticks = pose->momentum.stop_ticks;
+		biped->biped.jump_recovery_timer = pose->momentum.jump_recovery_timer;
+		biped->biped.landing = pose->momentum.landing;
+		biped->biped.crouch = pose->momentum.crouch;
+		biped->biped.bank = pose->momentum.bank;
+		biped->biped.ground_plane = pose->momentum.ground_plane;
+	}
+	unit->unit.aiming_vector = unit->unit.desired_aiming_vector = pose->aiming;
+	unit->unit.looking_vector = unit->unit.desired_looking_vector = pose->looking;
+	unit->unit.desired_facing_vector = pose->forward;
+	csmemset(&unit->unit.aiming_velocity, 0, sizeof(unit->unit.aiming_velocity));
+	csmemset(&unit->unit.looking_velocity, 0, sizeof(unit->unit.looking_velocity));
+	return TRUE;
+}
+
+/* the game runs fast up to the tape's start (a local or hosted game: a client's clock is the host's), then at the speed
+it had */
+static void input_tape_pace(
+	long tick)
+{
+	if (input_tape.start_tick - tick > INPUT_TAPE_SLOW_AHEAD)
+	{
+		if (!input_tape.skipping)
+		{
+			input_tape.skipping = TRUE;
+			input_tape.saved_speed = game_time_get_speed();
+		}
+		game_time_set_speed(100.f);
+	}
+	else if (input_tape.skipping)
+	{
+		input_tape.skipping = FALSE;
+		game_time_set_speed(input_tape.saved_speed);
+	}
+}
+
+/* the tick each press of the trigger starts at (debug.txt), in a recording and in its playback: the two lists of ticks are
+what to compare when a replay differs */
+static void input_tape_note_trigger(
+	long tick,
+	short local_player_index,
+	struct player_action const *action)
+{
+	static real last[MAXIMUM_LOCAL_PLAYERS];
+	static long last_tick[MAXIMUM_LOCAL_PLAYERS];
+
+	if (last_tick[local_player_index] == tick)
+		return;
+	last_tick[local_player_index] = tick;
+	if (action->primary_trigger > 0.f && last[local_player_index] <= 0.f)
+	{
+		error(_error_silent, "input_tape: %s player %d trigger at tick %ld, seed %08x, world %08x",
+			input_tape.recording ? "recording" : "playing", (int)local_player_index, tick, (unsigned int)get_random_seed(),
+			input_tape_world_hash());
+	}
+	last[local_player_index] = action->primary_trigger;
+}
+
+/* what follows the command word an expression starts with (past spaces and an opening parenthesis, as the console and
+init.txt give it), else NULL */
+static char const *input_tape_word(
+	char const *expression,
+	char const *word)
+{
+	size_t length = strlen(word);
+	size_t index;
+
+	while (*expression == ' ' || *expression == '\t' || *expression == '(')
+		expression++;
+	for (index = 0; index < length; index++)
+	{
+		char character = expression[index] >= 'A' && expression[index] <= 'Z' ? (char)(expression[index] - 'A' + 'a') :
+			expression[index];
+
+		if (character != word[index])
+			return NULL;
+	}
+	expression += length;
+	if (*expression && *expression != ' ' && *expression != '\t' && *expression != ')')
+		return NULL;
+	while (*expression == ' ' || *expression == '\t')
+		expression++;
+	return expression;
+}
+
+/* the tapes folder of the data root, made, as the game names it (d:\tapes: a host path would be taken for a game's, and
+d: for the data root) */
+static void input_tape_folder(
+	char *folder,
+	size_t size)
+{
+	char host[INPUT_TAPE_PATH_LENGTH];
+
+	snprintf(host, sizeof(host), "%s/tapes", platform_data_root());
+	posix_make_directory(host);
+	snprintf(folder, size, "d:\\tapes");
+}
+
+/* the map a recording is of: both names the game keeps (a solo, local or split-screen game's, and a multiplayer one's) */
+static void input_tape_map_key(
+	char *key,
+	size_t size)
+{
+	snprintf(key, size, "%s|%s", main_get_map_name(), main_get_multiplayer_map_name());
+}
+
+/* the numbered tapes of the folder (<number>_<date and time>_<map>_<game type>.tape): the highest number, 0 for none; the
+name of the one with number `wanted`, or of the highest for NONE, in `found` (empty when there is none) */
+static long input_tape_numbered(
+	long wanted,
+	char *found,
+	size_t size)
+{
+	char host[INPUT_TAPE_PATH_LENGTH];
+	char name[256];
+	char highest_name[256] = "";
+	long highest = 0;
+	void *directory;
+
+	snprintf(host, sizeof(host), "%s/tapes", platform_data_root());
+	found[0] = '\0';
+	directory = posix_directory_open(host);
+	if (!directory)
+		return 0;
+	while (posix_directory_next(directory, name, sizeof(name)))
+	{
+		size_t length = strlen(name);
+		char *end;
+		long number;
+
+		if (name[0] < '0' || name[0] > '9' || length < 6 || strcmp(name + length - 5, ".tape"))
+			continue;
+		number = strtol(name, &end, 10);
+		if (*end != '_')
+			continue;
+		if (number > highest)
+		{
+			highest = number;
+			snprintf(highest_name, sizeof(highest_name), "%s", name);
+		}
+		if (number == wanted)
+			snprintf(found, size, "%s", name);
+	}
+	posix_directory_close(directory);
+	if (wanted == NONE)
+		snprintf(found, size, "%s", highest_name);
+	return highest;
+}
+
+/* a recording of the game that runs now, from this tick on, into
+tapes/<date and time>_<map>_<game type>.tape of the data root */
+static void input_tape_segment_begin(
+	void)
+{
+	char folder[INPUT_TAPE_PATH_LENGTH];
+	char map[64];
+	char gametype[32];
+	char stamp[32];
+	time_t now = time(NULL);
+	struct tm *local = localtime(&now);
+
+	input_tape_folder(folder, sizeof(folder));
+	input_tape_description(map, sizeof(map), gametype, sizeof(gametype));
+	if (!local || !strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local))
+		snprintf(stamp, sizeof(stamp), "tape");
+	input_tape.playing = FALSE;
+	input_tape.waiting = FALSE;
+	input_tape.recording = TRUE;
+	input_tape.record_from = game_time_get();
+	input_tape.last_tick = NONE;
+	input_tape_map_key(input_tape.segment_map, sizeof(input_tape.segment_map));
+	{
+		char ignored[8];
+
+		snprintf(input_tape.path, sizeof(input_tape.path), "%s\\%04ld_%s_%s_%s.tape", folder,
+			input_tape_numbered(0, ignored, sizeof(ignored)) + 1, stamp, map, gametype);
+	}
+	snprintf(input_tape.last_path, sizeof(input_tape.last_path), "%s", input_tape.path);
+	console_printf(FALSE, "tape: recording %s from tick %ld", input_tape_host_path(input_tape.path), input_tape.record_from);
+}
+
+/* tape_record: a recording of this game (the next, from the main menu) and of every game after it, each in a file of its own, until tape_stop */
+static void input_tape_command_record(
+	void)
+{
+	if (input_tape.record_auto)
+	{
+		console_printf(FALSE, "tape: already recording, until tape_stop");
+		return;
+	}
+	input_tape.record_auto = TRUE;
+	/* (from the main menu it waits for the next game: network_test_tape_frame begins it) */
+	if (game_in_progress() && !main_menu_is_active())
+		input_tape_segment_begin();
+	console_printf(FALSE, "tape: a file for each map and game, until tape_stop");
+}
+
+/* the tape's input of a tick, or NULL */
+static struct input_tape_entry const *input_tape_find(
+	long key)
+{
+	long low = 0;
+	long high = input_tape.count - 1;
+
+	while (low <= high)
+	{
+		long middle = (low + high)/2;
+
+		if (input_tape_entries[middle].key == key)
+			return &input_tape_entries[middle];
+		if (input_tape_entries[middle].key < key)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return NULL;
+}
+
+/* the camera between two ticks of a playback: the game draws several frames to a tick, and the controller's angles, which
+the camera follows, are set a tick at a time (input_tape_action), so a frame takes the angles part of the way from the
+tick the game has run to the next, which the tape already has */
+static void input_tape_view_frame(
+	void)
+{
+	long tick = game_time_get();
+	real fraction = game_time_get_tick_fraction();
+	short player;
+
+	for (player = 0; player < MAXIMUM_LOCAL_PLAYERS; player++)
+	{
+		struct input_tape_entry const *from = input_tape_find(input_tape_key(tick - 1, player));
+		struct input_tape_entry const *to = input_tape_find(input_tape_key(tick, player));
+		struct player_action before;
+		struct player_action after;
+		real_euler_angles2d angles;
+		real_vector3d facing;
+		real turn;
+
+		if (!from || !to)
+			continue;
+		csmemcpy(&before, from->bytes, sizeof(before));
+		csmemcpy(&after, to->bytes, sizeof(after));
+		turn = after.desired_facing.yaw - before.desired_facing.yaw;
+		while (turn > _pi)
+			turn -= 2.f*_pi;
+		while (turn < -_pi)
+			turn += 2.f*_pi;
+		angles.yaw = before.desired_facing.yaw + turn*fraction;
+		angles.pitch = before.desired_facing.pitch + (after.desired_facing.pitch - before.desired_facing.pitch)*fraction;
+		vector3d_from_euler_angles2d(&facing, &angles);
+		player_control_set_facing(player, &facing);
+	}
+}
+
+/* each frame (main.c): the recording tape_record asks for is of the games, never of the main menu: its file ends when
+the main menu loads or the map changes, and the next game's is another */
+void network_test_tape_frame(
+	boolean main_menu_loaded)
+{
+	char key[2*INPUT_TAPE_PATH_LENGTH];
+
+	if (input_tape.playing && !input_tape.waiting && !input_tape.skipping && !input_tape.ended && game_in_progress() &&
+		!main_menu_loaded && !game_time_get_paused())
+	{
+		input_tape_view_frame();
+	}
+	if (!input_tape.record_auto)
+		return;
+	if (!game_in_progress() || main_menu_loaded)
+	{
+		if (input_tape.recording)
+			input_tape_stop("the main menu");
+		return;
+	}
+	input_tape_map_key(key, sizeof(key));
+	if (input_tape.recording && strcmp(key, input_tape.segment_map))
+		input_tape_stop("the map changed");
+	if (!input_tape.recording)
+		input_tape_segment_begin();
+}
+
+/* a game on the tape's map (its hash, not its name: maps of one name differ) as the tape was recorded, from a local game or
+the main menu; FALSE, and why told, when this machine cannot */
+static boolean input_tape_launch(void)
+{
+	char scenario[128];
+	char text[2*sizeof(struct game_variant) + 1];
+	char path[256];
+	char level[160];
+	unsigned long version = 0;
+	long difficulty = _game_difficulty_level_normal;
+	long players = 1;
+	struct game_variant variant;
+	boolean has_variant = FALSE;
+	short player;
+	char const *name;
+
+	if (!input_tape_field(input_tape.header, "scenario", TRUE, scenario, sizeof(scenario)) || !scenario[0])
+	{
+		console_printf(FALSE, "tape: the tape names no map, start its game yourself");
+		return FALSE;
+	}
+	if (game_connection() == _game_connection_network_client || game_connection() == _game_connection_network_server)
+	{
+		console_printf(FALSE, "tape: leave the network game first");
+		return FALSE;
+	}
+	if (input_tape_field(input_tape.header, "map_version", FALSE, text, sizeof(text)))
+		version = strtoul(text, NULL, 16);
+	if (input_tape_field(input_tape.header, "difficulty", FALSE, text, sizeof(text)))
+		difficulty = strtol(text, NULL, 10);
+	if (input_tape_field(input_tape.header, "players", FALSE, text, sizeof(text)))
+		players = strtol(text, NULL, 10);
+	if (input_tape_field(input_tape.header, "variant", FALSE, text, sizeof(text)) &&
+		input_tape_hex_read(text, &variant, sizeof(struct game_variant)))
+	{
+		has_variant = TRUE;
+	}
+	snprintf(level, sizeof(level), "%s", scenario);
+	if (custom_edition_level_name(scenario) && version != 0)
+	{
+		/* (another file of the name, whatever its version: the level is named by that file's own name) */
+		if (!custom_edition_map_find_version(scenario, version, path))
+		{
+			console_printf(FALSE, "tape: no map of %s with the tape's hash %08lx", scenario, version);
+			return FALSE;
+		}
+		name = strrchr(path, '/') > strrchr(path, '\\') ? strrchr(path, '/') : strrchr(path, '\\');
+		name = name ? name + 1 : path;
+		snprintf(level, sizeof(level), "custom_maps\\%s", name);
+		if (strlen(level) > 4 && !strcmp(level + strlen(level) - 4, ".map"))
+			level[strlen(level) - 4] = '\0';
+	}
+	else if (custom_edition_level_name(scenario) && !custom_edition_map_file_present(scenario))
+	{
+		console_printf(FALSE, "tape: no map %s", scenario);
+		return FALSE;
+	}
+	if (main_menu_is_active())
+		ui_widgets_close_all();
+	game_connection_set(_game_connection_local);
+	main_set_difficulty((short)difficulty);
+	player_spawn_count = (short)(players >= 1 && players <= MAXIMUM_LOCAL_PLAYERS ? players : 1);
+	for (player = 0; player < player_spawn_count; player++)
+		player_ui_set_single_player_local_player_controller(player, player);
+	if (has_variant)
+		game_set_game_variant(&variant);
+	main_set_map_name(level);
+	if (main_menu_is_active())
+		main_menu_switch_to_single_player();
+	return TRUE;
+}
+
+/* tape_play <file>: the file of the tapes folder (or a whole path), "last" for the last one recorded; it plays from the
+start of the next game */
+static void input_tape_command_play(
+	char const *name)
+{
+	char folder[INPUT_TAPE_PATH_LENGTH];
+	char file[INPUT_TAPE_PATH_LENGTH];
+	size_t length;
+	short player;
+
+	snprintf(file, sizeof(file), "%s", name);
+	length = strlen(file);
+	while (length > 0 && (file[length - 1] == ' ' || file[length - 1] == ')'))
+		file[--length] = '\0';
+	/* (a number or last: the tape of that number, or the highest) */
+	if (!strcmp(file, "last") || !file[0] || strspn(file, "0123456789") == strlen(file))
+	{
+		char numbered[256];
+		boolean last = !strcmp(file, "last") || !file[0];
+
+		input_tape_numbered(last ? NONE : strtol(file, NULL, 10), numbered, sizeof(numbered));
+		if (!numbered[0])
+		{
+			console_printf(FALSE, last ? "tape: no numbered tapes yet" : "tape: no tape number %s", file);
+			return;
+		}
+		snprintf(file, sizeof(file), "%s", numbered);
+	}
+	input_tape.record_auto = FALSE;
+	if (input_tape.recording)
+		input_tape_stop("tape_play");
+	if (input_tape.skipping)
+		game_time_set_speed(input_tape.saved_speed);
+	input_tape.skipping = FALSE;
+	input_tape_folder(folder, sizeof(folder));
+	if (strpbrk(file, ":/\\"))
+		snprintf(input_tape.path, sizeof(input_tape.path), "%s", file);
+	else
+		snprintf(input_tape.path, sizeof(input_tape.path), "%s\\%s%s", folder, file, strchr(file, '.') ? "" : ".tape");
+	input_tape.count = 0;
+	input_tape_check_count = 0;
+	input_tape.header[0] = '\0';
+	for (player = 0; player < MAXIMUM_LOCAL_PLAYERS; player++)
+		input_tape.pose_valid[player] = FALSE;
+	input_tape_load();
+	if (!input_tape.playing)
+	{
+		console_printf(FALSE, "tape: cannot play %s", input_tape.path);
+		return;
+	}
+	input_tape.waiting = TRUE;
+	input_tape.last_tick = game_in_progress() && !main_menu_is_active() ? game_time_get() : INPUT_TAPE_NEVER;
+	{
+		/* (the header's start, for a person: not its variant bytes) */
+		char shown[160];
+		char const *cut = strstr(input_tape.header, " variant=");
+
+		snprintf(shown, sizeof(shown), "%.*s", cut ? (int)(cut - input_tape.header) : 150, input_tape.header);
+		console_printf(FALSE, "tape: %s", shown);
+	}
+	if (input_tape_launch())
+		console_printf(FALSE, "tape: starting its game, playing from tick %ld", input_tape.start_tick);
+	else
+		console_printf(FALSE, "tape: plays from tick %ld of the next game you start, on that map", input_tape.start_tick);
+}
+
+/* tape_list: the last ten numbered tapes */
+static void input_tape_command_list(
+	void)
+{
+	char name[256];
+	long highest = input_tape_numbered(0, name, sizeof(name));
+	long number;
+	long shown = 0;
+
+	for (number = highest; number >= 1 && shown < 10; number--)
+	{
+		input_tape_numbered(number, name, sizeof(name));
+		if (name[0])
+		{
+			console_printf(FALSE, "tape: %s", name);
+			shown++;
+		}
+	}
+	if (!shown)
+		console_printf(FALSE, "tape: no numbered tapes yet");
+}
+
+/* tape_record, tape_stop and tape_play <file> (hs.c, before the script compiler): TRUE when the expression was one of
+them */
+boolean network_test_tape_command(
+	char const *expression)
+{
+	char const *rest;
+
+	if (!input_tape.armed)
+	{
+		input_tape_arm();
+		input_tape.last_tick = NONE;
+	}
+	if (input_tape_word(expression, "tape_record"))
+	{
+		input_tape_command_record();
+		return TRUE;
+	}
+	if (input_tape_word(expression, "tape_stop"))
+	{
+		if (input_tape.recording || input_tape.record_auto)
+		{
+			input_tape.record_auto = FALSE;
+			if (input_tape.recording)
+				input_tape_stop("tape_stop");
+			console_printf(FALSE, "tape: stopped, the last file is %s", input_tape_host_path(input_tape.last_path));
+		}
+		else if (input_tape.playing)
+		{
+			if (input_tape.skipping)
+				game_time_set_speed(input_tape.saved_speed);
+			input_tape.skipping = FALSE;
+			input_tape.playing = FALSE;
+			input_tape.waiting = FALSE;
+			console_printf(FALSE, "tape: playback stopped");
+		}
+		else
+			console_printf(FALSE, "tape: not recording or playing");
+		return TRUE;
+	}
+	if (input_tape_word(expression, "tape_list"))
+	{
+		input_tape_command_list();
+		return TRUE;
+	}
+	if ((rest = input_tape_word(expression, "tape_play")) != NULL)
+	{
+		input_tape_command_play(rest);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/* whether the tape gave the action (playing); recording only copies the input of a tick's first ask */
+static boolean input_tape_action(
+	short local_player_index,
+	struct player_action *action)
+{
+	long tick;
+	long key;
+	long low = 0;
+	long high;
+	long unit_index;
+
+	if (local_player_index < 0 || local_player_index >= MAXIMUM_LOCAL_PLAYERS)
+		return FALSE;
+	if (!input_tape.armed)
+	{
+		input_tape_arm();
+		input_tape.last_tick = NONE;
+	}
+	if (!input_tape.recording && !input_tape.playing)
+		return FALSE;
+	/* (the pause menu stops the game's time, so no tick asks; this keeps a paused game's input out of a tape and a tape's out of the menu) */
+	if (game_time_get_paused())
+		return FALSE;
+	tick = game_time_get();
+	if (input_tape.last_tick == NONE)
+		input_tape_restart();
+	else if (tick < input_tape.last_tick)
+	{
+		/* (a recording is of one game: the restart that follows a new game's start would write the file again) */
+		if (input_tape.recording)
+		{
+			input_tape_stop("a new game started");
+			if (input_tape.record_auto)
+			{
+				input_tape_segment_begin();
+				input_tape_restart();
+			}
+		}
+		else
+		{
+			input_tape_restart();
+			input_tape.waiting = FALSE;
+		}
+	}
+	input_tape.last_tick = tick;
+	if (input_tape.waiting)
+		return FALSE;
+	key = input_tape_key(tick, local_player_index);
+	if (input_tape.recording)
+	{
+		if (!input_tape.file || tick < input_tape.record_from)
+			return FALSE;
+		if (!input_tape.started[local_player_index] && input_tape_body(local_player_index, &unit_index))
+		{
+			input_tape_pose_take(unit_index, &input_tape.pose[local_player_index]);
+			input_tape_pose_write(input_tape.file, local_player_index, tick, &input_tape.pose[local_player_index]);
+			input_tape.started[local_player_index] = TRUE;
+		}
+		if (input_tape.started[local_player_index] && local_player_index == 0 && tick % INPUT_TAPE_CHECK_EVERY == 0 &&
+			tick != input_tape_check_last)
+		{
+			input_tape_check_last = tick;
+			fprintf(input_tape.file, "check %ld %08x %08x\n", tick, (unsigned int)get_random_seed(),
+				input_tape_world_hash());
+		}
+		if (input_tape.started[local_player_index] && key != input_tape.last_key[local_player_index])
+		{
+			input_tape_line_write(input_tape.file, key, action);
+			fflush(input_tape.file);
+			input_tape.last_key[local_player_index] = key;
+			input_tape_note_trigger(tick, local_player_index, action);
+		}
+		return FALSE;
+	}
+	if (!input_tape.playing)
+		return FALSE;
+	if (tick < input_tape.start_tick || input_tape.skipping)
+		input_tape_pace(tick);
+	if (input_tape.pose_valid[local_player_index] && !input_tape.pose_applied[local_player_index] &&
+		tick >= input_tape.pose_tick[local_player_index] && input_tape_body(local_player_index, &unit_index))
+	{
+		boolean put = input_tape_pose_put(unit_index, &input_tape.pose[local_player_index]);
+
+		input_tape.pose_applied[local_player_index] = TRUE;
+		*get_global_random_seed_address() = input_tape.pose[local_player_index].random_seed;
+		error(_error_silent, "input_tape: player %d %s at tick %ld (recorded at %ld%s)", (int)local_player_index,
+			put ? "put back" : "could not be put back", tick, input_tape.pose_tick[local_player_index],
+			input_tape.pose[local_player_index].vehicle.present ? ", in a vehicle" : "");
+	}
+	if (local_player_index == 0 && input_tape_check_count > 0 && tick % INPUT_TAPE_CHECK_EVERY == 0 &&
+		tick != input_tape_check_last)
+	{
+		long first = 0;
+		long last = input_tape_check_count - 1;
+
+		input_tape_check_last = tick;
+		while (first <= last)
+		{
+			long middle = (first + last)/2;
+			struct input_tape_check const *check = &input_tape_checks[middle];
+
+			if (check->tick == tick)
+			{
+				boolean seed_same = check->seed == (unsigned int)get_random_seed();
+				boolean world_same = check->world == input_tape_world_hash();
+
+				if ((!seed_same || !world_same) && !input_tape_desync_reported)
+				{
+					input_tape_desync_reported = TRUE;
+					error(_error_silent, "input_tape: out of step at tick %ld: random seed %s, world %s", tick,
+						seed_same ? "the same" : "different", world_same ? "the same" : "different");
+					console_printf(FALSE, "tape: out of step at tick %ld (random seed %s, world %s)", tick,
+						seed_same ? "same" : "different", world_same ? "same" : "different");
+				}
+				break;
+			}
+			if (check->tick < tick)
+				first = middle + 1;
+			else
+				last = middle - 1;
+		}
+	}
+	high = input_tape.count - 1;
+	while (low <= high)
+	{
+		long middle = (low + high)/2;
+
+		if (input_tape_entries[middle].key == key)
+		{
+			real_vector3d facing;
+
+			csmemcpy(action, input_tape_entries[middle].bytes, sizeof(struct player_action));
+			/* (the camera and the next frame's input follow the controller's own angles, not this tick's action) */
+			vector3d_from_euler_angles2d(&facing, &action->desired_facing);
+			player_control_set_facing(local_player_index, &facing);
+			input_tape_note_trigger(tick, local_player_index, action);
+			return TRUE;
+		}
+		if (input_tape_entries[middle].key < key)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	if (key > input_tape_entries[input_tape.count - 1].key && !input_tape.ended)
+	{
+		input_tape.ended = TRUE;
+		error(_error_silent, "input_tape: playback finished at tick %ld", tick);
+		console_printf(FALSE, "tape: playback finished");
+	}
+	return FALSE;
+}
+
+/* a local player's input this tick, the tape's (player_queues_new.c) */
+void network_test_tape_action(
+	short local_player_index,
+	struct player_action *action)
+{
+	input_tape_action(local_player_index, action);
 }
 
 void network_test_update(

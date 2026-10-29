@@ -1124,6 +1124,11 @@ static const struct config_setting config_settings[] =
 		"up and down; \"menu:<buttons>\" presses menu buttons one a second (a,\n"
 		"b, x, y, up, down, left, right, start, back or wait, separated by\n"
 		"spaces or commas), for testing the menus; empty for none." },
+	{ "debug.input_tape", _config_string, "\"\"", "HALO_INPUT_TAPE", _environment_value, _platform_all,
+		"\"record:<file>\" writes every local player's input of each tick (from tick N with\n"
+		"\"record@N:<file>\"), and the pose it started from; \"play:<file>\" runs the game fast\n"
+		"to that tick (local or hosted games), puts the player back and gives the input\n"
+		"back. Empty for none (network_test.c)." },
 	{ "debug.bot_trace", _config_integer, "0", "HALO_BOT_TRACE", _environment_value, _platform_all,
 		"Log each bot's state (bots.count) every this many seconds: where it is\n"
 		"and goes, its path, target and weapon; 0 never." },

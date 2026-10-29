@@ -2847,6 +2847,7 @@ symbols in this file:
 #include "profile_console.h" /* port: port/linux/game/profile_console.c */
 #endif
 #include "structure_culling.h" /* port: port/linux/game/structure_culling.c */
+#include "network_test.h" /* port: port/linux/game/network_test.c */
 
 /* ---------- constants */
 
@@ -15556,6 +15557,9 @@ static boolean hs_compile_and_evaluate_command(
 		if (server_command_try(expression, &server_result))
 			return server_result;
 	}
+	/* port: the input tape's commands (network_test.c) change nothing of the game, and are no scripts */
+	if (network_test_tape_command(expression))
+		return TRUE;
 	/* port: the co-op host's bringto, which brings every player to the host
 	(players.c; a client is told it is the host's) */
 	if (hs_host_player_command(expression, "bringto"))

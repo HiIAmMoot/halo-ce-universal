@@ -115,6 +115,7 @@ symbols in this file:
 #include "memory/data.h"
 #include "networking/network_game_globals.h"
 #include "units/units.h"
+#include "network_test.h" /* port: port/linux/game/network_test.c */
 
 /* ---------- constants */
 
@@ -703,6 +704,8 @@ static boolean update_client_dequeue_distributed(
 		if (local_player_index != NONE)
 		{
 			action = update_client_globals.saved_action_collection.actions[local_player_index];
+			/* port: the input tape's, kept and sent as the player's own (network_test.c) */
+			network_test_tape_action(local_player_index, &action);
 			if (local_player_index < MAXIMUM_LOCAL_PLAYERS)
 			{
 				/* (for the host: network_distributed.c) */
@@ -765,6 +768,14 @@ boolean update_client_dequeue(
 		{
 			struct player_action *action = &update->update.actions[queue_index];
 
+			/* port: the input tape's, in a local game before native input latching (network_test.c) */
+			if (game_connection() == _game_connection_local)
+			{
+				short local_player_index = update_client_local_player_index(queue_index);
+
+				if (local_player_index != NONE)
+					network_test_tape_action(local_player_index, action);
+			}
 			queue->control_flags = action->control_flags;
 			queue->desired_facing = action->desired_facing;
 			queue->throttle = action->throttle;
@@ -1074,6 +1085,8 @@ static void update_server_take_local_actions(
 		if (queue)
 		{
 			queue->current_action = update_client_globals.saved_action_collection.actions[local_player_index];
+			/* port: the input tape's, for the host's own players (network_test.c) */
+			network_test_tape_action(local_player_index, &queue->current_action);
 		}
 	}
 }
