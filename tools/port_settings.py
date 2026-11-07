@@ -647,7 +647,7 @@ def _screen(folder: str, spec: dict, rows: list, list_inputs: list, list_handler
     lines += _widget(f"{base}/help", [("type", "text"), ("controller", 1), ("left", 68),
                                       ("top", spec.get("help_top", 350)), ("width", 482),
                                       ("height", spec.get("help_height", 60)), ("string_list", None if spec.get("dynamic_help") else f"{base}/help_strings"),
-                                      ("font", "ui\\large_ui"), ("color", "#FFFFFFFF")], [])
+                                      ("font", spec.get("help_font", "ui\\large_ui")), ("color", "#FFFFFFFF")], [])
     children = [f'<data input="{name}"/>' for name in list_inputs] + list_handlers
     # (each row: its widget, platform, and the place it is in, else the next)
     for index, (row, platform, *place) in enumerate(rows):
@@ -1498,8 +1498,10 @@ def _server_settings() -> list:
     whether the server browser lists it (PUBLIC or PRIVATE: an internet
     game's)"""
     base = f"{MT}/server_settings"
-    # (twelve rows: closer together, the help lower)
-    spec = {"screen": "server_settings_screen", "spacing": 24, "help_top": 366,
+    # (thirteen places: the main rows 22 high and as far apart, as their
+    # spinners and values already are, the help lower and smaller)
+    spec = {"screen": "server_settings_screen", "spacing": 22, "help_top": 366,
+            "help_height": 48, "help_font": "ui\\small_ui",
             "header": ("header_server_settings", f"{base}/header_server_settings")}
     rows, extra = [], []
     extra += _value_row(base, "server_name", 0, "ss edit server name")
@@ -1546,6 +1548,30 @@ def _server_settings() -> list:
     # which players from the server browser must type
     extra += _value_row(base, "password", 10 + len(COOP_SETUP_SCREENS), "ss edit server password")
     rows.append((f"{base}/op_password", None))
+    # VEHICLE RIDING (vehicle_riding.c), the host's for any game: a spinner
+    # of its own setting, game.vehicle_riding, as co-op's options' spinners
+    # are (menu_functions.c's server_settings_initialize and _update)
+    extra += _widget(f"{base}/op_vehicle_riding", [("width", 512), ("height", 28),
+                                                   ("flags", "pass_unhandled_to_focused_child"),
+                                                   ("bitmap", "bitmaps/option_bkds"), ("color", "#FF2896FF")],
+                     [f'<child widget="{base}/vehicle_riding_label"/>',
+                      f'<child widget="{base}/vehicle_riding_spinner" x="286" y="1"/>'])
+    extra += _widget(f"{base}/vehicle_riding_label", [("type", "text"), ("controller", 1), ("width", 300),
+                                                      ("height", 22), ("string_list", f"{base}/labels"),
+                                                      ("string_index", 12 + len(COOP_SETUP_SCREENS)),
+                                                      ("font", "ui\\large_ui"), ("color", "#FF2896FF"), ("text_x", 13),
+                                                      ("text_y", 4)], [])
+    extra += _widget(f"{base}/vehicle_riding_spinner",
+                     [("type", "spinner"), ("top", 2), ("width", 206), ("height", 20),
+                      ("flags", "pass_unhandled_to_focused_child left_right_tabs_items"),
+                      ("string_list", f"{base}/var_vehicle_riding"), ("font", "ui\\large_ui"),
+                      ("color", "#FF2896FF"), ("align", "center"), ("text_y", 4),
+                      ("list_flags", "items_from_strings"),
+                      ("header_bitmap", "bitmaps/arrow_sm_left"), ("footer_bitmap", "bitmaps/arrow_sm_right"),
+                      ("header_bounds", "7 -13 19 -7"), ("footer_bounds", "7 208 19 214")],
+                     ['<on event="left_mouse" run="mouse spinner 1wide click"/>'])
+    extra += _strings(f"{base}/var_vehicle_riding", ["ON", "OFF"])
+    rows.append((f"{base}/op_vehicle_riding", None, SETUP_OPTIONS_PLACE - 2))
     # MAP SHARING (map_share.c), a screen of its own as co-op's options are,
     # for any game: SETUP_OPTIONS_PLACE below it
     key, _, _, _ = MAP_SHARE_SETUP
@@ -1610,7 +1636,7 @@ def _server_settings() -> list:
                                          "PLAYER OPTIONS:", "ITEM OPTIONS:", "VEHICLE OPTIONS:", "INDICATOR OPTIONS:",
                                          "TEAMPLAY OPTIONS:", "LISTING:",
                                          *(f"{title}:" for _, title, _, _ in COOP_SETUP_SCREENS), "PASSWORD:",
-                                         f"{MAP_SHARE_SETUP[1]}:"])
+                                         f"{MAP_SHARE_SETUP[1]}:", "VEHICLE RIDING:"])
     extra += _strings(f"{base}/help_strings", [
         "",
         "The name the game shows in the lists of games.\\nEnter changes it.",
@@ -1634,7 +1660,15 @@ def _server_settings() -> list:
         # (LISTING's PUBLIC, on a machine with a publisher key: menu_functions.c's
         # server_settings_update)
         "Listed for everyone through the brokers, and on\\nthe master servers with your publisher key.",
+        # (VEHICLE RIDING's: menu_functions.c's VEHICLE_RIDING_HELP)
+        "Players standing on a vehicle are carried by it.\\nOff: as the original game, riders slide off.",
     ])
+    # (the main rows 22 high, their containers only: their spinners and
+    # values are 22 or less already, and the other screens' rows stay 28)
+    main_rows = {row for row, *_ in rows}
+    extra = [line.replace('height="28"', 'height="22"', 1)
+             if any(line.startswith(f'\t<widget name="{row}" ') for row in main_rows) else line
+             for line in extra]
     lines = _screen(base, spec, rows, ["server settings update"],
                     ['<on event="created" run="server settings init"/>'], extra)
     # (co-op's options' screens, and map sharing's)
@@ -1721,8 +1755,8 @@ MAP_SHARE_SETUP = ("map_share_options", "MAP SHARING",
      ["The most you send of maps, so that the game\\nkeeps the rest of your upload."] * len(MAP_SHARE_UPLOADS)),
 ])
 # (Server Setup's place of its options' rows, co-op's or the gametype's: after
-# MAP SHARING's)
-SETUP_OPTIONS_PLACE = 6
+# VEHICLE RIDING's and MAP SHARING's)
+SETUP_OPTIONS_PLACE = 7
 # (their screens' titles)
 TITLES.update({f"{MT}/server_settings/{key}/header_{key}": title
                for key, title, _, _ in [*COOP_SETUP_SCREENS, MAP_SHARE_SETUP]})

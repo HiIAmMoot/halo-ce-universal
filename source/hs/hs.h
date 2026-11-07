@@ -184,6 +184,9 @@ void hs_runtime_port_shift_sleep_times(
 	long ticks);
 void hs_runtime_update(
 	void);
+/* port: the co-op riding test holds level threads after setup (network_test.c) */
+void hs_runtime_sleep_scripts(
+	void);
 long hs_runtime_evaluate(
 	long expression_index);
 /* port: whether the running script waits on the call it evaluates, which

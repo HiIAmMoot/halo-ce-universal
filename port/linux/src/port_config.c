@@ -507,6 +507,11 @@ static const struct config_setting config_settings[] =
 		"false: the original animations, which freeze the legs and stand a\n"
 		"rider up (the turning, which moves where shots go, stays on in a\n"
 		"network game for every player)." },
+	{ "game.vehicle_riding", _config_boolean, "true", "HALO_VEHICLE_RIDING", _environment_value, _platform_all,
+		"A player standing on a moving vehicle is carried by it, turns with it\n"
+		"and keeps its motion when stepping off; the vehicle does not hurt it.\n"
+		"In a network game the host chooses for everyone (Server Setup's VEHICLE\n"
+		"RIDING); false: the original game, where riders slide off." },
 	{ "game.custom_edition", _config_boolean, "true", "HALO_CUSTOM_EDITION", _environment_value, _platform_all,
 		"Load and run Halo Custom Edition maps (not those that need OpenSauce):\n"
 		"put them and Custom Edition's bitmaps.map, sounds.map and loc.map in\n"
@@ -1096,6 +1101,8 @@ static const struct config_setting config_settings[] =
 		"Automated system link sessions for testing (port/linux/game/network_test.c):\n"
 		"\"host:<map>\" hosts a game on that map, \"local:<map>\" plays a local (split\n"
 		"screen) game on it, \"join\" joins the first game found,\n"
+		"\"local:<map>:slayer\", only with debug.network_test_ride \"longsword\", runs that riding test in\n"
+		"two-player split screen with no network connection (pilot 0, rider 1),\n"
 		"\"browse\" the one with the most players the server browser lists (not\n"
 		"co-op, if it can), \"log\" logs the game that runs (and runs its cues);\n"
 		"empty for none." },
@@ -1141,6 +1148,29 @@ static const struct config_setting config_settings[] =
 		_platform_all,
 		"The network test's host lists its game in the server browser, as Create\n"
 		"Game > Internet's PUBLIC does (debug.network_test \"browse\" joins it)." },
+	{ "debug.network_test_ride", _config_string, "\"\"", "HALO_NETWORK_TEST_RIDE", _environment_value, _platform_all,
+		"A riding test in an automated session (network_test.c, NETCODE.md): straight,\n"
+		"circle, rise, convoy, driven, gun, brush, coop or coop-double; empty for none.\n"
+		"tools/network_ride_test.py runs them all." },
+	{ "debug.network_test_ride_driver", _config_string, "\"host\"", "HALO_NETWORK_TEST_RIDE_DRIVER", _environment_value,
+		_platform_all,
+		"The driven riding test's driver: the host's player or the client's (host or client)." },
+	{ "debug.network_test_ride_session", _config_string, "\"ride\"", "HALO_NETWORK_TEST_RIDE_SESSION",
+		_environment_value, _platform_all,
+		"A riding test's name in its log's records (no spaces)." },
+	{ "debug.network_test_ride_clock", _config_string, "\"\"", "HALO_NETWORK_TEST_RIDE_CLOCK",
+		_environment_value, _platform_all,
+		"The co-op riding runner's shared clock file, unique to the case. The host\n"
+		"writes its board tick after the cinematic; the client waits for it.\n"
+		"Empty outside tools/network_ride_test.py (co-op riding tests require it)." },
+	{ "debug.network_test_ride_spot", _config_string, "\"\"", "HALO_NETWORK_TEST_RIDE_SPOT", _environment_value,
+		_platform_all,
+		"The Longsword riding test's rider spot and door walk, \"x,y,forward,left\"\n"
+		"(body-local); empty surveys the vehicle's deck instead." },
+	{ "debug.network_test_ride_corner", _config_boolean, "false", "HALO_NETWORK_TEST_RIDE_CORNER",
+		_environment_set_is_true, _platform_all,
+		"The local Longsword test holds its pitch near 90 degrees while the rider\n"
+		"walks backward into the rear corner, then forward; false keeps its usual script." },
 	{ "debug.telnet_console", _config_boolean, "false", "HALO_TELNET_CONSOLE", _environment_set_is_true, _platform_all,
 		"Listen on 127.0.0.1 (port telnet_console_port) for a script console that\n"
 		"runs what it is sent as the game's console does, with no password; false\n"
@@ -1178,6 +1208,36 @@ static const struct config_setting config_settings[] =
 		"Seconds after the start before anything is damaged, so that a game can\n"
 		"be set up and started first (a host's messages to its own client are\n"
 		"damaged too)." },
+	{ "debug.riding_damage_speed", _config_real, "0.0", "HALO_RIDING_DAMAGE_SPEED", _environment_value, _platform_all,
+		"Riding: the closing speed (world units a tick) above which a vehicle\n"
+		"still hurts a player who just left it; 0 takes twice the player's own\n"
+		"run and jump speed." },
+	{ "debug.riding_teleport_step", _config_real, "4.0", "HALO_RIDING_TELEPORT_STEP", _environment_value, _platform_all,
+		"Riding: a vehicle that moves further in one update is teleported; its\n"
+		"riders are not carried along but put in the air from it, keeping\n"
+		"their motion, as if they had jumped." },
+	{ "debug.riding_moved_alone", _config_real, "0.25", "HALO_RIDING_MOVED_ALONE", _environment_value, _platform_all,
+		"Riding: a rider this far from where it ended its last tick was moved\n"
+		"by something else, and is put in the air from the vehicle, keeping\n"
+		"its motion, as if it had jumped." },
+	{ "debug.riding_transition_leash", _config_real, "0.25", "HALO_RIDING_TRANSITION_LEASH", _environment_value, _platform_all,
+		"Riding: the host's position allowance in world units during takeoff\n"
+		"and landing disagreement; never a velocity or accumulated movement\n"
+		"allowance. Non-finite or negative values mean none." },
+	{ "debug.riding_look_carry", _config_boolean, "true", "HALO_RIDING_LOOK_CARRY", _environment_value, _platform_all,
+		"Riding: the vehicle's turn turns the rider's view; false keeps the\n"
+		"view where the player put it (a test aid)." },
+	{ "debug.riding_air_grip", _config_real, "0.045", "HALO_RIDING_AIR_GRIP", _environment_value, _platform_all,
+		"Riding: how much, each tick, the motion of a player in the air over\n"
+		"the vehicle they left may change to follow its turns and its speed\n"
+		"back up to the speed they jumped with, or inside a vehicle that\n"
+		"encloses them any speeding up (world units a tick); a slowing\n"
+		"vehicle is followed at once, never ahead of it." },
+	{ "debug.riding_enclosure_grace_ticks", _config_real, "4", "HALO_RIDING_ENCLOSURE_GRACE_TICKS", _environment_value,
+		_platform_all,
+		"Riding: how many player ticks in a row a rider standing in an enclosed\n"
+		"vehicle may miss its cabin test (sliding about) before the cabin counts\n"
+		"as open (0 to 30)." },
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); \"look:<seed>\" stands still, only turning and looking\n"

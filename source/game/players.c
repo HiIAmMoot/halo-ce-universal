@@ -239,6 +239,7 @@ symbols in this file:
 #include "devices/devices.h"
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
 #include "bots.h" /* port: port/linux/game/bots.c */
+#include "network_test.h" /* port: port/linux/game/network_test.c */
 #include "cutscene/cinematics.h" /* port: network co-op's first spawns */
 #include "editor/editor_stubs.h"
 #include "effects/effects.h"
@@ -5062,6 +5063,8 @@ void players_update_before_game(
 						0x2E5,
 						(NONE == control_data.zoom_level) || ((control_data.zoom_level >= 0)));
 					unit_control(player->unit_index, &control_data);
+					/* port: observe delivery before scripts can change the input flag */
+					network_test_ride_control_delivered(iterator.datum_index, TRUE);
 				}
 				else if (unit->unit.swarm_actor_index == NONE &&
 					unit->unit.actor_index == NONE)
@@ -5080,6 +5083,8 @@ void players_update_before_game(
 					inhibited_control_data.primary_trigger = 0.f;
 					inhibited_control_data.looking_vector = unit->unit.desired_looking_vector;
 					unit_control(player->unit_index, &inhibited_control_data);
+					/* port: observe the inhibited branch without changing its controls */
+					network_test_ride_control_delivered(iterator.datum_index, FALSE);
 				}
 			}
 		}

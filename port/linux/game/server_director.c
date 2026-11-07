@@ -517,6 +517,8 @@ static void server_apply_game_settings(
 	/* (a co-op game's clients told the host has no player: its loading zones
 	ask for most of them, network_coop_host_dedicated) */
 	network_game_server_port_set_cooperative_dedicated(TRUE);
+	/* (Server Setup's VEHICLE RIDING row has no place on a server: game.vehicle_riding is its choice) */
+	network_game_server_port_set_vehicle_riding(config_boolean("game.vehicle_riding") != 0);
 }
 
 /* the listing: internet play (network.online), public or by invite, and

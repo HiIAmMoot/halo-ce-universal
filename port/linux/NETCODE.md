@@ -342,6 +342,48 @@ game's flags also tell its clients whether the host is a dedicated server
 (`_network_game_cooperative_dedicated_bit`: its loading zones then ask for
 most of the living players).
 
+Then version 42 carries a rider standing on a vehicle: the deck part of a unit's
+state and the host's riding switch, a co-op flag of the game's settings
+(`_network_game_cooperative_vehicle_riding_bit`, bit 3;
+`port/linux/game/vehicle_riding.c`). With the switch off a version 42 and a
+version 41 build still refuse each other, as any two versions do.
+It also carries a rider's cabin: its enclosure verdict while it stands as
+well as in the air. It ships with the rest of version 42, which no released
+build has.
+The deck part's verdict bits (1 open, 2 enclosed, 0 unknown) are sent in
+every window tick, riding included. Riding, they carry the standing cabin
+verdict (its grace counted by the sender: the host for its broadcast, a
+client for its own riders' predictions); in a protected jump,
+its raw sample; in a shallow jump, the air verdict as before. Bit 3 of the
+flags (the part stays 28 bytes) says that a verdict in the air is cabin
+evidence, a protected jump's sample or the host's word for it, rather than
+that legacy one. A client takes the host's verdict for the cabin of its own
+player and of every other rider, whatever its own samples say.
+
+The host takes a rider's word in its vehicle's frame and checks it there; a
+client places riders on its own copy of the deck. The host takes the words of
+the players riding in a second pass, after the vehicles of the tick have moved
+(the first takes those on foot), so a word naming a place on the deck is
+checked against the deck where it now is.
+For a round trip and a jitter after the host's copy or the client's changed
+between riding and not (a take-off or a landing the two disagree about), a
+word within `debug.riding_transition_leash` (0.25 world units, host only) of
+where the host's copy stands is taken as the place it names in the world
+rather than as a deck place: a position allowance during the disagreement,
+never a speed. A vehicle's netcode writes (the host's snaps, a client's corrections)
+carry its riders along but are recorded apart from its motion, in a
+correction each vehicle keeps, so they never count as the deck's speed. A
+vehicle a client follows (the host's word is its place, not its updates) is
+measured by the time elapsed since the rider's last tick, and a change of the
+vehicle's role (simulated or followed) takes no correction across it. A
+client's player put back on a deck by the riding test (`debug.network_test_ride`)
+is taken back on the host's entitlement alone: the host grants it, once, to the
+vehicle its copy left, for ten seconds, never on a client's word and never
+outside that test; the client's own states are shielded for a round trip (a
+second at most) after the re-board, also only in the test. None of this adds
+a byte: the cabin bit (bit 3 of the flags) is the only change to the deck part,
+which stays 28 bytes, and the version stays 42.
+
 `port/linux/network_format.txt` records the wire format of the current
 version (`tools/network_format.py`): `test_linux_port.py` fails when the
 sources' messages, kinds, bits, structs sent whole or the sizes of their
@@ -1085,6 +1127,16 @@ The host logs to `debug.txt` when a player on another machine presses the
 action button where the host has nothing for them to pick up, with where it
 has them and the nearest item: a client that sees a pickup the host does
 not.
+
+`debug.network_test_ride` runs a riding test in an automated session (`network_test.c`): `straight` (braking through the riders' jumps), `circle`, `rise`, `convoy` (two Warthogs side by side, the riders crossing), `driven` (`debug.network_test_ride_driver` says whose player drives; the other rides), `gun` (jumps on the bed under the Warthog's gun), `brush` (the riders step off and the Warthog brushes past them), `coop` and `coop-double` (on a campaign level, a Warthog with an AI marine in its driver seat, moved by the host's velocity script). The host gives the vehicles their velocity each tick, both machines' players ride and play a script (stand, walk, ten jumps, cross, step off), and every machine writes `ride schema=1` records to `debug.txt` each tick: every rider's deck part, place, world position and height over the deck (a ray down from the pill's top, after the carry), the states the host collected and a client received, the host's word on a client's predictions, the corrections and the noted positions they moved, and each vehicle's motion and the part of it the netcode wrote. `tools/network_ride_test.py` runs and judges them (below).
+
+`longsword` runs on Extinction (`custom_maps\extinction`, from the data root's `custom_maps`): one machine's player pilots a Longsword, the other boards its grounded cockpit at the spot `debug.network_test_ride_spot` gives (`x,y,forward,left`, body-local, with the door walk's throttle). The non-driver is placed first, then the host seats the pilot, without a preparation lift. Native facing aligns the parked ship to the map's parking lane (yaw 0); no vehicle pose or velocity is scripted. Every machine uses the same fixed ticks from boarding: settle 0, pilot climb 300, turn 1200, level exit 1500, pitch 2700, level 3000, bank 3300, level 3600, combined pitch/bank 3900, recover 4200, descend 4500, door walk 6000, end 6150. The climb uses a short full-lift startup, seven-of-fifteen jump-input ticks until climb tick 550, then one-of-three hover ticks. The 300-tick turn holds absolute yaw at parked heading plus 90 degrees, with no forward throttle or pitch. Later phases use that exit heading. The first level hold allows the rider's scheduled jump before forward input starts at hold tick 180; throttle ramps over 240 ticks to .5, with 6 degrees of nose-up trim. This slow exit clears the hangar before the full-throttle tilt phases. Turning across forward velocity supplies bank. The rider jumps during the early part of each level hold. Measured attitude/contact never advances the schedule. Each machine logs `cabin` (the tilt, rider limits, old enclosure ray, body-local pill-base position and corrections) and `tilt` (measured orientation, headings in degrees, pilot controls, speed, grounded ticks and update count); `route` records are clearance rays from the parked position. The runner requires 60 consecutive standing-inside ticks before both climb and first tilt on each side (`longsword-preparation` on failure), and never counts a pre-tilt departure as ejection evidence. The host must exceed 45 degrees during the tilt phases (`tilt-not-reached`); lag is not a tooling error. The rider's door input starts at the shared tick on every machine, but the judge checks that walk only if the host was landed before it (grounded at least 30 ticks, speed below .03 wu/tick, tilt below 5 degrees in the preceding tick); otherwise `door_walk` reports `door-not-run`, not a failure. Phase skew remains a tooling error. With the spot empty, the test only surveys the deck (`survey` records). Run it by name (`--scenarios longsword`); `--visible` lets a person watch instead of hiding its windows.
+
+`tools/network_ride_test.py` (Windows Python, the Windows build) runs every riding test as a host and a client on this PC, hidden, each with its own executable folder, data folder (the maps a junction to the owner's) and saves, at round trips of 0, 50, 100, 150, 200, 250 and 300 ms (each machine holding back half) and 100 ms with 2% loss; `driven` once with each driver. It pairs a client's own rider with the host's state that echoes the client's tick, and a remote rider with the host's state the client applied, and judges: places within 0.05 once settled, never more than 0.1 below the deck, the riding vehicle agreeing within the seat sync's grace, no correction standing and at most one in two seconds walking, jumping or brushing, the gun's jumps open, a brush felt on both machines and a driven rider never hurt. 0, 50 and 100 ms are required (`coop-double` is reported); exit 0 is a pass, 1 a desync, 2 a tooling failure (`summary.json` in the output folder holds every case's reasons, metrics and the share of each vehicle's motion the netcode wrote).
+
+Co-op riding tests use `debug.network_test_ride_clock` (`HALO_NETWORK_TEST_RIDE_CLOCK`), a clock file shared by the two processes and unique to the runner's case. After its opening cinematic the host writes the session and board tick; the client waits for that tick instead of starting from its own early input readiness. This is test setup over the local filesystem, not a new network message; riding states still use the ordinary network transport. The setting is empty outside the runner. The host seats a marine selected from the level's biped palette. A client missing that seat still prepares and logs `driver_missing=1`; the runner reports `driver-seat-missing` as DESYNC. It also reports `no-extrapolation` for a client tick with no vehicle write when the host's same vehicle moved: the per-tick unsteered carry requires an AI driver, not an empty vehicle. Co-op preparation probes the centre run and both flank runs at half-width 0.6, ahead and behind, also requiring the flanks' sampled ground heights within 0.05 of the centre's. A level centre run alone does not establish a level deck across its width; these are bounded ground probes, not a guarantee about every point of terrain or the later moving vehicle.
+
+Co-op riding runs are same-PC only: the runner exposes its case-private clock through both processes' data-root junctions. Starting this test without that clock setting produces `missing-board-clock`; these runs do not verify cross-PC co-op. The client accepts a clock record only after its trailing newline, so a read during the host's write cannot latch a partially written tick. The host waits past tick zero, when the level scripts have not yet started its opening cinematic, and the clock call receives the actual local-input readiness.
 
 ### Comparing two builds
 

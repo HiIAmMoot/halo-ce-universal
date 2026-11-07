@@ -2463,6 +2463,16 @@ void network_coop_note_bsp_switch(
 	distributed_send_notice(notice);
 }
 
+/* whether the host carries players standing on a vehicle, in any network
+game (its cooperative_flags hold every host's switches: vehicle_riding.c) */
+boolean network_game_port_vehicle_riding(
+	void)
+{
+	struct network_game *game = network_game_get_game();
+
+	return game && TEST_FLAG(game->cooperative_flags, _network_game_cooperative_vehicle_riding_bit);
+}
+
 boolean network_coop_devices_remote(
 	void)
 {
@@ -3320,7 +3330,14 @@ void network_coop_handle_object_transforms(
 		distributed_vector_unpack(&transform->forward, DISTRIBUTED_UNIT_SCALE, &forward);
 		distributed_vector_unpack(&transform->up, DISTRIBUTED_UNIT_SCALE, &up);
 		if (distributed_point_valid(&transform->position, UNIT_WORLD_BOUND) && distributed_axes_make_valid(&forward, &up))
+		{
+			real_point3d before = object_get(object_index)->object.position;
+			real_vector3d before_forward = object_get(object_index)->object.forward;
+			real_vector3d before_up = object_get(object_index)->object.up;
+
 			object_set_position(object_index, &transform->position, &forward, &up);
+			network_objects_vehicle_written(object_index, &before, &before_forward, &before_up, _network_vehicle_write_coop);
+		}
 	}
 }
 

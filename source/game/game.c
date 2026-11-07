@@ -182,7 +182,9 @@ struct game_options;
 #include "structures/structures.h"
 #include "units/units.h"
 #include "units/vehicles.h"
+#include "units/bipeds.h" /* port: bipeds_riding_latch */
 #include "network_coop.h" /* port: port/linux/game/network_coop.c */
+#include "network_test.h" /* port: port/linux/game/network_test.c */
 #ifdef HALO_PROFILE
 #include "profile_console.h" /* port: port/linux/game/profile_console.c */
 #endif
@@ -388,7 +390,11 @@ void game_tick(
 	if (!(network_game_distributed_client() && network_coop_active()))
 		profile_scope(game_tick_hs_section, hs_update();)
 	profile_scope(game_tick_recorded_animations_section, recorded_animations_update();)
+	/* port: the riding tests move their vehicles a tick, before the objects
+	update, and log every rider after it, the carry made (network_test.c) */
+	network_test_ride_before_objects();
 	profile_scope(game_tick_objects_section, objects_update();)
+	network_test_ride_after_objects();
 	profile_scope(game_tick_players_after_section, players_update_after_game();)
 	profile_scope(game_tick_hud_section, hud_update();)
 	profile_scope(game_tick_player_effect_section, player_effect_update();)
@@ -426,6 +432,9 @@ void game_initial_pulse(
 	void)
 {
 	struct data_iterator iterator;
+
+	/* port: (vehicle_riding.c) */
+	bipeds_riding_latch();
 
 	data_iterator_new(&iterator, player_data);
 	while (data_iterator_next(&iterator))

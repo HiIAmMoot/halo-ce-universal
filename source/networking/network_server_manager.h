@@ -111,6 +111,10 @@ void network_game_server_port_set_cooperative_player_collisions(
 FRIENDLY FIRE), kept for the levels after */
 void network_game_server_port_set_cooperative_ally_friendly_fire(
 	boolean ally_friendly_fire);
+/* port: whether players standing on a vehicle are carried by it (Server
+Setup's VEHICLE RIDING), for every game this host plays */
+void network_game_server_port_set_vehicle_riding(
+	boolean vehicle_riding);
 boolean network_game_server_ban_player(
 	char const *text);
 /* port: the host's kick command: as the ban command, but nothing kept (no

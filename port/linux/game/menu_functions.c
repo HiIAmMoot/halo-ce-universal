@@ -3054,6 +3054,7 @@ void network_game_server_port_set_settings(wchar_t const *name, long maximum_pla
 void network_game_server_port_set_cooperative_friendly_fire(short friendly_fire);
 void network_game_server_port_set_cooperative_player_collisions(boolean player_collisions);
 void network_game_server_port_set_cooperative_ally_friendly_fire(boolean ally_friendly_fire);
+void network_game_server_port_set_vehicle_riding(boolean vehicle_riding);
 void *global_network_game_client_get(void);
 void *global_network_game_server_get(void);
 boolean network_game_is_splitscreen_local(void);
@@ -3713,13 +3714,15 @@ static char const *const server_settings_gametype_rows[] =
 /* the most players a co-op game hosted starts with (maximum_players') */
 #define COOPERATIVE_DEFAULT_PLAYERS 16
 /* Server Setup's help for co-op's options' rows (CO-OP OPTIONS, VOICE AND
-VOTING), PASSWORD's and MAP SHARING's (its help_strings, tools/port_settings.py) */
+VOTING), PASSWORD's, MAP SHARING's and VEHICLE RIDING's (its help_strings,
+tools/port_settings.py) */
 #define COOPERATIVE_OPTIONS_HELP 12
 #define COOPERATIVE_VOICE_OPTIONS_HELP 13
 #define SERVER_PASSWORD_HELP 14
 #define MAP_SHARE_OPTIONS_HELP 15
 /* (LISTING's PUBLIC on a machine with a publisher key: server_master.c) */
 #define SERVER_LISTING_PUBLISHER_HELP 16
+#define VEHICLE_RIDING_HELP 17
 
 /* whether this machine has a publisher key (read as Server Setup opens) */
 static boolean server_settings_publisher;
@@ -3783,6 +3786,8 @@ static void server_settings_private_set(boolean private_game)
 	}
 }
 
+static void setting_options_each(struct widget_instance *list, boolean save);
+
 /* "server settings init": the game's name (player 1's, else the one given
 last), the most players, the gametype's copy (once: the screen is made
 again on coming back from an option's screen) */
@@ -3813,6 +3818,8 @@ static boolean server_settings_initialize(struct widget_instance *list)
 
 		server_settings_publisher = server_master_publisher(public_key, key_id) != 0;
 	}
+	/* (VEHICLE RIDING: game.vehicle_riding) */
+	setting_options_each(list, FALSE);
 	return TRUE;
 }
 
@@ -3851,6 +3858,15 @@ static void server_settings_update(struct widget_instance *list)
 		text_set(named(list, "game_type_value", 0), type);
 	}
 	settings_help(list);
+	/* VEHICLE RIDING, saved as it is chosen (START GAME's server_start sends
+	it), its help its own (its label's next is MAP SHARING's) */
+	setting_options_each(list, TRUE);
+	{
+		struct widget_instance *help = list->parameters.list.extended_description;
+
+		if (help && list->focused_child == named(list, "op_vehicle_riding", 0))
+			help->parameters.text_box.string_list_index = VEHICLE_RIDING_HELP;
+	}
 	{
 		boolean cooperative = hosting_cooperative();
 		short row;
@@ -3990,6 +4006,8 @@ static boolean server_start(void)
 	/* (its listing's password: a PUBLIC internet game's, else none) */
 	p2p_set_hosting_password(multiplayer.mode == _multiplayer_mode_host_internet && !server_settings_private() ?
 		multiplayer.game_password : NULL);
+	/* VEHICLE RIDING, any game's (game.vehicle_riding: vehicle_riding.c) */
+	network_game_server_port_set_vehicle_riding(config_boolean("game.vehicle_riding") != 0);
 	/* the gametype as Server Setup's options left it (co-op keeps its own,
 	and its FRIENDLY FIRE) */
 	if (hosting_cooperative())
@@ -7018,6 +7036,9 @@ static struct gametype_option const gametype_options[] =
 	{ "map_share_spinner", _option_setting, 0, 0, 2, { 0 }, "network.map_share", { "true", "false" } },
 	{ "map_share_upload_spinner", _option_setting, 0, 0, 8, { 0 }, "network.map_share_upload",
 		{ "256", "512", "1024", "2048", "4096", "8192", "16384", "20480" } },
+	/* Server Setup's VEHICLE RIDING, any game's (tools/port_settings.py's
+	_server_settings; vehicle_riding.c) */
+	{ "vehicle_riding_spinner", _option_setting, 0, 0, 2, { 0 }, "game.vehicle_riding", { "true", "false" } },
 	/* vehicle options (the side's set and counts: vehicles_update) */
 	{ "vehicles_respawn_spinner", _option_short, OPTIONS_FIELD(vehicle_respawn_time), 0, 7,
 		{ 0, 30, 60, 90, 120, 180, 300 } },

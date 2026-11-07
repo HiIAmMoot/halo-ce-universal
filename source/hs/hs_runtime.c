@@ -1195,6 +1195,31 @@ void hs_runtime_port_shift_sleep_times(
 	}
 }
 
+/* port: the riding test uses the engine's indefinite external sleep, without
+changing script data or sleeping console commands (hs_evaluate_sleep) */
+void hs_runtime_sleep_scripts(
+	void)
+{
+	long thread_index;
+
+	if (!hs_runtime_globals.initialized)
+		return;
+	for (thread_index = data_next_index(hs_thread_data, NONE); thread_index != NONE;
+		thread_index = data_next_index(hs_thread_data, thread_index))
+	{
+		struct hs_thread_datum *thread = hs_thread_get(thread_index);
+
+		if (thread->type != _hs_thread_type_script || thread->sleep_until == NONE)
+			continue;
+		if (!TEST_FLAG(thread->flags, _hs_thread_sleeping_bit))
+		{
+			SET_FLAG(thread->flags, _hs_thread_sleeping_bit, TRUE);
+			thread->previous_sleep_until = thread->sleep_until;
+		}
+		thread->sleep_until = NONE - 1;
+	}
+}
+
 void hs_runtime_update(
 	void)
 {

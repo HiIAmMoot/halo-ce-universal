@@ -471,12 +471,25 @@ word network_objects_entry_size(byte type);
 boolean network_objects_client_has(long object_index);
 /* moves the object where the host has it, drawn gliding from where it was */
 void network_objects_correct(long object_index, real_point3d const *position, real_vector3d const *forward,
-	real_vector3d const *up, real_vector3d const *velocity, real_vector3d const *angular_velocity);
+	real_vector3d const *up, real_vector3d const *velocity, real_vector3d const *angular_velocity, short kind);
 /* ... or, within blend_distance of it, half of the way there (drawn as it
 moves); TRUE when it was put there */
 boolean network_objects_reconcile(long object_index, real_point3d const *position, real_vector3d const *forward,
 	real_vector3d const *up, real_vector3d const *velocity, real_vector3d const *angular_velocity,
-	real blend_distance);
+	real blend_distance, short kind);
+/* a vehicle's pose the netcode wrote (from before), not its own motion:
+every such write calls it (the riding tests log it: network_test.c) */
+enum network_vehicle_write
+{
+	_network_vehicle_write_state,
+	_network_vehicle_write_change,
+	_network_vehicle_write_carry,
+	_network_vehicle_write_prediction,
+	_network_vehicle_write_own,
+	_network_vehicle_write_coop,
+};
+void network_objects_vehicle_written(long object_index, real_point3d const *before_position,
+	real_vector3d const *before_forward, real_vector3d const *before_up, short kind);
 /* a unit in the vehicle's seat as the host has it (NONE: in none) */
 void network_objects_set_seat(long unit_index, long vehicle_index, short seat_index);
 /* (the host) the ticks between sends to a machine of a unit at position, by
@@ -500,5 +513,7 @@ unit's camera: the offset from it (world units), FALSE when they leave from
 the camera; NULL (the default) for a build whose shots always do */
 typedef boolean (*network_damage_fire_origin_source)(short local_player_index, real_vector3d *offset);
 void network_damage_set_fire_origin_source(network_damage_fire_origin_source source);
+
+void network_distributed_own_reboard(short local_player_index, long unit_index, long vehicle_index);
 
 #endif // __NETWORK_DISTRIBUTED_H

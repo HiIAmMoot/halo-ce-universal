@@ -16,6 +16,65 @@ linux_host_only = pytest.mark.skipif(not sys.platform.startswith("linux"),
                                      reason="builds for the Linux target, so needs a Linux host")
 
 
+def test_vehicle_riding_update_count():
+    """Every object update counts once (object_update calls object_count_update first in its do-not-update test),
+    and objects_update runs its main loop through objects_update_passes (vehicle_riding.c)."""
+    root = Path(__file__).resolve().parent.parent
+    objects = (root / "source/objects/objects.c").read_text(encoding="latin-1")
+    update = objects[objects.index("static boolean object_update("):]
+    update = update[:update.index("\n}\n")]
+    assert re.search(r"if \(!TEST_FLAG\(header->flags, _object_header_do_not_update_bit\)\)\n\t\{\n"
+                     r"(\t\t/\*[^\n]*\*/\n)?\t\tobject_count_update\(object_index\);", update)
+    loop = objects[objects.index("void objects_update(\n"):]
+    loop = loop[:loop.index("\n}\n")]
+    assert "objects_update_passes(dont_update_object, object_update_deferred, object_update);" in loop
+
+
+def test_vehicle_riding_contacts_last_one_tick():
+    """The vehicles' touches of riders are kept for one game tick: objects_update clears them before its main loop,
+    so a rider whose own tick never came takes none into the next; a rider's tick resolves them after its air
+    frame, from the velocity its physics moves it by (vehicle_riding.c)."""
+    root = Path(__file__).resolve().parent.parent
+    objects = (root / "source/objects/objects.c").read_text(encoding="latin-1")
+    loop = objects[objects.index("void objects_update(\n"):]
+    loop = loop[:loop.index("\n}\n")]
+    assert "vehicle_riding_contacts_clear();" in loop
+    assert loop.index("vehicle_riding_contacts_clear();") < \
+        loop.index("objects_update_passes(dont_update_object, object_update_deferred, object_update);")
+    # resolved after the seed and the air frame, from the velocity the physics moves the rider by: resolved
+    # before them, a change of the air frame along the touch would be counted twice
+    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    moving = bipeds[bipeds.index("static void biped_update_moving(\n"):]
+    moving = moving[:moving.index("\n}\n")]
+    contacts = moving.index("biped_riding_contacts(")
+    assert moving.index("vehicle_riding_air_frame(") < contacts < moving.index("biped_update_physics(&physics);")
+    assert "riding_carried, &physics.velocity, riding_player," in moving[contacts:contacts + 300]
+
+
+def test_vehicle_collision_damage_factored():
+    """The original vehicle collision damage lives in one function, which a vehicle's update and a rider's tick both
+    call along the original push, so a crush in the rider's tick is the original's (physics.c, bipeds.c)."""
+    root = Path(__file__).resolve().parent.parent
+
+    def body(text, signature):
+        start = text.index(signature)
+        return text[start:text.index("\n}\n", start)]
+
+    physics = (root / "source/physics/physics.c").read_text(encoding="latin-1")
+    damage = body(physics, "void physics_biped_vehicle_collision_damage(\n")
+    assert physics.count("vehicle_killed_unit_damage_effect.index") == 2
+    assert damage.count("vehicle_killed_unit_damage_effect.index") == 2
+    assert damage.count("vehicle_collision_damage.index") == 2
+    collision = body(physics, "static boolean physics_compute_biped_collision(\n\tstruct collision_model_instance *instance,"
+                              "\n\tlong biped_index)\n{")
+    assert "physics_biped_vehicle_collision_push(instance->object_index, biped_index, &acceleration);" in collision
+    assert "physics_biped_vehicle_collision_damage(instance->object_index, biped_index, &acceleration);" in collision
+    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    contacts = body(bipeds, "static boolean biped_riding_contacts(\n")
+    assert contacts.index("physics_biped_vehicle_collision_push(") < \
+        contacts.index("physics_biped_vehicle_collision_damage(")
+
+
 # ---------- MSVC semantics header
 
 
@@ -322,6 +381,30 @@ def test_menu_settings_exist():
     assert controls == set(re.findall(r'\{ "(controls\.[a-z_]+)", L"', functions))
 
 
+def test_vehicle_riding_settings():
+    """Riding on a moving vehicle (port/linux/game/vehicle_riding.c): game.vehicle_riding is a player's setting,
+    documented; its tunables are debug. ones; the network version is the riding wiring's (test_riding_network_wiring)."""
+    root = Path(__file__).resolve().parent.parent
+    config = (root / "port/linux/src/port_config.c").read_text()
+    readme = (root / "port/linux/README.md").read_text(encoding="utf-8")
+    names = set(re.findall(r'^\t\{ "([a-z_]+\.[a-z_]+)", _config_', config, re.M))
+    assert "game.vehicle_riding" in names and "`game.vehicle_riding`" in readme
+    for tunable in ("riding_damage_speed", "riding_teleport_step", "riding_moved_alone", "riding_transition_leash", "riding_look_carry",
+                    "riding_air_grip"):
+        assert f"debug.{tunable}" in names and f"`debug.{tunable}`" in readme
+        assert f"game.{tunable}" not in names
+    # the air grip is an acceleration (world units a tick, each tick): its default, the same in all three places
+    assert '{ "debug.riding_air_grip", _config_real, "0.045",' in config
+    assert "`0`, `4`, `0.25`, `0.25`, `true`, `0.045`" in readme
+    assert '{ "debug.riding_transition_leash", _config_real, "0.25", "HALO_RIDING_TRANSITION_LEASH", _environment_value, _platform_all,' in config
+    riding = (root / "port/linux/game/vehicle_riding.c").read_text()
+    assert "static real riding_air_grip = .045f;" in riding
+    # the cabin's grace (player ticks, 0-30): a real, so the latch sees fractions and not-a-number
+    assert '{ "debug.riding_enclosure_grace_ticks", _config_real, "4", "HALO_RIDING_ENCLOSURE_GRACE_TICKS",' in config
+    assert "`debug.riding_enclosure_grace_ticks` | `4` | `HALO_RIDING_ENCLOSURE_GRACE_TICKS`" in readme
+    assert "static short riding_cabin_grace = RIDING_CABIN_GRACE;" in riding
+
+
 def test_default_brokers_are_brokers_txt():
     """The brokers a game uses with no brokers.txt beside its config.toml
     (p2p_signal.c's DEFAULT_BROKERS) are port/assets/network/brokers.txt's."""
@@ -581,3 +664,864 @@ def test_custom_edition_loader_and_validator_survive_damaged_maps():
     result = subprocess.run([str(MAP_VALIDATE), "--fuzz", "100", "--seed", "1", *map(str, chosen)],
                             capture_output=True, text=True, timeout=3600)
     assert result.returncode == 0, (result.stdout + result.stderr)[-6000:]
+def test_vehicle_riding_saved_games():
+    """The biped row is sized by BIPED_DATUM_SIZE, saved games of another layout are neither offered nor loaded, and
+    riding is latched at a game's start and after every load (vehicle_riding.c)."""
+    root = Path(__file__).resolve().parent.parent
+
+    def body(text, signature):
+        start = text.index(signature)
+        return text[start:text.index("\n}\n", start)]
+
+    object_types = (root / "source/objects/object_types.c").read_text(encoding="latin-1")
+    assert "\"biped\", 'bipd', BIPED_DATUM_SIZE," in object_types
+    game_state = (root / "source/saved games/game_state.c").read_text(encoding="latin-1")
+    initialize = body(game_state, "void game_state_initialize(")
+    assert initialize.index("crc_new(") < initialize.index("object_type_definitions[") < \
+        initialize.index("game_state_allocate_buffer(")
+    assert "allocation_size_checksum" in body(game_state, "boolean game_state_test_persistent_storage(")
+    procs = game_state[game_state.index("static game_state_after_load_proc after_load_procs[] ="):]
+    procs = procs[:procs.index("};")]
+    assert procs.rstrip().endswith("bipeds_riding_latch")
+    game = (root / "source/game/game.c").read_text(encoding="latin-1")
+    assert "bipeds_riding_latch();" in body(game, "void game_initial_pulse(")
+    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    assert "vehicle_riding_latch();" in body(bipeds, "void bipeds_initialize_for_new_map(")
+
+
+SERVER_SETUP = "main_menu.multiplayer_type_select.server_settings.xml"
+
+
+def riding_server_setup_layout(lines):
+    """Server Setup's VEHICLE RIDING row and layout, from the generator's lines for its XML."""
+    import xml.etree.ElementTree as ElementTree
+
+    tree = ElementTree.fromstring("\n".join(lines))
+    base = "main_menu/multiplayer_type_select/server_settings"
+    widgets = {w.get("name"): w for w in tree.findall("widget")}
+    strings = {s.get("name"): s for s in tree.findall("strings")}
+    children = widgets[base + "/options_menu"].findall("child")
+    names = [c.get("widget") for c in children]
+    riding = children[names.index(base + "/op_vehicle_riding")]
+    assert names.index(base + "/op_password") < names.index(base + "/op_vehicle_riding") < \
+        names.index(base + "/op_map_share_options")
+    assert riding.get("platform") is None and int(riding.get("y")) == 183
+    assert int(children[names.index(base + "/op_map_share_options")].get("y")) == 205
+    assert [s.get("text") for s in strings[base + "/var_vehicle_riding"]] == ["ON", "OFF"]
+    assert strings[base + "/labels"][14].get("text") == "VEHICLE RIDING:"
+    assert widgets[base + "/vehicle_riding_label"].get("string_index") == "14"
+    assert strings[base + "/help_strings"][17].get("text").replace("\\n", " ") == \
+        "Players standing on a vehicle are carried by it. Off: as the original game, riders slide off."
+    help_widget = widgets[base + "/help"]
+    assert help_widget.get("font") == "ui\\small_ui" and int(help_widget.get("top")) == 366
+    assert int(help_widget.get("top")) + int(help_widget.get("height")) <= 414
+    for child in children:
+        name = child.get("widget")
+        if not name.endswith("/button_bar"):
+            assert int(child.get("y")) + int(widgets[name].get("height")) <= 366, name
+
+
+def riding_port_settings(source=None):
+    """tools/port_settings.py's multiplayer_files, from its file or (a control) from a changed copy of its text."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "port_settings.py"
+    if source is None:
+        spec = importlib.util.spec_from_file_location("riding_port_settings", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.multiplayer_files
+    namespace = {"__name__": "riding_port_settings_changed", "__file__": str(path)}
+    exec(compile(source, str(path), "exec"), namespace)
+    return namespace["multiplayer_files"]
+
+
+def test_vehicle_riding_server_setup():
+    """Server Setup's VEHICLE RIDING (tools/port_settings.py, menu_functions.c): the committed XML is the
+    generator's, the row on the main list for co-op and multiplayer alike, ON / OFF writing game.vehicle_riding, its
+    help, every row above the help and the bar; the other screens' help as it was."""
+    root = Path(__file__).resolve().parent.parent
+    files = riding_port_settings()()
+    raw = (root / "port/assets/menus/ce" / SERVER_SETUP).read_bytes()
+    generated = "\n".join(files[SERVER_SETUP]).encode("utf-8")
+    if b"\r\n" in raw:
+        generated = generated.replace(b"\n", b"\r\n")
+    assert raw == generated, "the Server Setup XML is not the generator's"
+    riding_server_setup_layout(files[SERVER_SETUP])
+    for other, lines in files.items():
+        if other != SERVER_SETUP:
+            assert not any('font="ui\\small_ui"' in line and '/help"' in line for line in lines), other
+
+
+SERVER_SETUP_CONTROLS = {
+    "riding-row-platform": ('rows.append((f"{base}/op_vehicle_riding", None, SETUP_OPTIONS_PLACE - 2))',
+                            'rows.append((f"{base}/op_vehicle_riding", "android", SETUP_OPTIONS_PLACE - 2))'),
+    "riding-rows-overlap-help": ('"spacing": 22, "help_top": 366', '"spacing": 24, "help_top": 366'),
+    "riding-label-wrong": ("12 + len(COOP_SETUP_SCREENS)", "11 + len(COOP_SETUP_SCREENS)"),
+}
+
+
+@pytest.mark.parametrize("control", sorted(SERVER_SETUP_CONTROLS))
+def test_vehicle_riding_server_setup_control(control):
+    """Each fault in the generator, run in memory (the committed XML untouched), fails the layout's assertions."""
+    source = (Path(__file__).resolve().parent / "port_settings.py").read_text(encoding="latin-1")
+    before, after = SERVER_SETUP_CONTROLS[control]
+    assert source.count(before) == 1, f"negative control no longer applies: {before!r}"
+    files = riding_port_settings(source.replace(before, after, 1))()
+    with pytest.raises(AssertionError):
+        riding_server_setup_layout(files[SERVER_SETUP])
+
+
+# the riding network wiring (port/linux/game/vehicle_riding.c, port/linux/NETCODE.md): each check reads the sources
+# and asserts; each control is a fault in one function (or, with no function, in the whole file) its check must refuse
+RIDING_SOURCES = {
+    "limits": "port/linux/include/halo_port_limits.h",
+    "netcode": "port/linux/NETCODE.md",
+    "network": "port/linux/game/network_distributed.c",
+    "objects": "port/linux/game/network_objects.c",
+    "coop": "port/linux/game/network_coop.c",
+    "riding": "port/linux/game/vehicle_riding.c",
+    "server": "source/networking/network_server_manager.c",
+    "manager": "source/networking/network_game_manager.h",
+    "menus": "port/linux/game/menu_functions.c",
+    "test": "port/linux/game/network_test.c",
+    "director": "port/linux/game/server_director.c",
+    "game": "source/game/game.c",
+    "queues": "source/game/player_queues_new.c",
+    "bipeds": "source/units/bipeds.c",
+    "players": "source/game/players.c",
+    "format": "port/linux/network_format.txt",
+}
+RIDING_CHECKS = {}
+RIDING_CONTROLS = {}
+
+
+def riding_control_delivery_check(text):
+    body = riding_function(text["players"], "players_update_before_game")
+    assert re.search(r"unit_control\(player->unit_index, &control_data\);\s*/\* port:[^*]+\*/\s*"
+                     r"network_test_ride_control_delivered\(iterator.datum_index, TRUE\);", body)
+    assert re.search(r"unit_control\(player->unit_index, &inhibited_control_data\);\s*/\* port:[^*]+\*/\s*"
+                     r"network_test_ride_control_delivered\(iterator.datum_index, FALSE\);", body)
+
+
+RIDING_CHECKS["control-delivery"] = riding_control_delivery_check
+RIDING_CONTROLS["control-delivered-hook-unwired"] = (
+    "players", "players_update_before_game", "network_test_ride_control_delivered(iterator.datum_index, TRUE);",
+    "", "control-delivery")
+RIDING_CONTROLS["control-inhibited-hook-unwired"] = (
+    "players", "players_update_before_game", "network_test_ride_control_delivered(iterator.datum_index, FALSE);",
+    "", "control-delivery")
+
+
+def riding_sources():
+    root = Path(__file__).resolve().parent.parent
+    return {key: (root / path).read_text(encoding="latin-1") for key, path in RIDING_SOURCES.items()}
+
+
+def riding_function(text, name):
+    from tools.harness import function
+    return function(text, name)
+
+
+def riding_version_check(text):
+    assert re.search(r"#define HALO_PORT_NETWORK_VERSION 42\b", text["limits"])
+    netcode = " ".join(text["netcode"].split())
+    assert ("Then version 42 carries a rider standing on a vehicle: the deck part of a unit's state and the host's "
+            "riding switch, a co-op flag") in netcode
+    assert "a version 42 and a version 41 build still refuse each other" in netcode
+    assert "It also carries a rider's cabin: its enclosure verdict while it stands as well as in the air." in netcode
+    assert ("The host takes a rider's word in its vehicle's frame and checks it there; a client places riders on "
+            "its own copy of the deck.") in netcode
+
+
+RIDING_CHECKS["version"] = riding_version_check
+RIDING_CONTROLS["version-stays-41"] = ("limits", None, "#define HALO_PORT_NETWORK_VERSION 42",
+                                       "#define HALO_PORT_NETWORK_VERSION 41", "version")
+RIDING_CONTROLS["versions-without-the-rider"] = ("netcode", None, "version 42 carries a rider",
+                                                 "version 42 carries a car", "version")
+RIDING_CONTROLS["versions-without-the-cabin"] = ("netcode", None, "It also carries a rider's cabin",
+                                                 "It also carries a car", "version")
+RIDING_CONTROLS["versions-without-authority"] = ("netcode", None, "The host takes a rider's word",
+                                                   "The host takes a car's word", "version")
+
+
+def riding_format_check(text):
+    # (the record names every item of the wire format the sources have, the deck flags' cabin bit among them)
+    from tools import network_format
+
+    recorded = {" ".join(line.split(" ")[:2]): line.split(" ", 2)[2] for line in text["format"].splitlines()[1:]
+                if line.strip()}
+    assert recorded == network_format.items()
+    assert recorded["enum _vehicle_riding_deck_cabin_bit"] == "3"
+
+
+RIDING_CHECKS["format"] = riding_format_check
+RIDING_CONTROLS["cabin-bit-unrecorded"] = ("format", None, "enum _vehicle_riding_deck_cabin_bit 3", "", "format")
+
+
+def riding_keying_check(text):
+    moving = riding_function(text["bipeds"], "biped_update_moving")
+    assert "riding_player = biped_riding_player(biped);" in moving
+    assert "riding_air = vehicle_riding_player_air(riding_player);" in moving
+    assert "if (riding_player != NONE)\n\t{\n\t\triding_cabin_settled = biped_riding_contacts(" in moving
+    # (the look stays the local player's: the view is only a local player's)
+    assert "vehicle_riding_look(local_player_index, riding_carried" in moving
+    collision = riding_function(text["bipeds"], "biped_riding_collision")
+    assert "vehicle_riding_contact_record(biped_riding_player(biped), vehicle_index, &normal);" in collision
+
+
+RIDING_CHECKS["keying"] = riding_keying_check
+RIDING_CONTROLS["air-by-local-index"] = ("bipeds", "biped_update_moving",
+                                         "riding_air = vehicle_riding_player_air(riding_player);",
+                                         "riding_air = vehicle_riding_player_air(local_player_index);", "keying")
+RIDING_CONTROLS["record-by-local-index"] = ("bipeds", "biped_riding_collision", "biped_riding_player(biped), vehicle_index",
+                                            "unit_get_local_player_index(biped_index), vehicle_index", "keying")
+
+
+def riding_codec_check(text):
+    network = text["network"]
+    # (both loops of unit states stop at a state they cannot read: the rest of that message is dropped)
+    for name in ("distributed_handle_predictions", "distributed_handle_unit_states"):
+        assert "if (!size)\n\t\t\tbreak;" in riding_function(network, name)
+    for name in ("distributed_client_send_predictions", "distributed_host_send_players"):
+        assert "byte entry[DISTRIBUTED_UNIT_STATE_MAXIMUM_SIZE];" in riding_function(network, name)
+    gather = riding_function(network, "distributed_state_from_player")
+    assert "biped_riding_deck(unit_index, &state->deck)" in gather
+    deck = riding_function(text["bipeds"], "biped_riding_deck")
+    assert "biped_get_physics_pill(biped_index, &base, &height, &width);" in deck
+    assert "vehicle_riding_player_air(biped_riding_player(biped))" in deck
+    assert "vehicle_riding_player_cabin(biped_riding_player(biped))" in deck
+    nodes = riding_function(text["bipeds"], "biped_riding_vehicle_node_count")
+    assert nodes.index("vehicle_riding_deck_vehicle_named(vehicle_index)") < nodes.index("object_try_and_get_and_verify_type")
+
+
+RIDING_CHECKS["codec"] = riding_codec_check
+RIDING_CONTROLS["unit-states-continue"] = ("network", "distributed_handle_unit_states", "if (!size)\n\t\t\tbreak;",
+                                           "if (!size)\n\t\t\tcontinue;", "codec")
+RIDING_CONTROLS["predictions-continue"] = ("network", "distributed_handle_predictions", "if (!size)\n\t\t\tbreak;",
+                                           "if (!size)\n\t\t\tcontinue;", "codec")
+RIDING_CONTROLS["deck-not-gathered"] = ("network", "distributed_state_from_player",
+                                        "biped_riding_deck(unit_index, &state->deck)", "FALSE", "codec")
+RIDING_CONTROLS["deck-air-by-local-index"] = ("bipeds", "biped_riding_deck", "vehicle_riding_player_air(biped_riding_player(biped))",
+                                              "vehicle_riding_player_air(unit_get_local_player_index(biped_index))", "codec")
+RIDING_CONTROLS["deck-without-cabin"] = ("bipeds", "biped_riding_deck", "vehicle_riding_player_cabin(biped_riding_player(biped))",
+                                         "NULL", "codec")
+RIDING_CONTROLS["nodes-looked-up-first"] = ("bipeds", "biped_riding_vehicle_node_count",
+                                            "\tif (!vehicle_riding_deck_vehicle_named(vehicle_index))\n\t\treturn NONE;\n",
+                                            "", "codec")
+
+
+def riding_deck_frame_check(text):
+    deck = riding_function(text["bipeds"], "biped_riding_deck")
+    assert "vehicle_riding_deck_frame(&riding, &vehicle, &frame);" in deck
+    assert "return vehicle_riding_deck_make(&riding, &frame, &base," in deck
+
+
+RIDING_CHECKS["deck-carried-frame"] = riding_deck_frame_check
+RIDING_CONTROLS["deck-frame-unwired"] = ("bipeds", "biped_riding_deck", "vehicle_riding_deck_make(&riding, &frame, &base,",
+                                         "vehicle_riding_deck_make(&riding, &vehicle, &base,", "deck-carried-frame")
+
+
+def riding_switch_check(text):
+    assert re.search(r"_network_game_cooperative_vehicle_riding_bit = 3,", text["manager"])
+    setter = riding_function(text["server"], "network_game_server_port_set_vehicle_riding")
+    assert "SET_FLAG(server->game.cooperative_flags, _network_game_cooperative_vehicle_riding_bit, vehicle_riding);" in setter
+    assert "network_game_server_send_game_data_pregame(server)" in setter
+    start = riding_function(text["menus"], "server_start")
+    assert start.index("network_game_server_port_set_vehicle_riding(config_boolean(\"game.vehicle_riding\") != 0);") < \
+        start.index("if (hosting_cooperative())")
+    host = riding_function(text["test"], "network_test_update")
+    assert host.index("network_game_server_port_set_vehicle_riding(") < host.index("network_game_client_request_immediate_start();")
+    # (the split screen test game never rides, as Split Screen's own start does not set it)
+    assert re.search(r"if \(!network_test\.local\)\s*network_game_server_port_set_vehicle_riding\(", host)
+    # (a dedicated server follows the setting, as a hosting player's Server Setup does)
+    apply = riding_function(text["director"], "server_apply_game_settings")
+    assert 'network_game_server_port_set_vehicle_riding(config_boolean("game.vehicle_riding") != 0);' in apply
+
+
+RIDING_CHECKS["switch"] = riding_switch_check
+RIDING_CONTROLS["switch-coop-only"] = ("menus", "server_start",
+                                       "\tnetwork_game_server_port_set_vehicle_riding(config_boolean(\"game.vehicle_riding\") != 0);\n",
+                                       "", "switch")
+RIDING_CONTROLS["switch-clobbers-flags"] = ("server", "network_game_server_port_set_vehicle_riding",
+                                            "SET_FLAG(server->game.cooperative_flags, _network_game_cooperative_vehicle_riding_bit, vehicle_riding);",
+                                            "server->game.cooperative_flags = (byte)(vehicle_riding ? 2 : 0);", "switch")
+RIDING_CONTROLS["switch-not-sent"] = ("server", "network_game_server_port_set_vehicle_riding",
+                                      "!network_game_server_send_game_data_pregame(server)", "FALSE", "switch")
+RIDING_CONTROLS["director-without-switch"] = ("director", "server_apply_game_settings",
+                                              "\tnetwork_game_server_port_set_vehicle_riding(config_boolean(\"game.vehicle_riding\") != 0);\n",
+                                              "", "switch")
+RIDING_CONTROLS["split-screen-test-rides"] = ("test", "network_test_update", "if (!network_test.local)\n\t\t\t\t\t", "", "switch")
+RIDING_CONTROLS["test-host-without-switch"] = ("test", "network_test_update",
+                                               "\t\t\t\tnetwork_game_server_port_set_vehicle_riding(config_boolean(\"game.vehicle_riding\") != 0);\n",
+                                               "", "switch")
+
+
+def riding_menu_check(text):
+    menus = text["menus"]
+    assert '{ "vehicle_riding_spinner", _option_setting, 0, 0, 2, { 0 }, "game.vehicle_riding", { "true", "false" } },' in menus
+    assert "#define VEHICLE_RIDING_HELP 17" in menus
+    init = riding_function(menus, "server_settings_initialize")
+    assert "setting_options_each(list, FALSE);" in init
+    update = riding_function(menus, "server_settings_update")
+    assert update.index("settings_help(list);") < update.index("setting_options_each(list, TRUE);")
+    assert "help->parameters.text_box.string_list_index = VEHICLE_RIDING_HELP;" in update
+    rows = menus.split("server_settings_gametype_rows[] =", 1)[1].split("};", 1)[0]
+    assert "op_vehicle_riding" not in rows
+
+
+RIDING_CHECKS["menu"] = riding_menu_check
+RIDING_CONTROLS["riding-setting-inverted"] = ("menus", None, '"game.vehicle_riding", { "true", "false" }',
+                                              '"game.vehicle_riding", { "false", "true" }', "menu")
+RIDING_CONTROLS["riding-row-not-saved"] = ("menus", "server_settings_update", "setting_options_each(list, TRUE);",
+                                           "setting_options_each(list, FALSE);", "menu")
+RIDING_CONTROLS["riding-row-not-shown"] = ("menus", "server_settings_initialize", "\tsetting_options_each(list, FALSE);\n",
+                                           "", "menu")
+RIDING_CONTROLS["riding-help-wrong"] = ("menus", None, "#define VEHICLE_RIDING_HELP 17", "#define VEHICLE_RIDING_HELP 16",
+                                        "menu")
+RIDING_CONTROLS["riding-row-hidden-in-coop"] = ("menus", None, '\t"op_team_options",\n};',
+                                                '\t"op_team_options", "op_vehicle_riding",\n};', "menu")
+
+
+def riding_scenario_check(text):
+    tick = riding_function(text["game"], "game_tick")
+    assert tick.index("network_test_ride_before_objects();") < tick.index("objects_update();") < \
+        tick.index("network_test_ride_after_objects();")
+    client = riding_function(text["queues"], "update_client_dequeue_distributed")
+    assert client.index("network_test_ride_action(local_player_index, &action);") < \
+        client.index("update_client_local_inputs[local_player_index].action = action;")
+    host = riding_function(text["queues"], "update_server_take_local_actions")
+    assert "network_test_ride_action(local_player_index, &queue->current_action);" in host
+    # (the main menu's scene ticks in a lobby: the tick hooks wait for the test's own game)
+    for name in ("network_test_ride_before_objects", "network_test_ride_after_objects"):
+        assert "game_time_menu_scene()" in riding_function(text["test"], name).split("{", 1)[1].split("tick = ", 1)[0]
+    # (every hook does nothing while the setting is empty)
+    for name in ("network_test_ride_before_objects", "network_test_ride_after_objects", "network_test_ride_action"):
+        assert "\tif (!ride.enabled" in riding_function(text["test"], name)
+    before = riding_function(text["test"], "network_test_ride_before_objects")
+    assert "object_set_position" not in before and "if (!ride_host() || ride.scenario == _ride_driven)" in before
+    assert "ride_vehicle_named(ride.scenario, tag_get_name(object->definition_index))" in \
+        riding_function(text["test"], "ride_find_vehicles")
+    assert '!strcmp(name, "vehicles\\\\warthog\\\\warthog")' in riding_function(text["test"], "ride_vehicle_named")
+    prepare = riding_function(text["test"], "ride_prepare")
+    assert "ride_host() && ride.driver == NONE" in prepare
+    assert "ride.driver != NONE && unit_get(ride.driver)->unit.player_index != NONE" in prepare
+    # (a moved vehicle off its at-rest flag, or the netcode sends it only in the resting round-robin and the client keeps it at its spawn)
+    select = riding_function(text["test"], "ride_select_vehicles")
+    assert select.index("ride_convoy_place()") < select.index(
+        "SET_FLAG(object_get(ride.vehicles[index])->object.flags, _object_at_rest_bit, FALSE);")
+
+
+RIDING_CHECKS["scenario"] = riding_scenario_check
+RIDING_CONTROLS["ride-after-objects"] = ("game", "game_tick", "\tnetwork_test_ride_before_objects();\n", "", "scenario")
+RIDING_CONTROLS["ride-input-after-sent"] = ("queues", "update_client_dequeue_distributed",
+                                            "\t\t\tnetwork_test_ride_action(local_player_index, &action);\n", "", "scenario")
+RIDING_CONTROLS["ride-always-on"] = ("test", "network_test_ride_action", "\tif (!ride.enabled || ride.failed",
+                                     "\tif (ride.failed", "scenario")
+RIDING_CONTROLS["ride-vehicles-stay-at-rest"] = ("test", "ride_select_vehicles",
+                                                 "SET_FLAG(object_get(ride.vehicles[index])->object.flags, _object_at_rest_bit, FALSE);",
+                                                 "(void)index;", "scenario")
+RIDING_CONTROLS["ride-host-boards-every-rider"] = ("test", "ride_reboard", "!(ride.scenario == _ride_convoy && ride_host())",
+                                                   "!ride_host()", "observation")
+RIDING_CONTROLS["ride-convoy-client-only-reboard"] = ("test", "ride_reboard", "!(ride.scenario == _ride_convoy && ride_host())",
+                                                     "TRUE", "observation")
+RIDING_CONTROLS["ride-error-logs-no-end"] = ("test", "ride_error",
+                                             '\t\tride_log("end", "tick=%ld players=%d", tick, (int)ride_rider_count());\n',
+                                             "", "observation")
+RIDING_CONTROLS["ride-no-reboard"] = ("test", "network_test_ride_before_objects", "\tride_reboard(tick);\n", "", "observation")
+RIDING_CONTROLS["ride-coop-player-driver"] = ("test", "ride_prepare", "ride.driver != NONE && unit_get(ride.driver)->unit.player_index != NONE",
+                                              "FALSE", "scenario")
+
+
+def riding_observation_check(text):
+    network = text["network"]
+    own = riding_function(network, "distributed_note_own_positions")
+    assert own.index("own->time = game_time_get();") < \
+        own.index("own->position = object_get(unit_index)->object.position;") < own.index("network_test_ride_own(")
+    apply = riding_function(network, "distributed_apply_state")
+    assert apply.index("network_objects_reconcile(") < apply.index("network_test_ride_correction(")
+    assert "game_connection() == _game_connection_network_client" in apply
+    # (the host logs every state it collects while the test is on, even after its own end, for a client applies one past
+    # it; a client's wait for its riders being prepared and stop at its end)
+    state = riding_function(text["test"], "network_test_ride_state")
+    assert ("if (ride_host() ? !ride.enabled : (!ride.enabled || !ride.prepared || ride.ended))" in state)
+    # (convoy setup moves the host's remote copy too; otherwise prediction bounds undo a client's teleport)
+    before = riding_function(text["test"], "network_test_ride_before_objects")
+    assert "player->local_player_index == NONE && !(ride.scenario == _ride_convoy && ride_host())" in \
+        riding_function(text["test"], "ride_reboard")
+    assert 'ride_log("end", "tick=%ld players=%d", tick,' in riding_function(text["test"], "ride_error")
+    assert "ride_reboard(tick);" in before and before.index("ride_reboard(tick);") < before.index("if (!ride_host() ||")
+    correct = riding_function(network, "distributed_correct_own_unit")
+    # (upstream's elevator height tolerance never alters a rider's drop or an air claim's take)
+    assert "if (!dropping && !air_claim && own->elevator_index != NONE &&" in correct
+    assert "network_test_ride_history(state->player_index, noted->time, unit_index, &noted_before," in correct
+    handler = riding_function(network, "distributed_handle_unit_state")
+    assert "network_test_ride_state(state->player_index, unit_index, host_time," in handler
+    assert handler.rstrip().endswith("network_test_ride_applied(state->player_index, unit_index, host_time);\n}")
+    assert "distributed_handle_unit_state(host_time, &state);" in riding_function(network, "distributed_handle_unit_states")
+    assert "distributed_handle_unit_states(header.game_time," in network
+    predictions = riding_function(network, "distributed_apply_predictions")
+    assert "taken_host_time == game_time_get());" in predictions
+    plan = riding_function(network, "distributed_host_plan_players")
+    assert plan.index("distributed_state_from_player(player_index, state);") < plan.index("network_test_ride_state(")
+    # (every netcode write of a vehicle's pose tells the one function: section 2's seam)
+    objects = text["objects"]
+    assert objects.count("object_set_position(") == 4
+    assert objects.count("network_objects_vehicle_written(object_index, &before, &before_forward, &before_up, kind);") + \
+        objects.count("network_objects_vehicle_written(object_index, &before, &before_forward, &before_up, _network_vehicle_write_state);") + \
+        objects.count("network_objects_vehicle_written(iterator.index, &before, &before_forward, &before_up, _network_vehicle_write_carry);") == 4
+    transforms = riding_function(text["coop"], "network_coop_handle_object_transforms")
+    assert "network_objects_vehicle_written(object_index, &before, &before_forward, &before_up, _network_vehicle_write_coop);" in transforms
+    assert "error(_error_log, \"ride schema=1 kind=%s" in riding_function(text["test"], "ride_log")
+
+
+RIDING_CHECKS["observation"] = riding_observation_check
+RIDING_CONTROLS["applied-local-tick"] = ("network", "distributed_handle_unit_state",
+                                         "network_test_ride_applied(state->player_index, unit_index, host_time);",
+                                         "network_test_ride_applied(state->player_index, unit_index, game_time_get());",
+                                         "observation")
+RIDING_CONTROLS["own-before-capture"] = ("network", "distributed_note_own_positions",
+                                         "\t\t\town->position = object_get(unit_index)->object.position;\n"
+                                         "\t\t\tnetwork_test_ride_own(",
+                                         "\t\t\tnetwork_test_ride_own(", "observation")
+_own_correction = riding_function(riding_sources()["network"], "distributed_correct_own_unit")
+RIDING_CONTROLS["history-unlogged"] = ("network", "distributed_correct_own_unit", _own_correction,
+                                        _own_correction.replace("network_test_ride_history(", "(void)("), "observation")
+RIDING_CONTROLS["unsteered-write-untold"] = ("objects", "distributed_client_carry_unsteered_vehicles",
+                                              "\t\t\tnetwork_objects_vehicle_written(iterator.index, &before, &before_forward, &before_up, _network_vehicle_write_carry);\n", "",
+                                             "observation")
+RIDING_CONTROLS["blend-write-untold"] = ("objects", "network_objects_reconcile",
+                                          "\t\tnetwork_objects_vehicle_written(object_index, &before, &before_forward, &before_up, kind);\n", "", "observation")
+RIDING_CONTROLS["ride-log-stderr"] = ("test", "ride_log", "error(_error_log, ", "platform_log(", "observation")
+RIDING_CONTROLS["host-state-gated-on-prepared"] = ("test", "network_test_ride_state",
+                                                   "if (ride_host() ? !ride.enabled : "
+                                                   "(!ride.enabled || !ride.prepared || ride.ended))",
+                                                   "if (!ride.enabled || !ride.prepared || ride.ended)", "observation")
+
+
+def riding_order(body, *parts):
+    """Each part is in the body, in this order."""
+    for part in parts:
+        assert part in body, f"missing riding anchor: {part}"
+    positions = [body.index(part) for part in parts]
+    assert positions == sorted(positions), parts
+
+
+def riding_cabin_tick_check(text):
+    bipeds = text["bipeds"]
+    moving = riding_function(bipeds, "biped_update_moving")
+    # (the cabin sampled after the carry and before the window's ray, whose verdict needs it)
+    riding_order(moving, "biped_riding_carry(biped_index, biped, definition, riding.object_index, &riding_step.displacement,",
+                 "vehicle_riding_cabin_begin(riding_cabin, biped_index, &riding, riding_applies && riding_step_valid);",
+                 "riding_exception = biped_riding_cabin_tick(",
+                 "riding_step.over_deck = biped_riding_window_over_deck(definition, &riding, &riding_step.vehicle,\n"
+                 "\t\t\t&physics.position, physics.height, riding_exception);")
+    # (a first claim seeded after the recording; the take-off spent before this tick's jump marks the next)
+    riding_order(moving, "biped_riding_set(biped, &riding);", "riding_cabin->take_off = FALSE;",
+                 "vehicle_riding_cabin_acquire(riding_cabin, biped_index, &riding)",
+                 "biped_update_jumping(biped_index, animation);")
+    assert "riding_refusal = riding_applies && riding_entry_ticks > 0 && !riding_step_valid ?" in moving
+    assert "vehicle_riding_step_refusal() : _vehicle_riding_refusal_none;" in moving
+    riding_order(moving, "riding_refusal = riding_applies && riding_entry_ticks > 0 && !riding_step_valid ?",
+                 "vehicle_riding_cabin_begin(riding_cabin, biped_index, &riding, riding_applies && riding_step_valid);",
+                 "vehicle_riding_cabin_acquire(riding_cabin, biped_index, &riding)",
+                 "\tif (riding_cabin)\n\t\triding_cabin->refusal = riding_refusal;")
+    assert "vehicle_riding_cabin_up(step)" in riding_function(bipeds, "biped_riding_cabin_tick")
+    assert "&vehicle->body_up" in riding_function(bipeds, "biped_riding_cabin_sample")
+    collision = riding_function(bipeds, "biped_riding_collision")
+    assert "over_deck = biped_riding_recast_over_deck(biped_index, biped, definition, &riding, &vehicle, base, height);" in collision
+    for name in ("biped_riding_collision", "biped_riding_cabin_protected", "biped_riding_recast_over_deck"):
+        body = riding_function(bipeds, name)
+        assert "biped_riding_cabin_sample" not in body and "biped_riding_cabin_rays" not in body, name
+    assert ("vehicle_riding_cabin_take_off(vehicle_riding_player_cabin(biped_riding_player(biped)), &riding, biped_index);"
+            in riding_function(bipeds, "biped_jump"))
+    assert "vehicle_riding_cabin_clear(cabin);" in riding_function(bipeds, "biped_riding_seated")
+
+
+RIDING_CHECKS["cabin-tick"] = riding_cabin_tick_check
+RIDING_CONTROLS["recast-site-unwired"] = (
+    "bipeds", "biped_riding_collision",
+    "over_deck = biped_riding_recast_over_deck(biped_index, biped, definition, &riding, &vehicle, base, height);",
+    "over_deck = biped_riding_over_deck(definition, &vehicle, base, height);", "cabin-tick")
+RIDING_CONTROLS["tick-site-unwired"] = (
+    "bipeds", "biped_update_moving",
+    "riding_step.over_deck = biped_riding_window_over_deck(definition, &riding, &riding_step.vehicle,\n"
+    "\t\t\t&physics.position, physics.height, riding_exception);",
+    "riding_step.over_deck = biped_riding_over_deck(definition, &riding_step.vehicle, &physics.position,\n"
+    "\t\t\tphysics.height);", "cabin-tick")
+RIDING_CONTROLS["cabin-before-carry"] = (
+    "bipeds", "biped_update_moving",
+    "\t\tbiped_riding_carry(biped_index, biped, definition, riding.object_index, &riding_step.displacement,\n"
+    "\t\t\tphysics.height, physics.width, &physics.position);\n", "", "cabin-tick")
+RIDING_CONTROLS["node-up-in-tick"] = ("bipeds", "biped_riding_cabin_tick", "vehicle_riding_cabin_up(step)",
+                                      "&step->vehicle.up", "cabin-tick")
+RIDING_CONTROLS["take-off-not-marked"] = (
+    "bipeds", "biped_jump",
+    "vehicle_riding_cabin_take_off(vehicle_riding_player_cabin(biped_riding_player(biped)), &riding, biped_index);", "",
+    "cabin-tick")
+RIDING_CONTROLS["seated-keeps-cabin"] = ("bipeds", "biped_riding_seated", "vehicle_riding_cabin_clear(cabin);", "",
+                                         "cabin-tick")
+RIDING_CONTROLS["acquisition-not-seeded"] = ("bipeds", "biped_update_moving",
+                                             "vehicle_riding_cabin_acquire(riding_cabin, biped_index, &riding)", "FALSE",
+                                             "cabin-tick")
+RIDING_CONTROLS["take-off-never-spent"] = ("bipeds", "biped_update_moving", "riding_cabin->take_off = FALSE;", "",
+                                           "cabin-tick")
+RIDING_CONTROLS["refusal-unlogged"] = (
+    "bipeds", "biped_update_moving",
+    "riding_cabin->refusal = riding_refusal;", "", "cabin-tick")
+RIDING_CONTROLS["refusal-not-the-steps"] = ("bipeds", "biped_update_moving", "vehicle_riding_step_refusal() :",
+                                            "_vehicle_riding_refusal_motion :", "cabin-tick")
+
+
+def riding_cabin_carry_check(text):
+    bipeds = text["bipeds"]
+    physics = riding_function(bipeds, "biped_update_physics")
+    # (after the native support is chosen, before the bumps: the carrier never decides the ground)
+    riding_order(physics, "biped_riding_claimed_support(", "if (physics->cabin_object_index != NONE)\n"
+                 "\t\tbiped_riding_cabin_carrier(physics, collisions, collision_count);",
+                 "long bumped_object_index = NONE;")
+    carrier = riding_function(bipeds, "biped_riding_cabin_carrier")
+    for native in ("out_flags", "ground_plane", "landing_velocity", "support_surface_index", "support_object_index"):
+        assert native not in carrier, native
+    moving = riding_function(bipeds, "biped_update_moving")
+    assert ("physics.cabin_object_index = vehicle_riding_cabin_carrier_vehicle(riding_cabin, &riding, riding_exception);"
+            in moving)
+    assert ("boolean carried = physics.carrier_object_index != NONE ?\n"
+            "\t\t\tbiped_riding_vehicle(physics.carrier_object_index, physics.carrier_node_index, &support) :") in moving
+    assert "\t\t\tcarried ? &support : NULL,\n\t\t\tsupported,\n" in moving
+
+
+RIDING_CHECKS["cabin-carry"] = riding_cabin_carry_check
+RIDING_CONTROLS["native-ground-forced"] = (
+    "bipeds", "biped_riding_cabin_carrier", "\tphysics->carrier_object_index = collisions[carrier].object_index;\n",
+    "\tphysics->carrier_object_index = collisions[carrier].object_index;\n"
+    "\tSET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, FALSE);\n", "cabin-carry")
+RIDING_CONTROLS["carrier-chooses-ground"] = (
+    "bipeds", "biped_riding_cabin_carrier", "\tphysics->carrier_object_index = collisions[carrier].object_index;\n",
+    "\tphysics->carrier_object_index = collisions[carrier].object_index;\n"
+    "\tphysics->ground_plane = collisions[carrier].plane;\n", "cabin-carry")
+RIDING_CONTROLS["carrier-before-support"] = (
+    "bipeds", "biped_update_physics",
+    "\tif (physics->cabin_object_index != NONE)\n\t\tbiped_riding_cabin_carrier(physics, collisions, collision_count);\n",
+    "", "cabin-carry")
+RIDING_CONTROLS["record-ignores-carrier"] = ("bipeds", "biped_update_moving", "\t\t\tcarried ? &support : NULL,\n",
+                                             "\t\t\tsupported ? &support : NULL,\n", "cabin-carry")
+
+
+def riding_cabin_recovery_check(text):
+    bipeds = text["bipeds"]
+    settle = riding_function(bipeds, "biped_riding_cabin_settle")
+    # (no closing move here: the touch's move is made once, in biped_riding_contacts; no push, no damage, ever; the
+    # rider's velocity is not the settle's to change, so a failed recovery leaves it as it came)
+    for absent in ("vehicle_riding_contact_move", "physics_biped_vehicle_collision_push",
+                   "physics_biped_vehicle_collision_damage", "velocity"):
+        assert absent not in settle.replace("jump_velocity", ""), absent
+    contacts = riding_function(bipeds, "biped_riding_contacts")
+    assert contacts.count("vehicle_riding_contact_move(") == 1
+    riding_order(contacts, "if (vehicle.object_index == cabin_vehicle || (cabin && contacts[index].deferred))",
+                 "biped_riding_cabin_settle(", "settled = TRUE;")
+    branch = contacts[contacts.index("if (vehicle.object_index == cabin_vehicle"):]
+    branch = branch[:branch.index("continue;")]
+    for absent in ("velocity", "physics_biped_vehicle_collision", "touching", "candidate"):
+        assert absent not in branch, absent
+    assert "&ahead, FALSE, height, width, base);" in branch
+    moving = riding_function(bipeds, "biped_update_moving")
+    # (after the carry, where the vehicle's update recorded no touch: the check all the same, no closing move; after
+    # its own movement and before the recording: the place kept on the deck is the settled one)
+    riding_order(moving, "riding_cabin_settled = biped_riding_contacts(",
+                 "if (riding_step_valid && !riding_cabin_settled && vehicle_riding_cabin_watched(riding_cabin, &riding, biped_index))",
+                 "global_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);",
+                 "biped_update_physics(&physics);",
+                 "if (riding_step_valid && vehicle_riding_cabin_watched(riding_cabin, &riding, biped_index))",
+                 "global_zero_vector3d, TRUE, physics.height, physics.width, &physics.new_position);",
+                 "if (vehicle_riding_record(")
+    # (the final call's ahead is zero: its anchor is stored at the base, the touch test reads base + ahead; and neither
+    # settle block touches the rider's velocity)
+    assert moving.count("global_zero_vector3d, TRUE, physics.height, physics.width, &physics.new_position);") == 1
+    assert moving.count("global_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);") == 1
+    assert "NULL,\n\t\t\tglobal_zero_vector3d, TRUE," in moving
+    for start in ("if (riding_step_valid && !riding_cabin_settled", "if (riding_step_valid && vehicle_riding_cabin_watched("):
+        block = moving[moving.index(start):]
+        block = block[:block.index("\n\t}\n")]
+        assert "velocity" not in block, start
+    collision = riding_function(bipeds, "biped_riding_collision")
+    assert "deferred = vehicle_riding_cabin_collision(decision, vehicle_riding_cabin_defers(" in collision
+    riding_order(collision, "deferred = vehicle_riding_cabin_collision(",
+                 "if (deferred == _vehicle_riding_collision_resolved)\n\t\tdecision = _vehicle_riding_collision_resolved;",
+                 "vehicle_riding_contact_record(biped_riding_player(biped), vehicle_index, &normal);",
+                 "if (deferred == _vehicle_riding_collision_resolved)\n\t\t\tvehicle_riding_contact_defer(")
+
+
+RIDING_CHECKS["cabin-recovery"] = riding_cabin_recovery_check
+RIDING_CONTROLS["move-twice"] = ("bipeds", "biped_riding_cabin_settle", "\tsettle = vehicle_riding_cabin_recover(&check);\n",
+                                 "\tvehicle_riding_contact_move(NULL, FALSE, vehicle, base, NULL, normal, FALSE, NULL, NULL);\n"
+                                 "\tsettle = vehicle_riding_cabin_recover(&check);\n", "cabin-recovery")
+RIDING_CONTROLS["stale-place-after-recovery"] = (
+    "bipeds", "biped_update_moving",
+    "\t\tbiped_riding_cabin_settle(biped_index, biped, definition, riding_cabin, &riding_step.vehicle, &entry, NULL,\n"
+    "\t\t\tglobal_zero_vector3d, TRUE, physics.height, physics.width, &physics.new_position);\n", "", "cabin-recovery")
+RIDING_CONTROLS["after-carry-check-missing"] = (
+    "bipeds", "biped_update_moving",
+    "\t\tbiped_riding_cabin_settle(biped_index, biped, definition, riding_cabin, &riding_step.vehicle, &entry, NULL,\n"
+    "\t\t\tglobal_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);\n", "", "cabin-recovery")
+RIDING_CONTROLS["after-carry-twice"] = ("bipeds", "biped_update_moving",
+                                        "if (riding_step_valid && !riding_cabin_settled && vehicle_riding_cabin_watched(",
+                                        "if (riding_step_valid && vehicle_riding_cabin_watched(", "cabin-recovery")
+RIDING_CONTROLS["deferral-not-applied"] = (
+    "bipeds", "biped_riding_collision",
+    "\tif (deferred == _vehicle_riding_collision_resolved)\n\t\tdecision = _vehicle_riding_collision_resolved;\n", "",
+    "cabin-recovery")
+RIDING_CONTROLS["cabin-contacts-crush"] = ("bipeds", "biped_riding_contacts", "\t\tif (vehicle.object_index == cabin_vehicle",
+                                           "\t\tif (FALSE && vehicle.object_index == cabin_vehicle", "cabin-recovery")
+RIDING_CONTROLS["deferral-not-marked"] = ("bipeds", "biped_riding_collision",
+                                          "\t\t\tvehicle_riding_contact_defer(player, vehicle_index);\n",
+                                          "", "cabin-recovery")
+RIDING_CONTROLS["final-settle-ahead"] = (
+    "bipeds", "biped_update_moving",
+    "NULL,\n\t\t\tglobal_zero_vector3d, TRUE, physics.height", "NULL,\n\t\t\t&physics.velocity, TRUE, physics.height",
+    "cabin-recovery")
+RIDING_CONTROLS["failed-recovery-zeroes-velocity"] = (
+    "bipeds", "biped_riding_contacts", "\t\t\tsettled = TRUE;\n",
+    "\t\t\tsettled = TRUE;\n\t\t\tscale_vector3d(velocity, 0.f, (real_vector3d *)velocity);\n", "cabin-recovery")
+
+
+def riding_run_jump_check(text):
+    body = riding_function(text["network"], "distributed_on_foot_bound")
+    assert "vehicle_riding_run_jump_speed(" in body
+    assert "run_speed = vehicle_riding_run_jump_speed(" in body
+    assert "run_speed * run_speed + jump_speed * jump_speed" not in body
+
+
+def riding_damage_speed_shared_check(text):
+    body = riding_function(text["riding"], "vehicle_riding_damage_speed")
+    assert "vehicle_riding_run_jump_speed(" in body
+    assert "sqrt(" not in body
+
+
+RIDING_CHECKS["run-jump"] = riding_run_jump_check
+RIDING_CHECKS["damage-speed-shared"] = riding_damage_speed_shared_check
+RIDING_CONTROLS["bound-own-run-speed"] = (
+    "network", "distributed_on_foot_bound",
+    "base_speed = PREDICTED_ON_FOOT_SPEED_SCALE * vehicle_riding_run_jump_speed(information != NULL,\n"
+    "\t\tinformation ? information->run_forward_speed : 0.f, information ? information->run_backward_speed : 0.f,\n"
+    "\t\tinformation ? information->run_sideways_speed : 0.f, game_players_are_double_speed(),\n"
+    "\t\tinformation ? information->double_speed_multiplier : 1.f, player ? player->speed_multiplier : 1.f, jump_speed);",
+    "base_speed = PREDICTED_ON_FOOT_SPEED_SCALE * (real)sqrt(run_speed * run_speed + jump_speed * jump_speed);",
+    "run-jump")
+RIDING_CONTROLS["damage-speed-own-sqrt"] = (
+    "riding", "vehicle_riding_damage_speed",
+    "return 2.f * vehicle_riding_run_jump_speed(have_information, run_forward, run_backward, run_sideways,\n"
+    "\t\tdouble_speed, double_speed_multiplier, player_speed_multiplier, jump_velocity);",
+    "speed = 2.f*(real)sqrt(run*run + jump_velocity*jump_velocity);\n\treturn speed;", "damage-speed-shared")
+
+def riding_vehicle_writes_check(text):
+    assert '#include "network_distributed.h"' in text["test"]
+    written = riding_function(text["test"], "network_test_ride_vehicle_written")
+    assert "if (kind == _network_vehicle_write_carry)" in written
+    assert "ride.vehicle_carries[index]++;" in written
+    assert "writes=%d carries=%d" in riding_function(text["test"], "ride_samples")
+    for owner in ("objects", "coop"):
+        code = text[owner]
+        for match in re.finditer(r"\bobject_set_position\(", code):
+            # (the hook stays in the write's own block, before any next write)
+            tail = code[match.end():]
+            end = tail.index("}")
+            block = tail[:end]
+            hook = re.search(r"network_objects_vehicle_written\([^;]+;", block)
+            assert hook, f"unhooked pose write in {owner}"
+            assert "&before_forward" in hook.group() and "&before_up" in hook.group()
+    hook = riding_function(text["objects"], "network_objects_vehicle_written")
+    assert "if (!network_objects_vehicle_followed(object_index))" in hook
+    assert "vehicle_riding_vehicle_corrected(object_index, before_position, before_forward, before_up," in hook
+    assert "network_test_ride_vehicle_written(object_index, before_position, &object->object.position, kind);" in hook
+    vehicle = riding_function(text["bipeds"], "biped_riding_vehicle")
+    assert "vehicle->correction = *vehicle_riding_vehicle_correction(vehicle_index);" in vehicle
+    for name in ("distributed_object_move", "network_objects_reconcile"):
+        body = riding_function(text["objects"], name)
+        assert "before_forward = object->object.forward" in body
+        assert "before_up = object->object.up" in body
+    get = riding_function(text["bipeds"], "biped_riding_get")
+    put = riding_function(text["bipeds"], "biped_riding_set")
+    assert "vehicle_riding_player_mark(biped_riding_player(biped))" in get
+    assert "vehicle_riding_player_mark(biped_riding_player(biped))" in put
+
+
+RIDING_CHECKS["vehicle-writes"] = riding_vehicle_writes_check
+RIDING_CONTROLS["coop-write-unhooked"] = (
+    "coop", None,
+    "network_objects_vehicle_written(object_index, &before, &before_forward, &before_up, _network_vehicle_write_coop);",
+    "", "vehicle-writes")
+
+
+def riding_followed_check(text):
+    followed = riding_function(text["objects"], "network_objects_vehicle_followed")
+    # (the host's own copy of a co-op vehicle is simulated: only a client's follows)
+    assert "game_connection() == _game_connection_network_client && distributed_vehicle_unsteered(vehicle_index)" in followed
+    vehicle = riding_function(text["bipeds"], "biped_riding_vehicle")
+    assert "vehicle->role = network_objects_vehicle_followed(vehicle_index) ?" in vehicle
+    assert "_vehicle_riding_role_followed : _vehicle_riding_role_simulated;" in vehicle
+    hook = riding_function(text["objects"], "network_objects_vehicle_written")
+    assert "if (!network_objects_vehicle_followed(object_index))" in hook
+    assert "distributed_object_follows_host" not in hook
+
+
+def riding_unsteered_order_check(text):
+    body = riding_function(text["objects"], "network_objects_handle_states")
+    reconcile = body.index("if (network_objects_reconcile(state->object_index")
+    # (an unsteered vehicle's path word is its whole take: it never reaches the reconcile, whose write of the host's
+    # physics velocity would replace the path's)
+    taken = re.search(r"distributed_client_note_unsteered_path\(state->object_index[^;]*;\s*continue;", body)
+    assert taken and taken.end() < reconcile
+
+
+RIDING_CHECKS["unsteered-order"] = riding_unsteered_order_check
+RIDING_CONTROLS["unsteered-note-before-reconcile"] = (
+    "objects", "network_objects_handle_states",
+    "host_time, TEST_FLAG(state->flags, _distributed_object_at_rest_bit));\n\t\t\tcontinue;\n\t\t}",
+    "host_time, TEST_FLAG(state->flags, _distributed_object_at_rest_bit));\n\t\t}", "unsteered-order")
+
+
+RIDING_CHECKS["followed"] = riding_followed_check
+RIDING_CONTROLS["followed-on-host"] = ("objects", "network_objects_vehicle_written",
+                                       "if (!network_objects_vehicle_followed(object_index))",
+                                       "if (!distributed_object_follows_host(object_index))", "followed")
+RIDING_CONTROLS["followed-on-any-connection"] = ("objects", "network_objects_vehicle_followed",
+                                                 "game_connection() == _game_connection_network_client && ", "", "followed")
+RIDING_CONTROLS["followed-any-vehicle"] = ("objects", "network_objects_vehicle_followed",
+                                           " && distributed_vehicle_unsteered(vehicle_index)", "", "followed")
+RIDING_CONTROLS["role-always-simulated"] = ("bipeds", "biped_riding_vehicle",
+                                            "network_objects_vehicle_followed(vehicle_index) ?",
+                                            "FALSE ?", "followed")
+
+
+def riding_host_order_check(text):
+    body = riding_function(text["network"], "network_distributed_tick")
+    before = "profile_scope(distributed_tick_apply_predictions_section, distributed_apply_predictions(FALSE);)"
+    vehicles = "profile_scope(distributed_tick_apply_vehicle_predictions_section, network_objects_apply_vehicle_predictions();)"
+    after = "profile_scope(distributed_tick_apply_predictions_section, distributed_apply_predictions(TRUE);)"
+    assert before in body and vehicles in body and after in body
+    assert body.index(before) < body.index(vehicles) < body.index(after)
+    assert body.count("distributed_prediction_rides(") == 1
+    assert body.index("distributed_rider_pass[player_index] = distributed_prediction_rides(") < body.index(before)
+
+
+RIDING_CHECKS["host-order"] = riding_host_order_check
+RIDING_CONTROLS["riders-before-vehicles"] = (
+    "network", "network_distributed_tick",
+    "profile_scope(distributed_tick_apply_vehicle_predictions_section, network_objects_apply_vehicle_predictions();)\n"
+    "\t\tprofile_scope(distributed_tick_apply_predictions_section, distributed_apply_predictions(TRUE);)",
+    "profile_scope(distributed_tick_apply_predictions_section, distributed_apply_predictions(TRUE);)\n"
+    "\t\tprofile_scope(distributed_tick_apply_vehicle_predictions_section, network_objects_apply_vehicle_predictions();)",
+    "host-order")
+
+
+
+def riding_reboard_own_check(text):
+    # (a client's own player is put back by its own machine: only a host's remote riders are skipped by the clause,
+    # and only outside the convoy)
+    reboard = riding_function(text["test"], "ride_reboard")
+    assert "player->local_player_index == NONE && !(ride.scenario == _ride_convoy && ride_host())" in reboard
+    assert "ride_board(player->unit_index, ride.vehicles[0], rider->ordinal)" in reboard
+
+
+RIDING_CHECKS["reboard-own"] = riding_reboard_own_check
+RIDING_CONTROLS["reboard-host-only"] = ("test", "ride_reboard", "player->local_player_index == NONE && !(ride.scenario == _ride_convoy && ride_host())",
+                                        "player->local_player_index != NONE", "reboard-own")
+
+
+def riding_crush_owner_check(text):
+    # (the crush is the original's own vehicle collision, owned by the vehicle's driver: no direct damage call of ours)
+    contacts = riding_function(text["bipeds"], "biped_riding_contacts")
+    assert "physics_biped_vehicle_collision_damage(" in contacts
+    assert "damage_object_" not in contacts
+
+
+RIDING_CHECKS["crush-owner"] = riding_crush_owner_check
+RIDING_CONTROLS["crush-direct-damage"] = ("bipeds", "biped_riding_contacts",
+                                          "physics_biped_vehicle_collision_damage(vehicle.object_index, biped_index, &push);",
+                                          "damage_object_direct(biped_index, &push);", "crush-owner")
+
+
+def riding_reboard_test_only_check(text):
+    # (only the riding test puts a rider back, so only it is ever entitled)
+    note = riding_function(text["network"], "distributed_reboard_note")
+    assert "vehicle_riding_reboard_grant(&host, accepted->previous_vehicle, accepted->previous_ticks,\n\t\tnetwork_test_ride_running());" in note
+    assert "return ride.enabled;" in riding_function(text["test"], "network_test_ride_running")
+
+
+RIDING_CHECKS["reboard-test-only"] = riding_reboard_test_only_check
+RIDING_CONTROLS["reboard-grant-always"] = ("network", "distributed_reboard_note",
+                                           "accepted->previous_ticks,\n\t\tnetwork_test_ride_running());",
+                                           "accepted->previous_ticks,\n\t\tTRUE);", "reboard-test-only")
+RIDING_CONTROLS["reboard-running-always"] = ("test", "network_test_ride_running", "return ride.enabled;", "return TRUE;",
+                                             "reboard-test-only")
+
+
+def riding_write_carry_check(text):
+    objects = text["objects"]
+    gate = riding_function(objects, "network_objects_vehicle_carries")
+    # (a client's host state correction of a copy it does not follow, of a vehicle, with the riding code on)
+    for term in ("kind == _network_vehicle_write_state", "game_connection() == _game_connection_network_client",
+                 "!network_objects_vehicle_followed(object_index)", "vehicle_riding_enabled()",
+                 "object_get(object_index)->object.type == _object_type_vehicle"):
+        assert term in gate, term
+    writing = riding_function(objects, "network_objects_vehicle_writing")
+    assert "if (network_objects_vehicle_carries(object_index, kind))\n\t\tbiped_riding_vehicle_writing(object_index);" in writing
+    # (measured against the unwritten hull: before each of the two writes a state correction makes)
+    for name, write in (("distributed_object_move", "object_set_position(object_index, position, forward, up);"),
+                        ("network_objects_reconcile",
+                         "object_set_position(object_index, &blended, &valid_forward, &valid_up);")):
+        body = riding_function(objects, name)
+        call = "network_objects_vehicle_writing(object_index, kind);"
+        assert body.count(call) == 1 and body.count(write) == 1, name
+        assert body.index(call) < body.index(write), name
+    written = riding_function(objects, "network_objects_vehicle_written")
+    carry = ("if (network_objects_vehicle_carries(object_index, kind))\n"
+             "\t\t\tbiped_riding_vehicle_written(object_index, before_position, before_forward, before_up);")
+    assert written.count(carry) == 1
+    # (after the correction is recorded, which a window rider's rebase reads, and inside the vehicle's block)
+    assert written.index("vehicle_riding_vehicle_corrected(") < written.index(carry)
+    assert written.index("if (object->object.type == _object_type_vehicle)") < written.index(carry)
+
+
+RIDING_CHECKS["write-carry"] = riding_write_carry_check
+RIDING_CONTROLS["write-carry-any-kind"] = ("objects", "network_objects_vehicle_carries",
+                                           "kind == _network_vehicle_write_state && ", "", "write-carry")
+RIDING_CONTROLS["write-carry-on-host"] = ("objects", "network_objects_vehicle_carries",
+                                          "game_connection() == _game_connection_network_client &&\n\t\t", "", "write-carry")
+RIDING_CONTROLS["write-carry-ungated"] = ("objects", "network_objects_vehicle_carries",
+                                          " && vehicle_riding_enabled()", "", "write-carry")
+RIDING_CONTROLS["write-carry-followed"] = ("objects", "network_objects_vehicle_carries",
+                                           "!network_objects_vehicle_followed(object_index) && ", "", "write-carry")
+RIDING_CONTROLS["write-carry-measured-after"] = (
+    "objects", "distributed_object_move",
+    "\tnetwork_objects_vehicle_writing(object_index, kind);\n\tobject_set_position(object_index, position, forward, up);",
+    "\tobject_set_position(object_index, position, forward, up);\n\tnetwork_objects_vehicle_writing(object_index, kind);",
+    "write-carry")
+RIDING_CONTROLS["write-carry-measured-after-reconcile"] = (
+    "objects", "network_objects_reconcile",
+    "\t\tnetwork_objects_vehicle_writing(object_index, kind);\n\t\tobject_set_position(object_index, &blended, &valid_forward, &valid_up);",
+    "\t\tobject_set_position(object_index, &blended, &valid_forward, &valid_up);\n\t\tnetwork_objects_vehicle_writing(object_index, kind);",
+    "write-carry")
+RIDING_CONTROLS["write-carry-unwired"] = (
+    "objects", "network_objects_vehicle_written",
+    "\t\tif (network_objects_vehicle_carries(object_index, kind))\n\t\t\tbiped_riding_vehicle_written(object_index, before_position, before_forward, before_up);\n",
+    "", "write-carry")
+
+
+# (the riding wiring tests: every check and control above)
+@pytest.mark.parametrize("name", sorted(RIDING_CHECKS))
+def test_riding_network_wiring(name):
+    RIDING_CHECKS[name](riding_sources())
+
+
+@pytest.mark.parametrize("control", sorted(RIDING_CONTROLS))
+def test_riding_network_wiring_control(control):
+    from tools.harness import mutated
+    owner, scope, before, after, check = RIDING_CONTROLS[control]
+    text = riding_sources()
+    body = riding_function(text[owner], scope) if scope else text[owner]
+    text[owner] = text[owner].replace(body, mutated(body, before, after), 1)
+    # (a check finds code by its text: a fault that removes the text fails its .index as ValueError)
+    with pytest.raises((AssertionError, ValueError)):
+        RIDING_CHECKS[check](text)
