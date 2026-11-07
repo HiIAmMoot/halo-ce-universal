@@ -2395,6 +2395,80 @@ static boolean distributed_own_shielded(
 	return TRUE;
 }
 
+/* (a client) its own riding player's unit, where the host has it on the deck
+this machine has it riding too, when the state carries no tick of this
+machine's own to compare with: judged by its place on the deck, never by the
+world places of two copies of a moving vehicle, which a round trip's lag
+holds apart by more than the tolerance. False when the unit or the state is
+not of one deck (the world correction is then what is left) */
+static boolean distributed_correct_own_unechoed_rider(
+	short local_player_index,
+	long unit_index,
+	struct distributed_unit_state const *state)
+{
+	struct vehicle_riding_state riding;
+	struct vehicle_riding_deck current_deck;
+	struct vehicle_riding_deck target_deck;
+	struct object_datum *object = object_get(unit_index);
+	real_vector3d deck_error;
+	real_vector3d frame;
+	real_vector3d velocity;
+	real_vector3d error;
+	real_point3d before = object->object.position;
+	real_point3d position;
+	real_point3d base;
+	real height;
+	real width;
+	short index;
+
+	if (!distributed_deck_whole(state) || state->deck.ticks != RIDING_TICKS ||
+		!biped_riding_get_state(unit_index, &riding) || !vehicle_riding_is_riding(&riding) ||
+		!biped_riding_deck(unit_index, &current_deck) || current_deck.ticks != RIDING_TICKS ||
+		current_deck.vehicle_index != state->deck.vehicle_index || current_deck.node_index != state->deck.node_index)
+		return FALSE;
+	vector_from_points3d(&current_deck.place, &state->deck.place, &deck_error);
+	if (!(magnitude_squared3d(&deck_error) > LOCAL_CORRECTION_TOLERANCE * LOCAL_CORRECTION_TOLERANCE))
+		return TRUE;
+	target_deck = current_deck;
+	target_deck.place.x += deck_error.i;
+	target_deck.place.y += deck_error.j;
+	target_deck.place.z += deck_error.k;
+	if (!biped_riding_deck_position(unit_index, &target_deck, &position))
+		return TRUE;
+	biped_get_physics_pill(unit_index, &base, &height, &width);
+	base.x += position.x - before.x;
+	base.y += position.y - before.y;
+	base.z += position.z - before.z;
+	if (!biped_riding_frame_velocity(unit_index, &target_deck, &base, &frame))
+		return TRUE;
+	add_vectors3d(&state->deck.velocity, &frame, &velocity);
+	if (!distributed_apply_state(unit_index, state, &position, &velocity, LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f))
+		return TRUE;
+	biped_riding_rebase(unit_index);
+	vector_from_points3d(&before, &object->object.position, &error);
+	/* (the history moved by this take, as an echoed take moves it) */
+	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS)
+	{
+		for (index = 0; index < OWN_POSITION_TICKS; index++)
+		{
+			struct distributed_own_position *noted = &distributed_own_positions[local_player_index][index];
+
+			if (noted->unit_index != unit_index)
+				continue;
+			noted->position.x += error.i;
+			noted->position.y += error.j;
+			noted->position.z += error.k;
+			if (noted->deck_present && noted->deck.vehicle_index == current_deck.vehicle_index)
+			{
+				noted->deck.place.x += deck_error.i;
+				noted->deck.place.y += deck_error.j;
+				noted->deck.place.z += deck_error.k;
+			}
+		}
+	}
+	return TRUE;
+}
+
 /* (a client) its own player's unit where the host has it, if that is
 further than a tolerance from where this machine had it at the tick the
 host has it at (its own prediction come back): moved by the difference,
@@ -2740,6 +2814,9 @@ static void distributed_correct_own_unit(
 			}
 		}
 	}
+	/* (no echoed tick to judge by: a rider is judged on its deck all the same) */
+	if (distributed_correct_own_unechoed_rider(local_player_index, unit_index, state))
+		return;
 	distributed_apply_state(unit_index, state, &position, NULL, LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f);
 }
 
@@ -3243,7 +3320,7 @@ static boolean distributed_take_riding(
 	}
 	if (deck_part || leash)
 	{
-		/* (the word's place passed every check, while the copy was put in the air by a world aim off it by the two
+		/* (the word's place passed every check, while the copy was put in the air by an aim at the client's world place (a world take, a leash take or an along route) off it by the two
 		vehicle copies' offset: half of that would be the state this tick sends, and a word further than the blend
 		would be put there in full anyway) */
 		if (!distributed_apply_state(unit_index, state, &target, &world_velocity, 0.0f,

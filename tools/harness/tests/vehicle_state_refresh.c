@@ -64,7 +64,7 @@ static boolean distributed_client_correct_own_vehicle(long vehicle_index, short 
 	own_corrections++;
 	return FALSE;
 }
-/* (upstream's path of an unsteered vehicle, harness-tested apart: here only that its word is its whole take) */
+/* (upstream's path of an unsteered vehicle, tested apart in unsteered_path.c: here only that its word is its whole take) */
 static void distributed_client_note_unsteered_path(long index, real_point3d const *p, real_vector3d const *f,
 	real_vector3d const *u, long host_time, boolean at_rest)
 {

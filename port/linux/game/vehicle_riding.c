@@ -348,6 +348,18 @@ void vehicle_riding_correction_since(
 		riding_correction_matrix(&identity, since);
 		return;
 	}
+	/* (the same correction twice is no motion, to the bit: M times its inverse
+	is not exactly the identity in single precision, and a double-speed skipped
+	tick has no update between the two) */
+	if (now->rotation.v.i == then->rotation.v.i && now->rotation.v.j == then->rotation.v.j &&
+		now->rotation.v.k == then->rotation.v.k && now->rotation.w == then->rotation.w &&
+		now->translation.i == then->translation.i && now->translation.j == then->translation.j &&
+		now->translation.k == then->translation.k)
+	{
+		vehicle_riding_correction_identity(&identity, NONE);
+		riding_correction_matrix(&identity, since);
+		return;
+	}
 	riding_correction_matrix(now, &current);
 	riding_correction_matrix(then, &previous);
 	matrix4x3_inverse(&previous, &inverse);

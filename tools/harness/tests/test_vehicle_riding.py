@@ -27,7 +27,7 @@ CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guar
           "steep-riding-sequence", "cabin-recovery-rules", "cabin-overlap-retry", "run-jump-shared", "rebase",
           "correction-record", "correction-guards", "correction-two-riders", "correction-skipped-tick",
           "correction-message-time", "correction-rotation", "correction-noncommuting", "node-judged-moved",
-          "correction-renormalised", "correction-identity", "correction-keys",
+          "correction-renormalised", "correction-identity", "correction-since-same", "correction-keys",
          "followed-elapsed", "followed-elapsed-zero", "followed-stopped", "followed-jumper", "followed-role-change",
           "followed-snap", "followed-role-change-teleport", "followed-node", "leash-setting", "transition-agreed-table",
          "cabin-host-verdict", "cabin-host-jump-verdict", "deck-make-cabin-bit", "cabin-take-off-host"]
@@ -494,6 +494,7 @@ NEGATIVE_CONTROLS = {
                                  "followed-role-change-teleport"),
     "node-judged-at-zero": (("(followed ? elapsed > 0 : step->updates > 0)", "(followed ? TRUE : step->updates > 0)"),
                             "followed-node"),
+    "since-same-not-bitwise": (("if (now->rotation.v.i == then->rotation.v.i &&", "if (FALSE &&"), "correction-since-same"),
     "window-base-keeps-writes": (("if (vehicle->role != _vehicle_riding_role_followed)\n\t{\n\t\tvehicle_riding_correction_since",
                                   "if (FALSE)\n\t{\n\t\tvehicle_riding_correction_since"), "window-base-write-left-out"),
     "window-base-role-ignored": (("\tif (vehicle->role != state->mark.role)\n\t\treturn;\n", ""), "window-base-role-change"),

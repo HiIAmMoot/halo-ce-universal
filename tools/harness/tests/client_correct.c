@@ -947,6 +947,44 @@ static int own_case(char const *name)
         }
         return 0;
     }
+    if (!strcmp(name, "own-unechoed-deck-lagging") || !strcmp(name, "own-unechoed-deck-error") ||
+        !strcmp(name, "own-unechoed-other-vehicle"))
+    {
+        /* (a state with no echoed tick: the predicted bit clear) */
+        boolean other = !strcmp(name, "own-unechoed-other-vehicle");
+        boolean error = !strcmp(name, "own-unechoed-deck-error");
+
+        cabin.unit_index = 0; cabin.vehicle_index = V; cabin.standing = _vehicle_riding_enclosure_enclosed;
+        second_vehicle = other;
+        state.flags = 0;
+        state.position.x = 4.1f;
+        if (other)
+            state.deck.vehicle_index = V + 1;
+        if (error)
+        {
+            state.deck.place.x = 4.6f;
+            state.position.x = 20.0f;
+        }
+        distributed_correct_own_unit(&player, 0, &state);
+        if (other)
+        {
+            CHECK(writes == 1, "another vehicle's state was not left to the world correction: %ld", writes);
+            return 0;
+        }
+        if (error)
+        {
+            CHECK(writes == 1 && fabsf(unit.object.position.x - 4.6f) < 1e-4f,
+                "a deck error was not corrected on the deck: %ld writes, x %f", writes, unit.object.position.x);
+        }
+        else
+        {
+            CHECK(writes == 0 && fabsf(unit.object.position.x - 0.6f) < 1e-5f,
+                "world lag falsely corrected an unechoed deck rider: %ld writes, x %f", writes, unit.object.position.x);
+        }
+        CHECK(riding.ticks == RIDING_TICKS && riding.object_index == V && cabin.vehicle_index == V &&
+            cabin.standing == _vehicle_riding_enclosure_enclosed, "the unechoed rider lost its deck or cabin");
+        return 0;
+    }
     if (!strcmp(name, "own-host-boards"))
     {
         riding.ticks = 0; unit.object.position.x = -0.6f; note(0); clock_tick = 3;

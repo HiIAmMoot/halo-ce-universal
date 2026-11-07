@@ -47,6 +47,7 @@ CASES += ["own-legacy-verdict-equal-world", "own-legacy-verdict-open-equal-world
           "remote-legacy-verdict-held", "own-host-air-claim-after-grace", "own-host-air-claim-stale"]
 CASES += ["own-host-air-other-vehicle-corrects", "own-host-air-stale-episode-corrects", "own-host-air-taken-corrects"]
 CASES += ["own-reboard-shield-verdict"]
+CASES += ["own-unechoed-deck-lagging", "own-unechoed-deck-error", "own-unechoed-other-vehicle"]
 CASES += ["own-legacy-verdict-off-deck-host-held", "own-legacy-verdict-off-deck-local-resets"]
 # a fault in the real transaction, and the case that must fail a CHECK
 NEGATIVE_CONTROLS = {
@@ -61,6 +62,11 @@ NEGATIVE_CONTROLS = {
         "\t/* (the host ended this claim, even when no standing-history branch will run) */",
         "\tif (distributed_own_shielded(player->local_player_index, unit_index, state))\n\t\treturn;\n"
         "\t/* (the host ended this claim, even when no standing-history branch will run) */")], "own-reboard-shield-verdict"),
+    "unechoed-rider-world-only": ("network", [(
+        "\tif (distributed_correct_own_unechoed_rider(local_player_index, unit_index, state))\n\t\treturn;\n", "")],
+        "own-unechoed-deck-lagging"),
+    "unechoed-rider-any-vehicle": ("network", [(
+        "current_deck.vehicle_index != state->deck.vehicle_index || ", "")], "own-unechoed-other-vehicle"),
     "host-air-other-vehicle-no-correction": ("network", [("\t\t\tif (host_air && current_present && current_deck.ticks == RIDING_TICKS &&",
         "\t\t\tif (host_air && current_present && current_deck.vehicle_index != host_vehicle)\n\t\t\t\treturn;\n"
         "\t\t\tif (host_air && current_present && current_deck.ticks == RIDING_TICKS &&")], "own-host-air-other-vehicle-corrects"),
@@ -331,6 +337,7 @@ def generated(control=None):
              function(network, "distributed_own_shields_clear") + "\n" +
              function(network, "network_distributed_own_reboard") + "\n" +
              function(network, "distributed_own_shielded") + "\n" +
+             function(network, "distributed_correct_own_unechoed_rider") + "\n" +
              function(network, "distributed_correct_own_unit").replace(
                  "error.i = state->position.x - own->position.x;",
                  "world_comparisons++; error.i = state->position.x - own->position.x;")))

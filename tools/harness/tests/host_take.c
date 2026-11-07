@@ -860,6 +860,34 @@ static int landing_case(char const *case_name)
         CHECK(taken_now(), "new life deck word refused");
         CHECK(fabsf(objects[1].object.position.y+0.14f) < 1e-5f, "new life inherited air record"); return 0;
     }
+    CASE("host-landing-new-life-after-leash-blends")
+    {
+        /* (U1's air word of V is the record; U2's first take is the leash take of its riding word of V: not U1's landing) */
+        landing_seed(landing_world);
+        riding[0].ticks = 59;
+        host_on(0, &landing_before);
+        distributed_accepted[0].transition_until = game_time + 9;
+        test_running = FALSE;
+        distributed_accepted[0].reboard_vehicle = NONE;
+        word_on(0, &landing_before, RIDING_TICKS, TRUE);
+        objects[1] = objects[0]; riding[1] = riding[0]; players[0].unit_index = 1;
+        distributed_predictions[0].state.unit_index = 1;
+        /* (the new life is noted by the host's transition already, as one past its first tick: the leash stays armed) */
+        distributed_host_speeds[0].unit_index = 1; distributed_accepted[0].transition_unit_index = 1; distributed_accepted[0].unit_index = 1;
+        two_passes();
+        CHECK(taken_now() && distributed_accepted[0].transition_leash_time == game_time, "the new life riding word was not leash-taken (taken %d leash %ld now %ld until %ld)", taken_now(), distributed_accepted[0].transition_leash_time, game_time, distributed_accepted[0].transition_until);
+        game_time++;
+        riding[0].ticks = RIDING_TICKS;
+        host_on(0, &landing_before);
+        objects[1] = objects[0]; riding[1] = riding[0];
+        word_on(0, &landing_word, RIDING_TICKS, TRUE);
+        distributed_predictions[0].state.unit_index = 1;
+        two_passes();
+        CHECK(taken_now(), "new life deck word refused");
+        CHECK(fabsf(objects[1].object.position.y+0.14f) < 1e-5f, "new life's first deck take inherited the old life's air record: y %f",
+            objects[1].object.position.y);
+        return 0;
+    }
     CASE("host-landing-reboard-then-blends")
     {
         real_point3d next = reboard_place;
