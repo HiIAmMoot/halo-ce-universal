@@ -2402,7 +2402,6 @@ world places of two copies of a moving vehicle, which a round trip's lag
 holds apart by more than the tolerance. False when the unit or the state is
 not of one deck (the world correction is then what is left) */
 static boolean distributed_correct_own_unechoed_rider(
-	short local_player_index,
 	long unit_index,
 	struct distributed_unit_state const *state)
 {
@@ -2413,13 +2412,11 @@ static boolean distributed_correct_own_unechoed_rider(
 	real_vector3d deck_error;
 	real_vector3d frame;
 	real_vector3d velocity;
-	real_vector3d error;
 	real_point3d before = object->object.position;
 	real_point3d position;
 	real_point3d base;
 	real height;
 	real width;
-	short index;
 
 	if (!distributed_deck_whole(state) || state->deck.ticks != RIDING_TICKS ||
 		!biped_riding_get_state(unit_index, &riding) || !vehicle_riding_is_riding(&riding) ||
@@ -2445,27 +2442,6 @@ static boolean distributed_correct_own_unechoed_rider(
 	if (!distributed_apply_state(unit_index, state, &position, &velocity, LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f))
 		return TRUE;
 	biped_riding_rebase(unit_index);
-	vector_from_points3d(&before, &object->object.position, &error);
-	/* (the history moved by this take, as an echoed take moves it) */
-	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS)
-	{
-		for (index = 0; index < OWN_POSITION_TICKS; index++)
-		{
-			struct distributed_own_position *noted = &distributed_own_positions[local_player_index][index];
-
-			if (noted->unit_index != unit_index)
-				continue;
-			noted->position.x += error.i;
-			noted->position.y += error.j;
-			noted->position.z += error.k;
-			if (noted->deck_present && noted->deck.vehicle_index == current_deck.vehicle_index)
-			{
-				noted->deck.place.x += deck_error.i;
-				noted->deck.place.y += deck_error.j;
-				noted->deck.place.z += deck_error.k;
-			}
-		}
-	}
 	return TRUE;
 }
 
@@ -2815,7 +2791,7 @@ static void distributed_correct_own_unit(
 		}
 	}
 	/* (no echoed tick to judge by: a rider is judged on its deck all the same) */
-	if (distributed_correct_own_unechoed_rider(local_player_index, unit_index, state))
+	if (distributed_correct_own_unechoed_rider(unit_index, state))
 		return;
 	distributed_apply_state(unit_index, state, &position, NULL, LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f);
 }

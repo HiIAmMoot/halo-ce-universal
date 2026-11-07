@@ -1443,7 +1443,12 @@ void vehicle_riding_host_target(
 	*base = *client_base;
 	if (path == _vehicle_riding_host_along)
 	{
-		vehicle_riding_point_to_local(&host_node->position, &host_node->forward, &host_node->up, client_base, &place);
+		/* (a part of this vehicle says where on it: the word's world place is where the client's copy of the vehicle
+		stood, off by the two copies' offset) */
+		if (client_node && deck->vehicle_index == host_node->object_index && client_node->node_index == host_node->node_index)
+			place = deck->place;
+		else
+			vehicle_riding_point_to_local(&host_node->position, &host_node->forward, &host_node->up, client_base, &place);
 		vehicle_riding_point_to_local(&host_node->position, &host_node->forward, &host_node->up, host_base, &host_place);
 		if (place.z < host_place.z)
 			place.z = host_place.z;
@@ -2233,10 +2238,36 @@ long vehicle_riding_cabin_carrier_vehicle(
 	struct vehicle_riding_state const *state,
 	boolean exception)
 {
-	/* (a jump leaves the deck at its next tick, whatever it touches then) */
+	/* (a jump leaves the deck at its next tick, touched or held) */
 	if (!exception || !cabin || cabin->take_off)
 		return NONE;
 	return state->object_index;
+}
+
+/* whether an enclosed rider stays on its vehicle this tick with no touch
+of it: one the deck carried into the tick and its exception names. (A
+rider in the window waits for a real touch: a jump would end at its next
+tick) */
+boolean vehicle_riding_cabin_holds(
+	long cabin_vehicle,
+	boolean carried)
+{
+	return cabin_vehicle != NONE && carried;
+}
+
+/* whether a rider's cabin protects it: the verdict it goes by, or on the
+deck this machine's own standing sample (a host's open is a round trip old
+and says nothing of a tilt reached since; a miss here never takes back the
+host's enclosed, and no word the host reads changes) */
+boolean vehicle_riding_cabin_encloses(
+	struct vehicle_riding_cabin const *cabin,
+	struct vehicle_riding_state const *state,
+	struct vehicle_riding_air const *air)
+{
+	if (vehicle_riding_cabin_verdict(cabin, state, air, TRUE) == _vehicle_riding_enclosure_enclosed)
+		return TRUE;
+	return cabin && cabin->vehicle_index == state->object_index && vehicle_riding_is_riding(state) && !cabin->take_off &&
+		cabin->standing == _vehicle_riding_enclosure_enclosed;
 }
 
 short vehicle_riding_cabin_carrier(
@@ -2249,7 +2280,8 @@ short vehicle_riding_cabin_carrier(
 	if (vehicle_index == NONE)
 		return NONE;
 	/* (a real touch of that vehicle, a wall or a ceiling too: never the
-	ground, another vehicle or a touch made up) */
+	ground, another vehicle or a touch made up; a rider the deck carried in
+	needs none, vehicle_riding_cabin_holds) */
 	for (index = 0; index < count; index++)
 	{
 		if (objects[index] == vehicle_index)

@@ -809,7 +809,14 @@ static boolean biped_riding_cabin_tick(
 
 	if (sample != _vehicle_riding_cabin_sample_none)
 	{
-		boolean hit = biped_riding_cabin_sample(definition, cabin, &step->vehicle, base, height);
+		real_point3d origin = *base;
+		boolean hit;
+
+		/* (a rider in the window is a tick of the deck's travel behind its place on it until its physics moves it: its jump's
+		one sample is of the vehicle it left, where the deck will have carried it) */
+		if (sample == _vehicle_riding_cabin_sample_jump && !vehicle_riding_is_riding(riding))
+			vehicle_riding_window_base(riding, &step->vehicle, base, &origin);
+		hit = biped_riding_cabin_sample(definition, cabin, &step->vehicle, &origin, height);
 
 		if (sample == _vehicle_riding_cabin_sample_standing)
 			vehicle_riding_cabin_standing(cabin, hit, vehicle_riding_cabin_grace());
@@ -817,8 +824,7 @@ static boolean biped_riding_cabin_tick(
 			vehicle_riding_cabin_jump(cabin, hit);
 	}
 	cabin->exception = vehicle_riding_cabin_exception(biped_riding_applies(biped), TRUE,
-		vehicle_riding_cabin_verdict(cabin, riding, air, TRUE) == _vehicle_riding_enclosure_enclosed, up,
-		minimum_normal_k);
+		vehicle_riding_cabin_encloses(cabin, riding, air), up, minimum_normal_k);
 	return cabin->exception;
 }
 
@@ -838,8 +844,7 @@ static boolean biped_riding_cabin_protected(
 	return cabin && cabin->unit_index == biped_index && cabin->vehicle_index == vehicle->object_index &&
 		vehicle_riding_cabin_exception(biped_riding_applies(biped),
 			riding->ticks > 0 && riding->object_index == vehicle->object_index,
-			vehicle_riding_cabin_verdict(cabin, riding, vehicle_riding_player_air(player), TRUE) ==
-				_vehicle_riding_enclosure_enclosed,
+			vehicle_riding_cabin_encloses(cabin, riding, vehicle_riding_player_air(player)),
 			&vehicle->body_up, definition->biped.runtime_minimum_normal_k);
 }
 
@@ -1309,14 +1314,19 @@ static boolean biped_riding_contacts(
 			&contacts[index].normal, game_players_are_double_speed(), &move, &ahead);
 		/* port: (an enclosed rider's own vehicle, or a touch the vehicle's update
 		deferred whatever this tick's own gate then finds: its move staged, then
-		settled in the cabin, never pushed out of it or hurt) */
+		settled in the cabin, never pushed out of it or hurt. In the window the
+		base is a tick of the deck's travel behind until its physics moves it,
+		and a return here would be added to that motion: it settles at finish) */
 		if (vehicle.object_index == cabin_vehicle || (cabin && contacts[index].deferred))
 		{
 			entry = *base;
 			if (into > 0.f)
 				biped_riding_carry(biped_index, biped, definition, vehicle.object_index, &move, height, width, base);
-			biped_riding_cabin_settle(biped_index, biped, definition, cabin, &vehicle, &entry, &contacts[index].normal,
-				&ahead, FALSE, height, width, base);
+			if (carried)
+			{
+				biped_riding_cabin_settle(biped_index, biped, definition, cabin, &vehicle, &entry, &contacts[index].normal,
+					&ahead, FALSE, height, width, base);
+			}
 			settled = TRUE;
 			continue;
 		}
@@ -1597,7 +1607,7 @@ void biped_riding_prepare(
 	/* port: (an enclosed rider its vehicle's update recorded no touch of, a
 	vehicle a client follows never does: its place checked after the carry
 	all the same, with no closing move) */
-	if (tick->riding_step_valid && !tick->riding_cabin_settled && vehicle_riding_cabin_watched(tick->riding_cabin, &tick->riding, biped_index))
+	if (tick->riding_step_valid && tick->riding_carried && !tick->riding_cabin_settled && vehicle_riding_cabin_watched(tick->riding_cabin, &tick->riding, biped_index))
 	{
 		real_point3d entry = physics->position;
 
@@ -1643,10 +1653,20 @@ void biped_riding_finish(
 	{
 		struct vehicle_riding_vehicle support;
 		boolean supported = !TEST_FLAG(physics->out_flags, _biped_physics_out_airborne_bit);
+		boolean carried;
+
+		/* (the rider the deck carried into this tick and its exception names stays on it with no touch: past the
+		floor's limit a sweep of one tick's gravity finds the vehicle only by chance) */
+		if (physics->carrier_object_index == NONE &&
+			vehicle_riding_cabin_holds(physics->cabin_object_index, tick->riding_carried))
+		{
+			physics->carrier_object_index = physics->cabin_object_index;
+			physics->carrier_node_index = tick->riding.node_index;
+		}
 		/* (an enclosed rider's steep vehicle carries it before whatever its
 		physics stood it on; that support, its ground and its landing stay
 		its physics') */
-		boolean carried = physics->carrier_object_index != NONE ?
+		carried = physics->carrier_object_index != NONE ?
 			biped_riding_vehicle(physics->carrier_object_index, physics->carrier_node_index, &support) :
 			supported && biped_riding_vehicle(physics->support_object_index, physics->support_node_index, &support);
 

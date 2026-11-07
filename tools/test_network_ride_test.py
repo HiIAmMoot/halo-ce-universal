@@ -1744,6 +1744,50 @@ def test_door_walk_needs_landing():
     assert not any(r["metric"] == "door-blocked" for r in answer["reasons"]), answer
 
 
+def hold_rows(drop_at, exception=1, take_off=0, door_from=None):
+    host, client = fixture_longsword()
+    for rows in (host, client):
+        for row in rows:
+            if row["kind"] == "cabin" and BOARD + 3000 <= row["tick"] < BOARD + 3100:
+                row["exception"] = exception
+                row["take_off"] = take_off if row["tick"] == drop_at - 1 else 0
+                if row["tick"] >= drop_at:
+                    row["ticks"] = 59
+    return host, client
+
+
+def test_hold_lost_fails_an_exception_drop():
+    host, client = hold_rows(BOARD + 3050)
+    answer = longsword(host, client)
+    assert answer["status"] == "DESYNC", answer["reasons"]
+    assert any(r["metric"] == "hold-lost" for r in answer["reasons"])
+
+
+def test_hold_lost_ignores_a_jumps_drop():
+    host, client = hold_rows(BOARD + 3050, take_off=1)
+    answer = longsword(host, client)
+    assert not any(r["metric"] == "hold-lost" for r in answer["reasons"]), answer["reasons"]
+
+
+def test_hold_lost_ignores_a_drop_with_no_exception():
+    host, client = hold_rows(BOARD + 3050, exception=0)
+    answer = longsword(host, client)
+    assert not any(r["metric"] == "hold-lost" for r in answer["reasons"]), answer["reasons"]
+
+
+def test_crossing_rows_reported_at_each_up_crossing():
+    host, client = fixture_longsword()
+    for rows in (host, client):
+        for row in rows:
+            if row["kind"] == "cabin" and BOARD + 3000 <= row["tick"] < BOARD + 3010:
+                row["uk"] = 0.9 if row["tick"] < BOARD + 3005 else 0.6
+                row["standing"] = 1 if row["tick"] < BOARD + 3005 else 2
+    answer = longsword(host, client)
+    crossings = answer["metrics"]["crossing_rows"]["host:1"]
+    assert [c["tick"] for c in crossings][:1] == [BOARD + 3005], crossings
+    assert crossings[0]["standing"] == 1 and crossings[0]["exception"] == 0 and crossings[0]["ticks"] == 60
+
+
 def test_longsword_host_landing_enables_door_judging_on_both_sides():
     host, client = fixture_longsword(door_out=False)
     for row in client:
@@ -1755,10 +1799,44 @@ def test_longsword_host_landing_enables_door_judging_on_both_sides():
     assert {r["side"] for r in answer["reasons"] if r["metric"] == "door-blocked"} == {"host", "client"}
 
 
+def landed_at(host, last_reset, speed=0.0, tilt=0.0):
+    """The host's ship rocking until last_reset (its counter reset then), standing after."""
+    for row in host:
+        if row["kind"] == "tilt":
+            row["grounded"] = 0 if row["tick"] <= last_reset else 60
+            row["speed"] = speed
+            row["tilt"] = tilt if row["tick"] > last_reset else row["tilt"]
+
+
+def test_door_walk_judged_when_the_counter_resets_late():
+    # (the counter is 11 at the tick before the door step, 30 within the window: the game's walk starts then)
+    host, client = fixture_longsword(door_out=False)
+    landed_at(host, BOARD + 8100 - 1 + 11)
+    answer = longsword(host, client)
+    assert answer["metrics"]["door_walk"] == "judged", answer["reasons"]
+    assert not any(r["metric"] == "door-not-run" for r in answer["reasons"]), answer
+
+
+def test_door_walk_not_run_when_never_standing_in_the_window():
+    host, client = fixture_longsword(door_out=False)
+    landed_at(host, BOARD + 8100 + 59)
+    answer = longsword(host, client)
+    assert answer["metrics"]["door_walk"] == "door-not-run", answer["reasons"]
+
+
+def test_door_walk_not_run_while_the_ship_stays_tilted_in_the_window():
+    host, client = fixture_longsword(door_out=False)
+    for row in host:
+        if row["kind"] == "tilt" and BOARD + 8100 - 1 <= row["tick"] <= BOARD + 8100 + 59:
+            row["grounded"], row["tilt"] = 60, 6.99
+    answer = longsword(host, client)
+    assert answer["metrics"]["door_walk"] == "door-not-run", answer["reasons"]
+
+
 def test_longsword_landing_after_door_does_not_enable_door_judging():
     host, client = fixture_longsword(door_out=False)
     for row in host:
-        if row["kind"] == "tilt" and not row["door"]:
+        if row["kind"] == "tilt" and row["tick"] <= BOARD + 8100 + 59:
             row["grounded"] = 0
     answer = longsword(host, client)
     assert answer["status"] == "TOOL_ERROR", answer["reasons"]

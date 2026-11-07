@@ -809,10 +809,14 @@ def judge_longsword(records, rtt_ms, loss_percent, box, negative=False, local=Fa
                "health_lost": {}, "died_in_door_walk": [], "preparation": {}, "landing": {}}
     health = metrics["health_lost"]
     host_board = next((r["board_tick"] for r in records if r["side"] == "host" and r["kind"] == "prepare"), 0)
-    host_landing = next((r for r in records if r["side"] == "host" and r["kind"] == "tilt" and
-                         r["tick"] == host_board + LONGSWORD_STARTS[-1] - 1), None)
-    door_judged = bool(host_landing and host_landing["grounded"] >= 30 and host_landing["speed"] < .03 and
-                       host_landing["tilt"] < 5.0)
+    # (the game starts the walk when the ship has stood 30 ticks, whenever that comes after touchdown: a single tick's
+    # counter chatters while the ship rocks, so the window runs from the tick before the door step to its walk's start)
+    host_door = host_board + LONGSWORD_STARTS[-1]
+    host_landing = next((r for r in sorted((r for r in records if r["side"] == "host" and r["kind"] == "tilt"),
+                                           key=lambda r: r["tick"])
+                         if host_door - 1 <= r["tick"] <= host_door + 59 and r["grounded"] >= 30 and r["speed"] < .03 and
+                         r["tilt"] < 5.0), None)
+    door_judged = host_landing is not None
     metrics["door_walk"] = "judged" if door_judged else "door-not-run"
 
     def fail(row, metric, value, limit, tool=False):
@@ -900,7 +904,18 @@ def judge_longsword(records, rtt_ms, loss_percent, box, negative=False, local=Fa
             last_failed = None
             recovery_hurt = False
             previous_health = first[0] + first[1]
+            previous_row = None
             for row in mine:
+                if previous_row is not None:
+                    # (an enclosed rider the deck carried keeps it with no touch: it leaves only by a jump or the door)
+                    if (previous_row["ticks"] == 60 and previous_row["exception"] and not previous_row["take_off"] and
+                            row["ticks"] < 60 and not tilts.get(row["tick"], {}).get("door")):
+                        fail(row, "hold-lost", row["tick"], "held")
+                    if previous_row["uk"] >= row["limit"] > row["uk"]:
+                        metrics.setdefault("crossing_rows", {}).setdefault(key, []).append({
+                            "tick": row["tick"], "standing": previous_row["standing"], "raw": row["raw"],
+                            "exception": row["exception"], "ticks": row["ticks"], "place": row["place"]})
+                previous_row = row
                 metrics["min_uk"] = row["uk"] if metrics["min_uk"] is None else min(metrics["min_uk"], row["uk"])
                 if LONGSWORD_LIMIT is not None and abs(row["limit"] - LONGSWORD_LIMIT) > 1e-4:
                     fail(row, "limit-mismatch", row["limit"], LONGSWORD_LIMIT, tool=True)

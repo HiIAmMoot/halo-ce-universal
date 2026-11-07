@@ -35,7 +35,7 @@ struct vehicle_riding_claim *vehicle_riding_player_claim(short player_index) { r
 static boolean distributed_own_episode_current(struct player_datum const *p, long u, struct distributed_unit_state const *s) { return FALSE; }
 static boolean distributed_own_window_current(struct player_datum const *p, long u, struct distributed_unit_state const *s) { return FALSE; }
 static boolean distributed_deck_whole(struct distributed_unit_state const *s) { return FALSE; }
-static boolean distributed_correct_own_unechoed_rider(short l, long u, struct distributed_unit_state const *s) { return FALSE; }
+static boolean distributed_correct_own_unechoed_rider(long u, struct distributed_unit_state const *s) { return FALSE; }
 static boolean distributed_own_shielded(short l, long u, struct distributed_unit_state const *s) { return FALSE; }
 static void biped_riding_cabin_host(long u, struct vehicle_riding_deck const *d, boolean b) {}
 static void biped_riding_air_verdict_host(long u, struct vehicle_riding_deck const *d, boolean b) {}

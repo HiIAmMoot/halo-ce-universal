@@ -2353,7 +2353,7 @@ int main(int argc, char **argv)
 		for (elapsed = 0; elapsed <= 360; elapsed++)
 		{
 			real forward = (elapsed >= 60 && elapsed < 92) || (elapsed >= 132 && elapsed < 282) ? 1.f : 0.f;
-			real left = elapsed >= 92 && elapsed < 112 ? -1.f : 0.f;
+			real left = elapsed >= 92 && elapsed < 132 ? -1.f : 0.f;
 			now = start + elapsed;
 			test_vehicle.vehicle.on_ground_ticks = 0;
 			network_test_ride_action(0, &action);

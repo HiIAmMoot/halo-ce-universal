@@ -948,18 +948,20 @@ static int own_case(char const *name)
         return 0;
     }
     if (!strcmp(name, "own-unechoed-deck-lagging") || !strcmp(name, "own-unechoed-deck-error") ||
-        !strcmp(name, "own-unechoed-other-vehicle"))
+        !strcmp(name, "own-unechoed-other-vehicle") || !strcmp(name, "own-unechoed-other-node"))
     {
         /* (a state with no echoed tick: the predicted bit clear) */
-        boolean other = !strcmp(name, "own-unechoed-other-vehicle");
+        boolean other = !strcmp(name, "own-unechoed-other-vehicle") || !strcmp(name, "own-unechoed-other-node");
         boolean error = !strcmp(name, "own-unechoed-deck-error");
 
         cabin.unit_index = 0; cabin.vehicle_index = V; cabin.standing = _vehicle_riding_enclosure_enclosed;
         second_vehicle = other;
         state.flags = 0;
         state.position.x = 4.1f;
-        if (other)
+        if (!strcmp(name, "own-unechoed-other-vehicle"))
             state.deck.vehicle_index = V + 1;
+        if (!strcmp(name, "own-unechoed-other-node"))
+            state.deck.node_index = 3;
         if (error)
         {
             state.deck.place.x = 4.6f;
@@ -975,6 +977,7 @@ static int own_case(char const *name)
         {
             CHECK(writes == 1 && fabsf(unit.object.position.x - 4.6f) < 1e-4f,
                 "a deck error was not corrected on the deck: %ld writes, x %f", writes, unit.object.position.x);
+            CHECK(fabsf(riding.local_point.x - 4.6f) < 1e-4f, "the correction left the deck place at %f", riding.local_point.x);
         }
         else
         {

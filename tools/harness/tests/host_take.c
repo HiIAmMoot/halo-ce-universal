@@ -416,7 +416,19 @@ static void world_word(real dx, real dz)
     distributed_predictions[0].state.position.z += dz;
 }
 
-/* a word of a part of the vehicle in its air is no deck word and names no more than a world one, so only the along path guards the height */
+/* the part of a word that names the vehicle in its air, its place the one the word's position has on the vehicle (the part
+carries the base of the pill the position is of) */
+static void air_part_at_word(long ticks)
+{
+    struct distributed_unit_state *s = &distributed_predictions[0].state;
+    real_point3d base = s->position;
+    base.z += pill_offset;
+    s->deck_present = TRUE;
+    s->deck.vehicle_index = V; s->deck.node_index = NONE; s->deck.ticks = (char)ticks;
+    vehicle_riding_point_to_local(&vehicles[0].position, &vehicles[0].forward, &vehicles[0].up, &base, &s->deck.place);
+}
+
+/* a word of a part of the vehicle in its air is no deck word: it names a place on the vehicle (air_part_at_word), and the along path guards the height */
 static void disagree(boolean pitched, boolean air_part)
 {
     struct distributed_on_foot_bound b;
@@ -440,8 +452,7 @@ static void disagree(boolean pitched, boolean air_part)
         host_tick(0); world_word(0.05f, -0.3f);
         if (air_part)
         {
-            distributed_predictions[0].state.deck_present = TRUE;
-            distributed_predictions[0].state.deck.ticks = RIDING_TICKS - 1;
+            air_part_at_word(RIDING_TICKS - 1);
         }
         CHECK(take(&b), "disagreeing word refused at %ld", t);
         biped_get_physics_pill(0, &before, &h, &w);
@@ -862,7 +873,9 @@ static int landing_case(char const *case_name)
     }
     CASE("host-landing-new-life-after-leash-blends")
     {
-        /* (U1's air word of V is the record; U2's first take is the leash take of its riding word of V: not U1's landing) */
+        /* (the state is synthetic and pins the conjunct: U1's air word of V is the record and U2's first take is the leash
+        take of its riding word of V, not U1's landing. A new life whose first take is a window-route leash take is not
+        reachable) */
         landing_seed(landing_world);
         riding[0].ticks = 59;
         host_on(0, &landing_before);
@@ -994,8 +1007,7 @@ int main(int argc, char **argv)
             setup(); accepted_once(); game_time = 2; host_tick(0);
             world_word(across[sample], rise[sample]);
             distributed_predictions[0].time = 1 + leads[sample];
-            distributed_predictions[0].state.deck_present = TRUE;
-            distributed_predictions[0].state.deck.ticks = RIDING_TICKS - leads[sample];
+            air_part_at_word(RIDING_TICKS - leads[sample]);
             distributed_predictions[0].state.velocity.i = (short)(0.075f * DISTRIBUTED_VELOCITY_SCALE);
             distributed_predictions[0].state.velocity.k = (short)((0.11f - 0.0036f*leads[sample]) * DISTRIBUTED_VELOCITY_SCALE);
             if (sample < 2)
@@ -1015,15 +1027,13 @@ int main(int argc, char **argv)
         setup(); accepted_once(); game_time = 2; host_tick(0);
         world_word(0.15f, 0.2128f);
         distributed_predictions[0].time = 3;
-        distributed_predictions[0].state.deck_present = TRUE;
-        distributed_predictions[0].state.deck.ticks = 58;
+        air_part_at_word(58);
         distributed_accepted[0].place.x -= 3.f;
         CHECK(!take(&b), "running takeoff bypassed accumulated anchor");
         check_base(to_world(&body_place));
         setup(); accepted_once(); game_time = 21; host_tick(0);
         world_word(0.15f, 3.1f);
-        distributed_predictions[0].state.deck_present = TRUE;
-        distributed_predictions[0].state.deck.ticks = 58;
+        air_part_at_word(58);
         CHECK(!take(&b), "positive along rise bypassed deck ceiling");
         check_base(to_world(&body_place));
         return 0;
@@ -1040,8 +1050,7 @@ int main(int argc, char **argv)
             game_time = 2 + t;
             vehicles[0].position.z = 0.1f * t;
             host_tick(0); world_word(0.05f, -0.3f);
-            distributed_predictions[0].state.deck_present = TRUE;
-            distributed_predictions[0].state.deck.ticks = ticks[t];
+            air_part_at_word(ticks[t]);
             if (t == 3)
                 distributed_predictions[0].state.deck.vehicle_index = OTHER;
             CHECK(take(&b), "host-riding/client-air disagreement refused at %ld", t);
@@ -1050,6 +1059,74 @@ int main(int argc, char **argv)
                 ticks[t], base.z - 0.1f*t);
             CHECK(base.x > body_place.x, "present part discarded across motion");
             CHECK(distributed_accepted[0].host_time == 1, "disagreeing client part reset deck anchor");
+        }
+        return 0;
+    }
+    CASE("host-along-air-part-place")
+    {
+        struct distributed_on_foot_bound b;
+        real_point3d base, expected;
+        real height, width;
+        accepted_once();
+        game_time = 5;
+        host_tick(0);
+        prediction(0, body_place);
+        distributed_predictions[0].state.deck.ticks = RIDING_TICKS - 1;
+        distributed_predictions[0].state.deck.place.x += 0.001f;
+        /* (the client's copy of the vehicle stood .27 behind the host's: its world word is that far off the deck place) */
+        distributed_predictions[0].state.position = to_world(&body_place);
+        distributed_predictions[0].state.position.z += 0.1f;
+        distributed_predictions[0].state.position.x += 0.27f;
+        expected = to_world(&distributed_predictions[0].state.deck.place);
+        CHECK(take(&b), "a part whose place is on the deck refused");
+        biped_get_physics_pill(0, &base, &height, &width);
+        CHECK(distance_squared3d(&base, &expected) < 1e-4f, "the world word moved the rider off its place: (%f,%f,%f) not (%f,%f,%f)",
+            base.x, base.y, base.z, expected.x, expected.y, expected.z);
+        return 0;
+    }
+    CASE("host-along-air-part-limits")
+    {
+        struct distributed_on_foot_bound b;
+        real_point3d base, before;
+        real height, width;
+        long variant;
+        for (variant = 0; variant < 4; variant++)
+        {
+            setup(); accepted_once();
+            game_time = 5;
+            host_tick(0);
+            prediction(0, body_place);
+            distributed_predictions[0].state.position = to_world(&body_place);
+            distributed_predictions[0].state.position.z += 0.1f;
+            /* (off the host's by more than the leash, as the client's copy of the vehicle is) */
+            distributed_predictions[0].state.position.x += 0.27f;
+            distributed_predictions[0].state.deck.ticks = RIDING_TICKS - 1;
+            biped_get_physics_pill(0, &before, &height, &width);
+            if (variant == 0)
+                distributed_predictions[0].state.deck.place.x += 3.6f;
+            if (variant == 1)
+                distributed_predictions[0].state.deck.place.x += 2.5f;
+            if (variant == 2)
+            {
+                distributed_predictions[0].state.deck.vehicle_index = OTHER;
+                distributed_predictions[0].state.deck.place.x += 3.6f;
+            }
+            if (variant == 3)
+            {
+                /* (a place in another node's frame is no place in the host's) */
+                distributed_predictions[0].state.deck.node_index = 1;
+                distributed_predictions[0].state.deck.place.x += 3.6f;
+            }
+            if (variant < 2)
+            {
+                CHECK(!take(&b), "a part's place %s refused: taken", variant ? "past the anchor's bound" : "3.6 wu off");
+                biped_get_physics_pill(0, &base, &height, &width);
+                CHECK(distance_squared3d(&base, &before) < 1e-8f, "a refused part moved the rider");
+            }
+            else
+            {
+                CHECK(take(&b), "a part of another vehicle or node read as a place on this one");
+            }
         }
         return 0;
     }

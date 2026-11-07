@@ -47,7 +47,7 @@ CASES += ["own-legacy-verdict-equal-world", "own-legacy-verdict-open-equal-world
           "remote-legacy-verdict-held", "own-host-air-claim-after-grace", "own-host-air-claim-stale"]
 CASES += ["own-host-air-other-vehicle-corrects", "own-host-air-stale-episode-corrects", "own-host-air-taken-corrects"]
 CASES += ["own-reboard-shield-verdict"]
-CASES += ["own-unechoed-deck-lagging", "own-unechoed-deck-error", "own-unechoed-other-vehicle"]
+CASES += ["own-unechoed-deck-lagging", "own-unechoed-deck-error", "own-unechoed-other-vehicle", "own-unechoed-other-node"]
 CASES += ["own-legacy-verdict-off-deck-host-held", "own-legacy-verdict-off-deck-local-resets"]
 # a fault in the real transaction, and the case that must fail a CHECK
 NEGATIVE_CONTROLS = {
@@ -63,8 +63,14 @@ NEGATIVE_CONTROLS = {
         "\tif (distributed_own_shielded(player->local_player_index, unit_index, state))\n\t\treturn;\n"
         "\t/* (the host ended this claim, even when no standing-history branch will run) */")], "own-reboard-shield-verdict"),
     "unechoed-rider-world-only": ("network", [(
-        "\tif (distributed_correct_own_unechoed_rider(local_player_index, unit_index, state))\n\t\treturn;\n", "")],
+        "\tif (distributed_correct_own_unechoed_rider(unit_index, state))\n\t\treturn;\n", "")],
         "own-unechoed-deck-lagging"),
+    "unechoed-no-rebase": ("network", [(
+        "LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f))\n\t\treturn TRUE;\n\tbiped_riding_rebase(unit_index);\n\treturn TRUE;",
+        "LOCAL_CORRECTION_TOLERANCE, 0.0f, 0.0f, 0.0f))\n\t\treturn TRUE;\n\treturn TRUE;")], "own-unechoed-deck-error"),
+    "unechoed-rider-any-node": ("network", [(
+        "current_deck.vehicle_index != state->deck.vehicle_index || current_deck.node_index != state->deck.node_index)",
+        "current_deck.vehicle_index != state->deck.vehicle_index)")], "own-unechoed-other-node"),
     "unechoed-rider-any-vehicle": ("network", [(
         "current_deck.vehicle_index != state->deck.vehicle_index || ", "")], "own-unechoed-other-vehicle"),
     "host-air-other-vehicle-no-correction": ("network", [("\t\t\tif (host_air && current_present && current_deck.ticks == RIDING_TICKS &&",

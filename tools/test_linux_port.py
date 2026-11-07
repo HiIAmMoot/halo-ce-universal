@@ -1203,8 +1203,12 @@ def riding_cabin_carry_check(text):
     moving = riding_function(bipeds, "biped_update_moving")
     assert ("physics.cabin_object_index = vehicle_riding_cabin_carrier_vehicle(riding_cabin, &riding, riding_exception);"
             in moving)
-    assert ("boolean carried = physics.carrier_object_index != NONE ?\n"
+    assert ("carried = physics.carrier_object_index != NONE ?\n"
             "\t\t\tbiped_riding_vehicle(physics.carrier_object_index, physics.carrier_node_index, &support) :") in moving
+    # (a rider the deck carried in, named by its exception, is held with no touch, before the carrier decides carried)
+    riding_order(moving, "vehicle_riding_cabin_holds(physics.cabin_object_index, riding_carried)",
+                 "physics.carrier_object_index = physics.cabin_object_index;",
+                 "carried = physics.carrier_object_index != NONE ?")
     assert "\t\t\tcarried ? &support : NULL,\n\t\t\tsupported,\n" in moving
 
 
@@ -1221,6 +1225,8 @@ RIDING_CONTROLS["carrier-before-support"] = (
     "bipeds", "biped_update_physics",
     "\tif (physics->cabin_object_index != NONE)\n\t\tbiped_riding_cabin_carrier(physics, collisions, collision_count);\n",
     "", "cabin-carry")
+RIDING_CONTROLS["hold-never-carries"] = (
+    "bipeds", "biped_update_moving", "\t\t\tphysics.carrier_object_index = physics.cabin_object_index;\n", "", "cabin-carry")
 RIDING_CONTROLS["record-ignores-carrier"] = ("bipeds", "biped_update_moving", "\t\t\tcarried ? &support : NULL,\n",
                                              "\t\t\tsupported ? &support : NULL,\n", "cabin-carry")
 
@@ -1246,7 +1252,7 @@ def riding_cabin_recovery_check(text):
     # (after the carry, where the vehicle's update recorded no touch: the check all the same, no closing move; after
     # its own movement and before the recording: the place kept on the deck is the settled one)
     riding_order(moving, "riding_cabin_settled = biped_riding_contacts(",
-                 "if (riding_step_valid && !riding_cabin_settled && vehicle_riding_cabin_watched(riding_cabin, &riding, biped_index))",
+                 "if (riding_step_valid && riding_carried && !riding_cabin_settled && vehicle_riding_cabin_watched(riding_cabin, &riding, biped_index))",
                  "global_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);",
                  "biped_update_physics(&physics);",
                  "if (riding_step_valid && vehicle_riding_cabin_watched(riding_cabin, &riding, biped_index))",
@@ -1257,7 +1263,7 @@ def riding_cabin_recovery_check(text):
     assert moving.count("global_zero_vector3d, TRUE, physics.height, physics.width, &physics.new_position);") == 1
     assert moving.count("global_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);") == 1
     assert "NULL,\n\t\t\tglobal_zero_vector3d, TRUE," in moving
-    for start in ("if (riding_step_valid && !riding_cabin_settled", "if (riding_step_valid && vehicle_riding_cabin_watched("):
+    for start in ("if (riding_step_valid && riding_carried && !riding_cabin_settled", "if (riding_step_valid && vehicle_riding_cabin_watched("):
         block = moving[moving.index(start):]
         block = block[:block.index("\n\t}\n")]
         assert "velocity" not in block, start
@@ -1282,7 +1288,7 @@ RIDING_CONTROLS["after-carry-check-missing"] = (
     "\t\tbiped_riding_cabin_settle(biped_index, biped, definition, riding_cabin, &riding_step.vehicle, &entry, NULL,\n"
     "\t\t\tglobal_zero_vector3d, FALSE, physics.height, physics.width, &physics.position);\n", "", "cabin-recovery")
 RIDING_CONTROLS["after-carry-twice"] = ("bipeds", "biped_update_moving",
-                                        "if (riding_step_valid && !riding_cabin_settled && vehicle_riding_cabin_watched(",
+                                        "if (riding_step_valid && riding_carried && !riding_cabin_settled && vehicle_riding_cabin_watched(",
                                         "if (riding_step_valid && vehicle_riding_cabin_watched(", "cabin-recovery")
 RIDING_CONTROLS["deferral-not-applied"] = (
     "bipeds", "biped_riding_collision",

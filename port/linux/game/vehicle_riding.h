@@ -627,6 +627,12 @@ boolean vehicle_riding_cabin_exception(boolean eligible, boolean valid_window, b
 its own when protected, none on the tick a jump leaves it */
 long vehicle_riding_cabin_carrier_vehicle(struct vehicle_riding_cabin const *cabin,
 	struct vehicle_riding_state const *state, boolean exception);
+/* whether an enclosed rider stays on its vehicle this tick with no touch of it (carried: the deck carried it into
+the tick): never a rider in the window, which waits for a real touch */
+boolean vehicle_riding_cabin_holds(long cabin_vehicle, boolean carried);
+/* whether a rider's cabin protects it: the verdict it goes by, or on the deck this machine's own standing sample */
+boolean vehicle_riding_cabin_encloses(struct vehicle_riding_cabin const *cabin, struct vehicle_riding_state const *state,
+	struct vehicle_riding_air const *air);
 /* which of a sweep's contacts is that vehicle's (NONE: none) */
 short vehicle_riding_cabin_carrier(long vehicle_index, short count, long const *objects);
 

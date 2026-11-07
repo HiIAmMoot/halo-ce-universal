@@ -669,6 +669,103 @@ static void moving_bed(real speed, real deck_x, struct biped_datum *biped, struc
 	physics->width = WIDTH;
 }
 
+/* a rider in the window of a cabin tilted tilt degrees and driven speed along its forward in its next update, the
+window taken off at deck x and the base as the biped's next tick finds it: a tick of the cabin's travel behind its
+place on it */
+static void tilted_window(real speed, real deck_x, real tilt, struct biped_datum *biped, struct biped_definition *definition,
+	struct biped_physics *physics)
+{
+	real_vector3d const zero = { 0.f, 0.f, 0.f };
+	real_vector3d up = vector((real)sin(tilt*PI/180.), 0.f, (real)cos(tilt*PI/180.));
+	real_vector3d forward = vector(up.k, 0.f, -up.i);
+	real_point3d base = point(deck_x*forward.i + WIDTH*up.i, 0.f, deck_x*forward.k + WIDTH*up.k);
+	real_vector3d velocity = zero;
+	struct vehicle_riding_step step;
+
+	memset(biped, 0, sizeof(*biped));
+	memset(physics, 0, sizeof(*physics));
+	memset(&tick_vehicle, 0, sizeof(tick_vehicle));
+	biped->player = 3;
+	SET_FLAG(biped->biped.flags, _biped_airborne_bit, TRUE);
+	definition->biped.jump_velocity = (real)sqrt(2.*.005*JUMP);
+	definition->biped.runtime_minimum_normal_k = .5f;
+	vehicle_riding_cabin_clear(vehicle_riding_player_cabin(3));
+	tick_vehicle.object_index = VEHICLE;
+	tick_vehicle.node_index = NONE;
+	tick_vehicle.correction = *vehicle_riding_vehicle_correction(VEHICLE);
+	tick_vehicle.forward = tick_vehicle.body_forward = forward;
+	tick_vehicle.up = tick_vehicle.body_up = up;
+	tick_vehicle.bounding_sphere_radius = 3.f;
+	tick_vehicle.updates = 10;
+	vehicle_riding_clear(&biped->riding);
+	CHECK(vehicle_riding_record(&biped->riding, NULL, &tick_vehicle, TRUE, &zero, &up, &base, FALSE, &velocity),
+		"the cabin not claimed");
+	CHECK(vehicle_riding_snapshot_step(&biped->riding, &tick_vehicle, &base, HEIGHT, WIDTH, FALSE, 100.f, &step),
+		"the take-off step refused");
+	vehicle_riding_record(&biped->riding, &step, NULL, FALSE, &zero, &up, &base, FALSE, &velocity);
+	CHECK(biped->riding.ticks == RIDING_TICKS - 1, "no window at the take-off");
+	tick_vehicle.updates++;
+	tick_vehicle.position.x = tick_vehicle.origin.x = tick_vehicle.bounding_sphere_center.x = speed*forward.i;
+	tick_vehicle.position.z = tick_vehicle.origin.z = tick_vehicle.bounding_sphere_center.z = speed*forward.k;
+	tick_vehicle.translational_velocity = vector(speed*forward.i, 0.f, speed*forward.k);
+	world_count = 0;
+	cabin(VEHICLE, tick_vehicle.origin, forward, up, TRUE, TRUE);
+	physics->position = base;
+	physics->height = HEIGHT;
+	physics->width = WIDTH;
+}
+
+/* a rider of a level cabin standing (ticks RIDING_TICKS) or in its window (less), its anchor at deck x -.5, its base at
+base_x (behind the rear wall at -1.7: through the hull) */
+static void anchored_rider(short ticks, real base_x, struct biped_datum *biped, struct biped_definition *definition,
+	struct biped_physics *physics)
+{
+	real_vector3d const forward = { 1.f, 0.f, 0.f };
+	real_vector3d const up = { 0.f, 0.f, 1.f };
+	real_vector3d const zero = { 0.f, 0.f, 0.f };
+	real_point3d base = point(base_x, 0.f, WIDTH);
+	real_point3d anchor = point(-.5f, 0.f, WIDTH);
+	real_vector3d velocity = zero;
+	struct vehicle_riding_cabin *record = vehicle_riding_player_cabin(3);
+
+	memset(biped, 0, sizeof(*biped));
+	memset(physics, 0, sizeof(*physics));
+	memset(&tick_vehicle, 0, sizeof(tick_vehicle));
+	biped->player = 3;
+	SET_FLAG(biped->biped.flags, _biped_airborne_bit, ticks != RIDING_TICKS);
+	definition->biped.jump_velocity = (real)sqrt(2.*.005*JUMP);
+	definition->biped.runtime_minimum_normal_k = .5f;
+	tick_vehicle.object_index = VEHICLE;
+	tick_vehicle.node_index = NONE;
+	tick_vehicle.correction = *vehicle_riding_vehicle_correction(VEHICLE);
+	tick_vehicle.forward = tick_vehicle.body_forward = forward;
+	tick_vehicle.up = tick_vehicle.body_up = up;
+	tick_vehicle.bounding_sphere_radius = 3.f;
+	tick_vehicle.updates = 10;
+	vehicle_riding_clear(&biped->riding);
+	CHECK(vehicle_riding_record(&biped->riding, NULL, &tick_vehicle, TRUE, &zero, &up, &base, FALSE, &velocity),
+		"the cabin not claimed");
+	biped->riding.ticks = (char)ticks;
+	tick_vehicle.updates++;
+	world_count = 0;
+	cabin(VEHICLE, point(0.f, 0.f, 0.f), forward, up, TRUE, TRUE);
+	vehicle_riding_cabin_clear(record);
+	record->unit_index = BIPED;
+	record->vehicle_index = VEHICLE;
+	vehicle_riding_cabin_settled(record, _vehicle_riding_cabin_settle_none, TRUE, &anchor);
+	record->standing = _vehicle_riding_enclosure_enclosed;
+	physics->position = physics->new_position = point(base_x, 0.f, WIDTH);
+	physics->height = HEIGHT;
+	physics->width = WIDTH;
+	physics->support_object_index = NONE;
+	physics->cabin_object_index = NONE;
+	physics->carrier_object_index = NONE;
+	physics->carrier_node_index = NONE;
+	physics->support_node_index = NONE;
+	physics->ground_plane.n = up;
+	SET_FLAG(physics->out_flags, _biped_physics_out_airborne_bit, TRUE);
+}
+
 /* a refused snapshot followed by native support on that same vehicle, in one extracted tick */
 static void refusal_reacquire(short expected)
 {
@@ -827,6 +924,48 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	CASE("protected-own-hit")
+	{
+		struct biped_datum biped;
+		struct biped_definition definition;
+		struct vehicle_riding_vehicle vehicle;
+		struct vehicle_riding_state state;
+		struct vehicle_riding_cabin *record = vehicle_riding_player_cabin(3);
+		real_vector3d up50 = vector((real)sin(50.*PI/180.), 0.f, (real)cos(50.*PI/180.));
+		real_vector3d forward50 = vector(up50.k, 0.f, -up50.i);
+		real_point3d base = point(up50.i*(WIDTH + .1f), 0.f, up50.k*(WIDTH + .1f));
+
+		/* a rider on a cabin tilted 50 degrees at the vehicle's update: its own standing hit protects it, whatever the
+		host's word of a tick before said (a miss there never revokes it, and the host's enclosed holds) */
+		biped.player = 3;
+		biped.dead = FALSE;
+		definition.biped.jump_velocity = (real)sqrt(2.*.005*JUMP);
+		definition.biped.runtime_minimum_normal_k = .5f;
+		world_count = 0;
+		cabin(VEHICLE, point(0.f, 0.f, 0.f), forward50, up50, TRUE, TRUE);
+		memset(&vehicle, 0, sizeof(vehicle));
+		vehicle.object_index = VEHICLE;
+		vehicle.node_index = NONE;
+		vehicle.forward = vehicle.body_forward = forward50;
+		vehicle.up = vehicle.body_up = up50;
+		vehicle.correction = *vehicle_riding_vehicle_correction(VEHICLE);
+		vehicle_riding_clear(&state);
+		state.object_index = VEHICLE;
+		state.ticks = RIDING_TICKS;
+		CHECK(vehicle_riding_rebase(&state, &vehicle, &base), "the tilted rider not anchored");
+		vehicle_riding_cabin_clear(record);
+		record->unit_index = BIPED;
+		record->vehicle_index = VEHICLE;
+		CHECK(vehicle_riding_cabin_take_host(record, BIPED, &state, VEHICLE, _vehicle_riding_enclosure_open,
+			_vehicle_riding_cabin_sample_standing, TRUE, TRUE), "the host's word not taken");
+		record->standing = _vehicle_riding_enclosure_enclosed;
+		CHECK(biped_riding_recast_over_deck(BIPED, &biped, &definition, &state, &vehicle, &base, HEIGHT),
+			"the vehicle's update left its own hit unprotected");
+		record->standing = _vehicle_riding_enclosure_open;
+		CHECK(!biped_riding_recast_over_deck(BIPED, &biped, &definition, &state, &vehicle, &base, HEIGHT),
+			"two opens protected at the vehicle's update");
+		return 0;
+	}
 	CASE("window-moving-deck-rear")
 	{
 		struct biped_datum biped;
@@ -1340,7 +1479,8 @@ int main(int argc, char **argv)
 		record.vehicle_index = VEHICLE;
 
 		/* a touch the vehicle's update deferred, met by a rider's tick whose own gate is closed (a refused step, a verdict
-		dropped with no anchor): still the cabin's, so no move out, no push, no damage, the entry kept and the miss logged */
+		dropped with no anchor): still the cabin's, so no move out, no push, no damage, the entry kept (and, in a rider the
+		deck carried, the miss logged) */
 		vehicle_riding_contacts_clear();
 		CHECK(vehicle_riding_contact_record(0, VEHICLE, &inward) && vehicle_riding_contact_defer(0, VEHICLE), "not recorded");
 		base = point(1.35f, 0.f, WIDTH);
@@ -1349,9 +1489,21 @@ int main(int argc, char **argv)
 		settled = biped_riding_contacts(BIPED, &biped, &definition, TRUE, NULL, FALSE, &velocity, 0, &record, NONE, HEIGHT,
 			WIDTH, &base);
 		CHECK(settled, "a deferred touch not settled in the cabin");
-		CHECK(base.x == entry.x && pushes == 0 && damages == 0 && logged == 1,
+		CHECK(base.x == entry.x && pushes == 0 && damages == 0 && logged == 0,
 			"a deferred touch moved %g, pushed %d, hurt %d, logged %d", (double)base.x, pushes, damages, logged);
 		CHECK(velocity.i == 0.f && velocity.j == 0.f && velocity.k == 0.f, "a deferred touch changed the velocity");
+		/* (carried, the rider's place is its own to settle here: the miss is logged) */
+		vehicle_riding_cabin_clear(&record);
+		record.unit_index = BIPED;
+		record.vehicle_index = VEHICLE;
+		vehicle_riding_contacts_clear();
+		CHECK(vehicle_riding_contact_record(0, VEHICLE, &inward) && vehicle_riding_contact_defer(0, VEHICLE), "not recorded");
+		base = point(1.35f, 0.f, WIDTH);
+		pushes = damages = logged = 0;
+		settled = biped_riding_contacts(BIPED, &biped, &definition, TRUE, NULL, TRUE, &velocity, 0, &record, NONE, HEIGHT,
+			WIDTH, &base);
+		CHECK(settled && base.x == entry.x && pushes == 0 && damages == 0 && logged == 1,
+			"a carried deferred touch moved %g, pushed %d, hurt %d, logged %d", (double)base.x, pushes, damages, logged);
 
 		/* the same touch not deferred, and no cabin gate: the ordinary way, out along the touch (a crush stays its own) */
 		vehicle_riding_contacts_clear();
@@ -1362,6 +1514,76 @@ int main(int argc, char **argv)
 			WIDTH, &base);
 		CHECK(!settled && logged == 0, "an ordinary touch settled in a cabin");
 		CHECK(base.x < 1.f && pushes == 0 && damages == 0, "an ordinary touch not moved out (%g)", (double)base.x);
+		return 0;
+	}
+
+	CASE("window-jump-sample-moving")
+	{
+		struct biped_datum biped;
+		struct biped_definition definition;
+		struct biped_physics physics;
+		struct vehicle_riding_cabin *record = vehicle_riding_player_cabin(3);
+
+		/* a cabin tilted 70 degrees driving .7 wu a tick, its rider in the window at the base a tick behind its place
+		on it, which is behind the rear wall: the jump's one sample is of the cabin it left, not of where the base
+		happens to lie */
+		tilted_window(.7f, -1.f, 70.f, &biped, &definition, &physics);
+		(void)biped_window_tick(BIPED, &biped, &definition, &physics);
+		CHECK(record->unit_index == BIPED && record->vehicle_index == VEHICLE, "the cabin not keyed to the rider");
+		CHECK(record->jump == _vehicle_riding_enclosure_enclosed, "an enclosed cabin's jump sampled %d at the lagging base",
+			record->jump);
+		return 0;
+	}
+	CASE("window-no-early-return")
+	{
+		struct biped_datum biped;
+		struct biped_definition definition;
+		struct biped_physics physics;
+		struct vehicle_riding_cabin *record = vehicle_riding_player_cabin(3);
+		real_vector3d inward = { 1.f, 0.f, 0.f };
+		real_vector3d velocity = { 0.f, 0.f, 0.f };
+		real_point3d base;
+		real_point3d entry;
+		boolean carried;
+
+		/* a touch the vehicle's update deferred, a rider through the hull: in the window its place is not settled before its
+		physics moves it (its base is a tick of the cabin's travel behind it, and a return there would be added to that
+		motion), carried it is */
+		for (carried = FALSE; carried <= TRUE; carried++)
+		{
+			anchored_rider(carried ? RIDING_TICKS : RIDING_TICKS - 1, -1.7f, &biped, &definition, &physics);
+			vehicle_riding_contacts_clear();
+			CHECK(vehicle_riding_contact_record(3, VEHICLE, &inward) && vehicle_riding_contact_defer(3, VEHICLE), "not recorded");
+			base = entry = physics.position;
+			CHECK(biped_riding_contacts(BIPED, &biped, &definition, TRUE, NULL, carried, &velocity, 3, record, NONE, HEIGHT,
+				WIDTH, &base), "a deferred touch not settled in the cabin");
+			if (carried)
+				CHECK(base.x > -1.f, "a carried rider through the hull not returned by its touch (%g)", (double)base.x);
+			else
+				CHECK(base.x == entry.x, "a rider in the window settled before its physics (%g)", (double)base.x);
+
+			anchored_rider(carried ? RIDING_TICKS : RIDING_TICKS - 1, -1.7f, &biped, &definition, &physics);
+			vehicle_riding_contacts_clear();
+			biped_window_settle_tick(BIPED, &biped, &definition, &physics);
+			if (carried)
+				CHECK(physics.position.x > -1.f, "a carried rider through the hull not returned (%g)", (double)physics.position.x);
+			else
+				CHECK(physics.position.x == -1.7f, "a rider in the window watched before its physics (%g)",
+					(double)physics.position.x);
+		}
+		return 0;
+	}
+	CASE("window-final-return")
+	{
+		struct biped_datum biped;
+		struct biped_definition definition;
+		struct biped_physics physics;
+
+		/* after its own movement a rider in the window that went through the hull is returned */
+		anchored_rider(RIDING_TICKS - 1, -1.7f, &biped, &definition, &physics);
+		vehicle_riding_contacts_clear();
+		CHECK(biped_cabin_refusal_tick(BIPED, &biped, &definition, &physics), "the window's step refused");
+		CHECK(physics.new_position.x > -1.f, "a through-hull rider in the window left at %g", (double)physics.new_position.x);
 		return 0;
 	}
 

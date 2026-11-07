@@ -3706,11 +3706,12 @@ void network_test_ride_action(
 		if (!driver && step == 12 && ride.door_started)
 		{
 			/* Measured in Extinction: wait for opening, forward to the passage,
-			right crouched, settle down it, then forward along the open ramp.
-			The remaining hold lets the deck's contact grace expire. */
+			right crouched to the passage's wall (as the forward leg ends at its
+			wall, so a start anywhere ends the same), then forward along the open
+			ramp. The remaining hold lets the deck's contact grace expire. */
 			long walk = tick - ride.door_tick;
 			action->throttle.i = (walk >= 60 && walk < 92) || (walk >= 132 && walk < 282) ? 1.f : 0.f;
-			action->throttle.j = walk >= 92 && walk < 112 ? -1.f : 0.f;
+			action->throttle.j = walk >= 92 && walk < 132 ? -1.f : 0.f;
 			SET_FLAG(action->control_flags, _unit_control_crouch_modifier_bit, walk >= 92);
 		}
 		/* (the opt-in play-test reproduction: hold nose up and walk into the rear corner, then away; only the local

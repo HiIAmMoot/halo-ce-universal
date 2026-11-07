@@ -530,8 +530,8 @@ static void contact_tick(struct contact_world *world, boolean vehicles_update)
 /* one tick of a rider standing in an enclosed vehicle pitched to pitch (radians) at its updates'th update: the
 carry, the cabin's protection (its verdict as the cabin has it), native physics on the vehicle's floor (ground while
 the floor's normal k is at least the biped's limit 0.7, else airborne and falling in the deck's frame), an enclosed
-rider's steep vehicle carrying it when the sweep touched it (contact) or another vehicle (beside), and the recording.
-TRUE: carried by the steep contact */
+rider's steep vehicle carrying it when the sweep touched it (contact), or holding it with no touch when the deck had
+carried it into the tick (beside: another vehicle's touch), and the recording. TRUE: carried by the steep vehicle */
 static boolean steep_tick(struct vehicle_riding_state *state, struct vehicle_riding_cabin *cabin, real pitch,
 	long updates, boolean contact, boolean beside, boolean eligible, real_point3d *base, real_vector3d *relative,
 	real_vector3d *world)
@@ -543,13 +543,16 @@ static boolean steep_tick(struct vehicle_riding_state *state, struct vehicle_rid
 	short carrier = NONE;
 	boolean valid;
 	boolean native;
+	boolean entered;
+	boolean held;
 
 	vehicle.forward = vector((real)cos(pitch), 0.f, (real)sin(pitch));
 	vehicle.up = vector(-(real)sin(pitch), 0.f, (real)cos(pitch));
 	vehicle.body_forward = vehicle.forward;
 	vehicle.body_up = vehicle.up;
 	valid = state->ticks > 0 && vehicle_riding_snapshot_step(state, &vehicle, base, 1.4f, .2f, FALSE, ANY_LIMIT, &tick_step);
-	if (valid && vehicle_riding_is_riding(state))
+	entered = valid && vehicle_riding_is_riding(state);
+	if (entered)
 	{
 		base->x += tick_step.displacement.i;
 		base->y += tick_step.displacement.j;
@@ -557,8 +560,7 @@ static boolean steep_tick(struct vehicle_riding_state *state, struct vehicle_rid
 	}
 	vehicle_riding_cabin_begin(cabin, BIPED, state, valid);
 	cabin->exception = valid && vehicle_riding_cabin_exception(eligible, TRUE,
-		vehicle_riding_cabin_verdict(cabin, state, NULL, TRUE) == _vehicle_riding_enclosure_enclosed,
-		vehicle_riding_cabin_up(&tick_step), .7f);
+		vehicle_riding_cabin_encloses(cabin, state, NULL), vehicle_riding_cabin_up(&tick_step), .7f);
 	carrier_vehicle = vehicle_riding_cabin_carrier_vehicle(cabin, state, cabin->exception);
 	native = contact && vehicle.up.k >= .7f;
 	if (native)
@@ -572,11 +574,57 @@ static boolean steep_tick(struct vehicle_riding_state *state, struct vehicle_rid
 	objects[1] = contact ? VEHICLE : NONE;
 	if (carrier_vehicle != NONE)
 		carrier = vehicle_riding_cabin_carrier(carrier_vehicle, 2, objects);
+#ifdef HOLD_ANY_VERDICT
+	held = carrier == NONE && vehicle_riding_cabin_holds(state->object_index, entered);
+#else
+	held = carrier == NONE && vehicle_riding_cabin_holds(carrier_vehicle, entered);
+#endif
 	*world = *relative;
-	vehicle_riding_record(state, valid ? &tick_step : NULL, carrier != NONE || native ? &vehicle : NULL, native, &zero,
-		&up, base, FALSE, world);
+	vehicle_riding_record(state, valid ? &tick_step : NULL, carrier != NONE || held || native ? &vehicle : NULL, native,
+		&zero, &up, base, FALSE, world);
 	cabin->take_off = FALSE;
-	return carrier != NONE;
+	return carrier != NONE || held;
+}
+
+/* a rider on an upright enclosed vehicle, its cabin enclosed; and a tick of it pitched to degrees (steep_tick) */
+struct steep_rider
+{
+	struct vehicle_riding_state state;
+	struct vehicle_riding_cabin cabin;
+	real_point3d base;
+	real_vector3d relative;
+	real_vector3d world;
+	long updates;
+};
+
+static void steep_board(struct steep_rider *rider)
+{
+	struct vehicle_riding_vehicle level = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+
+	rider->base = point(1.f, 0.f, .2f);
+	rider->relative = zero;
+	rider->world = zero;
+	rider->updates = 10;
+	rider->state = riding_on(&level, rider->base, zero);
+	vehicle_riding_cabin_clear(&rider->cabin);
+	vehicle_riding_cabin_begin(&rider->cabin, BIPED, &rider->state, TRUE);
+	vehicle_riding_cabin_standing(&rider->cabin, TRUE, 4);
+}
+
+static boolean steep_step(struct steep_rider *rider, int degrees, boolean contact, boolean beside, boolean eligible)
+{
+	return steep_tick(&rider->state, &rider->cabin, (real)degrees*PI/180.f, ++rider->updates, contact, beside, eligible,
+		&rider->base, &rider->relative, &rider->world);
+}
+
+/* boarded upright, then pitched a degree a tick to degrees with the steep contact */
+static void steep_pitch_to(struct steep_rider *rider, int degrees)
+{
+	int tick;
+
+	steep_board(rider);
+	for (tick = 1; tick <= degrees; tick++)
+		steep_step(rider, tick, TRUE, FALSE, TRUE);
 }
 
 /* a correction write, separate from a vehicle's counted physics update */
@@ -4183,18 +4231,20 @@ int main(int argc, char **argv)
 		vehicle_riding_cabin_take_off(&cabin, &state, BIPED);
 		CHECK(!steep_tick(&state, &cabin, pitch, ++updates, TRUE, FALSE, TRUE, &base, &relative, &world) &&
 			state.ticks == RIDING_TICKS - 1, "a jump kept as the deck (ticks %d)", state.ticks);
-		/* in the window: its jump's raw sample enclosed, a steep contact takes it back */
+		/* in the window: its jump's raw sample enclosed, another vehicle's contact alone carries nothing, nor does none */
 		cabin.jump = _vehicle_riding_enclosure_enclosed;
+		CHECK(!steep_tick(&state, &cabin, pitch, ++updates, FALSE, TRUE, TRUE, &base, &relative, &world) &&
+			state.ticks == RIDING_TICKS - 1, "another vehicle carried it (ticks %d)", state.ticks);
+		CHECK(!steep_tick(&state, &cabin, pitch, ++updates, FALSE, FALSE, TRUE, &base, &relative, &world) &&
+			state.ticks == RIDING_TICKS - 1, "kept with no contact (ticks %d)", state.ticks);
+		/* a steep contact takes it back */
 		CHECK(steep_tick(&state, &cabin, pitch, ++updates, TRUE, FALSE, TRUE, &base, &relative, &world) &&
 			state.ticks == RIDING_TICKS, "not reacquired by a steep contact");
-		/* no contact after physics: the window */
-		CHECK(!steep_tick(&state, &cabin, pitch, ++updates, FALSE, FALSE, TRUE, &base, &relative, &world) &&
-			state.ticks == RIDING_TICKS - 1, "kept with no contact");
-		/* back on: then another vehicle's contact alone carries nothing */
-		cabin.jump = _vehicle_riding_enclosure_enclosed;
-		steep_tick(&state, &cabin, pitch, ++updates, TRUE, FALSE, TRUE, &base, &relative, &world);
-		CHECK(!steep_tick(&state, &cabin, pitch, ++updates, FALSE, TRUE, TRUE, &base, &relative, &world) &&
-			state.ticks == RIDING_TICKS - 1, "another vehicle carried it");
+		/* back on: held with no touch of its vehicle, and with another vehicle's touch alone */
+		CHECK(steep_tick(&state, &cabin, pitch, ++updates, FALSE, FALSE, TRUE, &base, &relative, &world) &&
+			state.ticks == RIDING_TICKS, "a held rider left with no touch (ticks %d)", state.ticks);
+		CHECK(steep_tick(&state, &cabin, pitch, ++updates, FALSE, TRUE, TRUE, &base, &relative, &world) &&
+			state.ticks == RIDING_TICKS, "a held rider left on another vehicle's touch (ticks %d)", state.ticks);
 		/* not eligible (a pedestrian, an AI, dead, riding off), and an open cabin: the old rule, off at once */
 		cabin.jump = _vehicle_riding_enclosure_enclosed;
 		steep_tick(&state, &cabin, pitch, ++updates, TRUE, FALSE, TRUE, &base, &relative, &world);
@@ -4214,6 +4264,153 @@ int main(int argc, char **argv)
 			CHECK(vehicle_riding_cabin_carrier(NONE, 3, objects) == NONE, "the structure taken for a carrier");
 			CHECK(vehicle_riding_cabin_carrier_vehicle(NULL, &state, TRUE) == NONE, "a carrier with no cabin");
 		}
+		return 0;
+	}
+	CASE("cabin-hold-no-touch")
+	{
+		struct steep_rider rider;
+		real_point3d placed;
+		int degrees;
+
+		steep_pitch_to(&rider, 49);
+		/* past the biped's floor limit with gravity alone: the deck keeps the rider, its place on it following it */
+		for (degrees = 50; degrees <= 69; degrees++)
+		{
+			CHECK(steep_step(&rider, degrees, FALSE, FALSE, TRUE), "not held with no touch at %d degrees", degrees);
+			CHECK(rider.state.ticks == RIDING_TICKS, "the window opened at %d degrees (ticks %d)", degrees, rider.state.ticks);
+			vehicle_riding_point_to_world(&rider.state.vehicle_position, &rider.state.vehicle_forward,
+				&rider.state.vehicle_up, &rider.state.local_point, &placed);
+			NEAR(placed.x, rider.base.x);
+			NEAR(placed.z, rider.base.z);
+		}
+		CHECK(rider.relative.k < -.07f, "no fall in the deck's frame: %g", (double)rider.relative.k);
+		return 0;
+	}
+	CASE("cabin-hold-ends")
+	{
+		struct steep_rider rider;
+		int tick;
+
+		/* a jump ends the hold at once, whatever the sweep finds or not */
+		steep_pitch_to(&rider, 50);
+		rider.cabin.jump = _vehicle_riding_enclosure_enclosed;
+		vehicle_riding_cabin_take_off(&rider.cabin, &rider.state, BIPED);
+		CHECK(!steep_step(&rider, 50, FALSE, FALSE, TRUE) && rider.state.ticks == RIDING_TICKS - 1,
+			"a jump held with no touch (ticks %d)", rider.state.ticks);
+		/* the window waits for a real touch, tick after tick */
+		for (tick = 0; tick < 5; tick++)
+		{
+			CHECK(!steep_step(&rider, 50, FALSE, FALSE, TRUE) && rider.state.ticks == RIDING_TICKS - 1,
+				"a rider in the window held with no touch (ticks %d)", rider.state.ticks);
+		}
+		/* an open cabin, a level vehicle and an ineligible rider are held by nothing */
+		steep_pitch_to(&rider, 50);
+		rider.cabin.standing = _vehicle_riding_enclosure_open;
+		CHECK(!steep_step(&rider, 50, FALSE, FALSE, TRUE) && rider.state.ticks == RIDING_TICKS - 1,
+			"an open cabin held (ticks %d)", rider.state.ticks);
+		steep_pitch_to(&rider, 10);
+		CHECK(!steep_step(&rider, 10, FALSE, FALSE, TRUE) && rider.state.ticks == RIDING_TICKS - 1,
+			"a level vehicle held (ticks %d)", rider.state.ticks);
+		steep_pitch_to(&rider, 50);
+		CHECK(!steep_step(&rider, 50, FALSE, FALSE, FALSE) && rider.state.ticks == RIDING_TICKS - 1,
+			"an ineligible rider held (ticks %d)", rider.state.ticks);
+		CHECK(!vehicle_riding_cabin_holds(NONE, TRUE) && !vehicle_riding_cabin_holds(VEHICLE, FALSE) &&
+			vehicle_riding_cabin_holds(VEHICLE, TRUE), "the hold's rule");
+		return 0;
+	}
+	CASE("cabin-client-crossing")
+	{
+		struct vehicle_riding_vehicle level = vehicle_at(VEHICLE, 0.f, 0.f, 0.f, 0.f, 10);
+		struct vehicle_riding_state riding = riding_on(&level, point(0.f, 0.f, 0.f), zero);
+		struct vehicle_riding_cabin cabin;
+
+		vehicle_riding_cabin_clear(&cabin);
+		vehicle_riding_cabin_begin(&cabin, BIPED, &riding, TRUE);
+		/* the host's standing word says open, this machine's sample hit: protected on the tilt reached now */
+		CHECK(vehicle_riding_cabin_take_host(&cabin, BIPED, &riding, VEHICLE, _vehicle_riding_enclosure_open,
+			_vehicle_riding_cabin_sample_standing, TRUE, TRUE), "the host's word not taken");
+		cabin.standing = _vehicle_riding_enclosure_enclosed;
+		CHECK(vehicle_riding_cabin_encloses(&cabin, &riding, NULL), "an own hit not protecting against a stale open");
+		/* the host's enclosed is never taken back by a miss here */
+		vehicle_riding_cabin_take_host(&cabin, BIPED, &riding, VEHICLE, _vehicle_riding_enclosure_enclosed,
+			_vehicle_riding_cabin_sample_standing, TRUE, TRUE);
+		cabin.standing = _vehicle_riding_enclosure_open;
+		CHECK(vehicle_riding_cabin_encloses(&cabin, &riding, NULL), "an own miss took back the host's enclosed");
+		/* both open */
+		vehicle_riding_cabin_take_host(&cabin, BIPED, &riding, VEHICLE, _vehicle_riding_enclosure_open,
+			_vehicle_riding_cabin_sample_standing, TRUE, TRUE);
+		CHECK(!vehicle_riding_cabin_encloses(&cabin, &riding, NULL), "two opens protected");
+		/* a jump goes by the host's word and its own raw sample, never the standing hit */
+		cabin.standing = _vehicle_riding_enclosure_enclosed;
+		vehicle_riding_cabin_take_off(&cabin, &riding, BIPED);
+		riding.ticks = RIDING_TICKS - 1;
+		vehicle_riding_cabin_take_host(&cabin, BIPED, &riding, VEHICLE, _vehicle_riding_enclosure_open,
+			_vehicle_riding_cabin_sample_jump, TRUE, TRUE);
+		vehicle_riding_cabin_jump(&cabin, FALSE);
+		CHECK(!vehicle_riding_cabin_encloses(&cabin, &riding, NULL), "a window rider went by the standing hit");
+		/* a cabin keyed to another vehicle protects nothing */
+		riding.ticks = RIDING_TICKS;
+		riding.object_index = OTHER_VEHICLE;
+		CHECK(!vehicle_riding_cabin_encloses(&cabin, &riding, NULL), "another vehicle's cabin protected");
+		return 0;
+	}
+	CASE("crossing-rest-place-free")
+	{
+		/* a host copy and a client copy of one rider through the crossing of the floor's limit, the client with the
+		host's word of the tick before; whether the standing sample was enclosed before the crossing must not decide it */
+		real_point3d ends[2][2];
+		int variant;
+
+		for (variant = 0; variant < 2; variant++)
+		{
+			struct steep_rider host;
+			struct steep_rider client;
+			short word = _vehicle_riding_enclosure_unknown;
+			int degrees;
+
+			steep_pitch_to(&host, 40);
+			steep_pitch_to(&client, 40);
+			if (variant)
+			{
+				host.cabin.standing = _vehicle_riding_enclosure_open;
+				client.cabin.standing = _vehicle_riding_enclosure_open;
+			}
+			for (degrees = 41; degrees <= 47; degrees++)
+			{
+				/* the crossing tick: the sample turns to the body's axis and hits on both copies */
+				if (degrees == 46)
+				{
+					host.cabin.standing = _vehicle_riding_enclosure_enclosed;
+					client.cabin.standing = _vehicle_riding_enclosure_enclosed;
+				}
+				if (word != _vehicle_riding_enclosure_unknown)
+				{
+					vehicle_riding_cabin_take_host(&client.cabin, BIPED, &client.state, VEHICLE, word,
+						_vehicle_riding_cabin_sample_standing, TRUE, TRUE);
+				}
+				if (degrees >= 46)
+				{
+					CHECK(steep_step(&host, degrees, FALSE, FALSE, TRUE) && host.state.ticks == RIDING_TICKS,
+						"host copy lost at %d degrees, variant %d (ticks %d)", degrees, variant, host.state.ticks);
+					CHECK(steep_step(&client, degrees, FALSE, FALSE, TRUE) && client.state.ticks == RIDING_TICKS,
+						"client copy lost at %d degrees, variant %d (ticks %d)", degrees, variant, client.state.ticks);
+				}
+				else
+				{
+					steep_step(&host, degrees, TRUE, FALSE, TRUE);
+					steep_step(&client, degrees, TRUE, FALSE, TRUE);
+				}
+				/* the host's verdict at the end of its tick reaches the client one tick late */
+				word = vehicle_riding_cabin_verdict(&host.cabin, &host.state, NULL, TRUE);
+			}
+			ends[variant][0] = host.base;
+			ends[variant][1] = client.base;
+		}
+		NEAR(ends[0][0].x, ends[1][0].x);
+		NEAR(ends[0][0].z, ends[1][0].z);
+		NEAR(ends[0][1].x, ends[1][1].x);
+		NEAR(ends[0][1].z, ends[1][1].z);
+		NEAR(ends[0][0].z, ends[0][1].z);
 		return 0;
 	}
 	CASE("cabin-overlap-retry")

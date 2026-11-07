@@ -34,6 +34,7 @@ CASES = ["carry", "dyaw-vertical", "node-carry", "stuck", "contact-point", "guar
 
 COOP = "port/linux/game/network_coop.c"
 CASES += ["claim-grace", "write-carry-decision", "write-carry-window-next-step"]
+CASES += ["cabin-hold-no-touch", "cabin-hold-ends", "cabin-client-crossing", "crossing-rest-place-free"]
 CASES += ["window-base-matches-step", "window-base-write-left-out", "window-base-followed", "window-base-role-change"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
@@ -91,6 +92,13 @@ NEGATIVE_CONTROLS = {
                             "steep-riding-sequence"),
     "carrier-without-protection": (("if (!exception || !cabin || cabin->take_off)", "if (!cabin || cabin->take_off)"),
                                    "steep-riding-sequence"),
+    "hold-needs-touch": (("return cabin_vehicle != NONE && carried;", "return FALSE;"), "cabin-hold-no-touch"),
+    "hold-in-window": (("return cabin_vehicle != NONE && carried;", "return cabin_vehicle != NONE;"), "cabin-hold-ends"),
+    "hold-any-verdict": (("define", "HOLD_ANY_VERDICT"), "cabin-hold-ends"),
+    "host-open-beats-own-hit": (("\treturn cabin && cabin->vehicle_index == state->object_index && vehicle_riding_is_riding(state) && !cabin->take_off &&\n\t\tcabin->standing == _vehicle_riding_enclosure_enclosed;",
+                                 "\treturn FALSE;"), "cabin-client-crossing"),
+    "own-miss-revokes-host": (("\tif (vehicle_riding_cabin_verdict(cabin, state, air, TRUE) == _vehicle_riding_enclosure_enclosed)\n\t\treturn TRUE;\n", ""),
+                              "cabin-client-crossing"),
     "refusal-sticks": (("\triding_step_refusal = _vehicle_riding_refusal_none;\n", ""), "step-refusal"),
     "moved-alone-as-motion": (("riding_step_refusal = _vehicle_riding_refusal_moved_alone;",
                                "riding_step_refusal = _vehicle_riding_refusal_motion;"), "step-refusal"),
