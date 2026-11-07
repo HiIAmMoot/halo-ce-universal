@@ -10,10 +10,24 @@ from pathlib import Path
 import pytest
 
 from tools import linux_build, linux_link_check, linux_msvc_semantics
+from tools.harness import biped_riding_sources
 
 # for tests that compile for the Linux target (and run what they build)
 linux_host_only = pytest.mark.skipif(not sys.platform.startswith("linux"),
                                      reason="builds for the Linux target, so needs a Linux host")
+
+
+def test_vehicle_riding_port_hooks():
+    """Riding implementation lives in the port; native movement keeps ordered hooks."""
+    root = Path(__file__).resolve().parent.parent
+    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    assert not re.search(r"^static .* biped_riding_\w+\(", bipeds, re.M)
+    moving = riding_function(bipeds, "biped_update_moving")
+    riding_order(moving, "biped_get_physics_pill(",
+                 "biped_riding_prepare(biped_index, biped, definition, &physics, &riding_tick);",
+                 "biped_update_physics(&physics);",
+                 "biped_riding_finish(biped_index, biped, definition, &physics, &riding_tick);",
+                 "object_translate(biped_index,")
 
 
 def test_vehicle_riding_update_count():
@@ -43,7 +57,7 @@ def test_vehicle_riding_contacts_last_one_tick():
         loop.index("objects_update_passes(dont_update_object, object_update_deferred, object_update);")
     # resolved after the seed and the air frame, from the velocity the physics moves the rider by: resolved
     # before them, a change of the air frame along the touch would be counted twice
-    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    bipeds = biped_riding_sources()
     moving = bipeds[bipeds.index("static void biped_update_moving(\n"):]
     moving = moving[:moving.index("\n}\n")]
     contacts = moving.index("biped_riding_contacts(")
@@ -60,7 +74,8 @@ def test_vehicle_collision_damage_factored():
         start = text.index(signature)
         return text[start:text.index("\n}\n", start)]
 
-    physics = (root / "source/physics/physics.c").read_text(encoding="latin-1")
+    physics = ((root / "source/physics/physics.c").read_text(encoding="latin-1") +
+               (root / "port/linux/game/vehicle_riding_bipeds.c").read_text(encoding="latin-1"))
     damage = body(physics, "void physics_biped_vehicle_collision_damage(\n")
     assert physics.count("vehicle_killed_unit_damage_effect.index") == 2
     assert damage.count("vehicle_killed_unit_damage_effect.index") == 2
@@ -69,7 +84,7 @@ def test_vehicle_collision_damage_factored():
                               "\n\tlong biped_index)\n{")
     assert "physics_biped_vehicle_collision_push(instance->object_index, biped_index, &acceleration);" in collision
     assert "physics_biped_vehicle_collision_damage(instance->object_index, biped_index, &acceleration);" in collision
-    bipeds = (root / "source/units/bipeds.c").read_text(encoding="latin-1")
+    bipeds = biped_riding_sources()
     contacts = body(bipeds, "static boolean biped_riding_contacts(\n")
     assert contacts.index("physics_biped_vehicle_collision_push(") < \
         contacts.index("physics_biped_vehicle_collision_damage(")
@@ -815,7 +830,9 @@ RIDING_CONTROLS["control-inhibited-hook-unwired"] = (
 
 def riding_sources():
     root = Path(__file__).resolve().parent.parent
-    return {key: (root / path).read_text(encoding="latin-1") for key, path in RIDING_SOURCES.items()}
+    text = {key: (root / path).read_text(encoding="latin-1") for key, path in RIDING_SOURCES.items()}
+    text["bipeds"] = biped_riding_sources()
+    return text
 
 
 def riding_function(text, name):

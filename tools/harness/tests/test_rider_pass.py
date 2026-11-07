@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from harness import CHECK_FAILED, build, constant, enum_with, function, mutated, read, run  # noqa: E402
 
 CASES = ["after-vehicle", "dies-between-loops", "deactivated-between-loops", "parented-between-loops", "double-speed",
-         "counts"]
+         "counts", "capacity"]
 
 NEGATIVE_CONTROLS = {
     "defers-nothing": (("if (deferred(object_index))", "if (FALSE)"), "after-vehicle"),
@@ -34,7 +34,7 @@ def generated(fault=None):
     # (the object types and their masks are one enum)
     enums = "\n".join([enum_with(objects_h, "_object_header_active_bit"), enum_with(types, "_object_type_biped")])
     enums += f"\n#define MAXIMUM_OBJECTS_PER_MAP {constant(objects_h, 'MAXIMUM_OBJECTS_PER_MAP')}\n"
-    objects = read("source/objects/objects.c")
+    objects = read("port/linux/game/vehicle_riding_bipeds.c")
     text = "".join(function(objects, name) + "\n"
                    for name in ("object_count_update", "object_update_count", "objects_update_passes"))
     if fault:

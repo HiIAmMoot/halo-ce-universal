@@ -564,7 +564,7 @@ def braced(source, head):
 
 def airborne(fault=None):
     """biped_update_physics's airborne branch (bipeds.c), as a function of the physics and the in flags."""
-    bipeds = read("source/units/bipeds.c")
+    bipeds = read("port/linux/game/vehicle_riding_bipeds.h") + read("source/units/bipeds.c")
     branch = braced(bipeds, AIRBORNE)
     if fault:
         branch = mutated(branch, *fault)
@@ -576,7 +576,7 @@ def airborne(fault=None):
 def ground():
     """biped_update_physics's ground branch (bipeds.c: the else after the airborne branch), as a function of the
     physics and the in flags, with the two locals of biped_update_physics it reads."""
-    bipeds = read("source/units/bipeds.c")
+    bipeds = read("port/linux/game/vehicle_riding_bipeds.h") + read("source/units/bipeds.c")
     braced(bipeds, AIRBORNE)
     start = bipeds.index("{", bipeds.index(AIRBORNE))
     rest = bipeds[start + len(block_at(bipeds, start)):]

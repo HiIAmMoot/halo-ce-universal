@@ -11,10 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import CHECK_FAILED, build, enum_with, function, mutated, read, run  # noqa: E402
+from harness import CHECK_FAILED, biped_riding_sources, build, enum_with, function, mutated, read, run  # noqa: E402
 from test_vehicle_riding import generated as riding_generated  # noqa: E402
 
-BIPEDS = "source/units/bipeds.c"
+BIPEDS = "port/linux/game/vehicle_riding_bipeds.c"
 CASES = ["cabin-interior", "cabin-crossing", "tilt-both-gates",
          "refusal-reacquire-motion", "refusal-reacquire-moved-alone", "refusal-reacquire-none", "cabin-recovery",
          "cabin-deferred-touch", "cabin-overlap-retry", "cabin-failure-log", "cabin-failure-alternate"]
@@ -156,7 +156,7 @@ def generated(control=None):
     collisions = read("source/physics/collisions.h")
     # (one enum holds the face bits and the bipeds' flags, collisions.h)
     types = enum_with(collisions, "_collision_test_front_facing_surfaces_bit") + "\n"
-    bipeds = read(BIPEDS)
+    bipeds = biped_riding_sources()
     types += enum_with(read("source/units/bipeds.h"), "_biped_airborne_bit") + "\n"
     types += enum_with(read("source/units/units.h"), "_unit_suspended_bit") + "\n"
     types += enum_with(bipeds, "_biped_physics_out_airborne_bit") + "\n"

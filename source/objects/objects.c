@@ -250,11 +250,6 @@ boolean debug_object_garbage_collection;
 
 struct data_array *object_header_data;
 
-/* port: how many times each object slot was updated: a rider's carry spans
-its vehicle's updates since its snapshot (vehicle_riding.c); game state, so
-saved and reverted together with the bipeds' snapshots */
-static long *object_update_counts;
-
 boolean debug_objects_position_velocity = FALSE;
 
 /* ---------- public code */
@@ -1090,8 +1085,7 @@ void objects_initialize(
 		object_header_data = game_state_data_new("object", MAXIMUM_OBJECTS_PER_MAP, sizeof(struct object_header_datum));
 		object_memory_pool = game_state_memory_pool_new("objects", OBJECT_MEMORY_POOL_SIZE);
 		/* port: (none in the editor, where riding never runs) */
-		object_update_counts = (long *)game_state_malloc("object update counts", NULL,
-			MAXIMUM_OBJECTS_PER_MAP*sizeof(long));
+		vehicle_riding_objects_initialize();
 	}
 	else
 	{
@@ -1125,8 +1119,7 @@ void objects_initialize_for_new_map(
 	
 	data_make_valid(object_header_data);
 	/* port: (zeroed for a new map only: a revert or a load brings them back with the bipeds' snapshots) */
-	if (object_update_counts)
-		memset(object_update_counts, 0, MAXIMUM_OBJECTS_PER_MAP*sizeof(long));
+	vehicle_riding_objects_reset();
 	object_name_list_clear();
 
 	cluster_partition_make_valid(&collideable_object_cluster_partition);
@@ -4000,26 +3993,6 @@ boolean object_force_inside_bsp(
 	return result;
 }
 
-/* port: one more update of an object (object_update, children included) */
-void object_count_update(
-	long object_index)
-{
-	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
-
-	if (object_update_counts && absolute_index < MAXIMUM_OBJECTS_PER_MAP)
-		++object_update_counts[absolute_index];
-}
-
-/* port: an object's updates so far (vehicle_riding.c) */
-long object_update_count(
-	long object_index)
-{
-	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
-
-	return object_update_counts && absolute_index < MAXIMUM_OBJECTS_PER_MAP ?
-		object_update_counts[absolute_index] : 0;
-}
-
 static boolean object_update(
 	long object_index)
 {
@@ -4648,75 +4621,6 @@ void objects_garbage_collection(
 	return;
 }
 
-
-/* port: the object update's main loop, then the bipeds it deferred: a biped
-in a vehicle's window updates after every vehicle, so its carry always spans
-its vehicle's whole update of the tick (vehicle_riding.c) */
-static void objects_update_passes(
-	boolean dont_update_object,
-	boolean (*deferred)(long object_index),
-	boolean (*update)(long object_index))
-{
-	static long riders[MAXIMUM_OBJECTS_PER_MAP];
-	struct object_header_datum *object_header;
-	long rider_count = 0;
-	long rider_index;
-	short i;
-
-	object_header = (struct object_header_datum *)object_header_data->data;
-	for (i = 0; i<object_header_data->count; ++object_header)
-	{
-		if (object_header->identifier)
-		{
-			if (TEST_FLAG(object_header->flags, _object_header_active_bit) &&
-				!TEST_FLAG(object_header->flags, _object_header_being_created_bit))
-			{
-				long object_index = DATUM_INDEX_NEW(i, object_header->identifier);
-				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 416, object_get(object_index)->object.parent_object_index==NONE);
-				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 417, object_get(object_index)->object.next_object_index==NONE);
-
-				if (deferred(object_index))
-				{
-					riders[rider_count++] = object_index;
-				}
-				else if (!dont_update_object ||
-					(TEST_FLAG(_object_mask_unit, object_header->type) &&
-					unit_get(object_index)->unit.player_index!=NONE))
-				{
-					update(object_index);
-				}
-			}
-		}
-		++i;
-	}
-
-	for (rider_index = 0; rider_index < rider_count; rider_index++)
-	{
-		long object_index = riders[rider_index];
-		struct object_header_datum *rider_header = object_header_try_and_get(object_index);
-
-		/* (an update in the main loop can delete, deactivate or attach another
-		object; whether it still rides is not asked again: it takes its one
-		update of the tick) */
-		if (rider_header &&
-			TEST_FLAG(rider_header->flags, _object_header_active_bit) &&
-			!TEST_FLAG(rider_header->flags, _object_header_being_created_bit) &&
-			object_get(object_index)->object.parent_object_index == NONE &&
-			(!dont_update_object ||
-				(TEST_FLAG(_object_mask_unit, rider_header->type) &&
-				unit_get(object_index)->unit.player_index != NONE)))
-		{
-			update(object_index);
-		}
-	}
-}
-
-/* port: a biped in a vehicle's window updates after the main loop (vehicle_riding.c) */
-static boolean object_update_deferred(
-	long object_index)
-{
-	return object_get_type(object_index) == _object_type_biped && biped_riding_deferred(object_index);
-}
 
 void objects_update(
 	void)

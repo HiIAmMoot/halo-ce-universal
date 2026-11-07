@@ -29,6 +29,37 @@ def function(source, name):
     return source[match.start():end]
 
 
+def biped_riding_sources():
+    """The native movement with its port hooks expanded for existing slice tests.
+
+    No code is copied: undo only the tick-context and physics-pointer spelling,
+    so the same cases and mutations still compile the actual hook statements.
+    Assert the calls before expanding them; a disconnected hook must fail too.
+    """
+    native = read("source/units/bipeds.c")
+    header = read("port/linux/game/vehicle_riding_bipeds.h")
+    port = read("port/linux/game/vehicle_riding_bipeds.c")
+    fields = structure(header, "biped_riding_tick").split("{\n", 1)[1].rsplit("};", 1)[0]
+    bodies = {}
+    for name in ("prepare", "finish"):
+        definition = function(port, "biped_riding_" + name)
+        body = definition.split("\n{\n", 1)[1].rsplit("\n}", 1)[0]
+        body = re.sub(r"\btick->(\w+)", r"\1", body).replace("physics->", "physics.")
+        body = body.replace("biped_riding_turn(biped, physics,", "biped_riding_turn(biped, &physics,")
+        if name == "prepare":
+            initializers, body = body.split("\n\n", 1)
+            for field, value in re.findall(r"\t(\w+) = ([^;]+);", initializers):
+                fields = re.sub(r"\b" + field + ";", field + " = " + value + ";", fields)
+        bodies[name] = body
+        call = "\tbiped_riding_" + name + "(biped_index, biped, definition, &physics, &riding_tick);\n"
+        assert native.count(call) == 1, call
+        native = native.replace(call, body)
+    declaration = "\tstruct biped_riding_tick riding_tick;\n"
+    assert native.count(declaration) == 1
+    native = native.replace(declaration, fields)
+    return header + "\n" + native + "\n" + port
+
+
 def inline(source, name):
     """An __inline header function, as a static one."""
     return function(source, name).replace("__inline", "static", 1)

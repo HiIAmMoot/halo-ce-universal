@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness import CHECK_FAILED, build, function, mutated, read, run, structure  # noqa: E402
 from test_vehicle_riding import generated as riding_generated  # noqa: E402
 
-BIPEDS = "source/units/bipeds.c"
+BIPEDS = "port/linux/game/vehicle_riding_bipeds.c"
 CASES = ["write-carry-reboarded", "write-carry-window", "write-carry-riding-skipped", "write-carry-preexisting-touch",
          "write-carry-preexisting-rolled-touch", "write-carry-destination-touching", "write-carry-blocked",
          "write-carry-teleport-write", "write-carry-other-window", "write-carry-unrecorded",

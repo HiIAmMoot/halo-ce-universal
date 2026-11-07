@@ -8,12 +8,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness import CHECK_FAILED, build, constant, enum_with, function, mutated, read, run, structure
+from harness import CHECK_FAILED, biped_riding_sources, build, constant, enum_with, function, mutated, read, run, structure
 from test_vehicle_riding import engine, without_includes
 
 NETWORK = "port/linux/game/network_distributed.c"
 RIDING = "port/linux/game/vehicle_riding.c"
-BIPEDS = "source/units/bipeds.c"
+BIPEDS = "port/linux/game/vehicle_riding_bipeds.c"
 CASES = ["remote-deck-lagging", "remote-deck-blend", "remote-deck-still", "remote-deck-velocity",
          "remote-air", "remote-invalid-clears", "remote-late-join"]
 CASES += ["own-history-deck", "own-deck-lagging", "own-deck-lagging-far", "own-deck-correct-once",
@@ -267,7 +267,7 @@ RIDING_FUNCTIONS = (
 
 
 def generated(control=None):
-    sources = {"network": read(NETWORK), "riding": read(RIDING), "bipeds": read(BIPEDS)}
+    sources = {"network": read(NETWORK), "riding": read(RIDING), "bipeds": biped_riding_sources()}
     if control:
         owner, replacements, _ = NEGATIVE_CONTROLS[control]
         for before, after in replacements:

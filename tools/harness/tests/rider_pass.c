@@ -27,7 +27,7 @@ struct object_datum
 	struct { long player_index; } unit;
 };
 
-enum { OBJECTS = 8 };
+enum { OBJECTS = MAXIMUM_OBJECTS_PER_MAP };
 static struct data_array *object_header_data;
 static struct object_datum objects[OBJECTS];
 static long *object_update_counts;
@@ -45,9 +45,10 @@ static struct object_header_datum *object_header_try_and_get(long index)
 
 /* the world: slot 0 a player's biped, slot 1 its vehicle, slot 2 an AI */
 static long rider, vehicle, actor;
-static long order[16];
+static long order[MAXIMUM_OBJECTS_PER_MAP];
 static int order_count;
 static boolean rider_deferred, actor_deferred;
+static boolean all_deferred;
 static boolean rider_dies, deactivate_rider, attach_rider;
 
 static long object_new(byte type, long player_index)
@@ -64,7 +65,7 @@ static long object_new(byte type, long player_index)
 
 static boolean deferred(long object_index)
 {
-	return object_index == rider ? rider_deferred : object_index == actor ? actor_deferred : FALSE;
+	return all_deferred || (object_index == rider ? rider_deferred : object_index == actor ? actor_deferred : FALSE);
 }
 
 static boolean update(long object_index)
@@ -96,6 +97,22 @@ int main(int argc, char **argv)
 	char const *case_name = argc > 1 ? argv[1] : "";
 
 	world();
+	CASE("capacity")
+	{
+		long index;
+
+		for (index = 3; index < MAXIMUM_OBJECTS_PER_MAP; index++)
+			object_new(_object_type_biped, NONE);
+		all_deferred = TRUE;
+		objects_update_passes(FALSE, deferred, update);
+		CHECK(order_count == MAXIMUM_OBJECTS_PER_MAP, "not every deferred object updated at capacity");
+		for (index = 0; index < MAXIMUM_OBJECTS_PER_MAP; index++)
+		{
+			CHECK(DATUM_INDEX_TO_ABSOLUTE_INDEX(order[index]) == index, "order changed at %ld", index);
+			CHECK(object_update_count(order[index]) == 1, "slot %ld not updated exactly once", index);
+		}
+		return 0;
+	}
 	CASE("after-vehicle")
 	{
 		long before;
