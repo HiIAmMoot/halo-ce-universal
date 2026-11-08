@@ -28,7 +28,8 @@ CASES = ["host-deck-lagging", "host-deck-relative-speed", "host-deck-advance-ref
            "host-reboard-same-tick", "host-reboard-script", "host-reboard-stationary", "host-reboard-no-test",
            "host-reboard-refused", "host-window-braking-climb", "client-return-no-allowance", "host-reboard-boards-copy",
          "host-physics-board-rise-agreed", "host-step-off-together-agreed", "host-physics-board-agreed",
-         "host-physics-board-client-air-arms", "host-transition-real-drop", "host-step-off-other-vehicle-arms",
+         "host-physics-board-client-air-arms", "host-client-lands-in-host-air", "host-client-lands-other-vehicle-arms",
+         "host-client-lands-host-riding-arms", "host-transition-real-drop", "host-step-off-other-vehicle-arms",
          "host-board-world-word-stale-arms", "host-board-ack-late-arms", "host-board-ack-then-jump-arms",
          "host-board-ack-other-vehicle-arms", "host-flip-after-leash-write", "host-agreement-touches-transition-only",
          "host-leash-world-write-stamped",
@@ -60,7 +61,7 @@ RIDING_FUNCTIONS = ("riding_snapshot", "vehicle_riding_point_to_local", "vehicle
                      "vehicle_riding_rebase", "vehicle_riding_host_path", "vehicle_riding_host_target", "vehicle_riding_host_leash", "vehicle_riding_host_velocity", "vehicle_riding_host_unlifted",
                     "vehicle_riding_run_jump_speed", "vehicle_riding_deck_vehicle_named",
                      "vehicle_riding_deck_values_valid", "vehicle_riding_deck_valid", "vehicle_riding_air_frame",
-                    "vehicle_riding_reboard_grant", "vehicle_riding_host_reboard", "vehicle_riding_transition_agreed")
+                    "vehicle_riding_reboard_grant", "vehicle_riding_host_reboard", "vehicle_riding_transition_agreed", "vehicle_riding_transition_landed")
 
 # source, replacements, and the case that must fail a CHECK (never compilation)
 NEGATIVE_CONTROLS = {
@@ -189,10 +190,17 @@ NEGATIVE_CONTROLS = {
         "client_ticks > 0 && client_vehicle == host_vehicle &&\n\t\t(host_before <= 0")], "host-physics-board-client-air-arms"),
     "agreed-step-off-any-vehicle": ("riding", [("client_ticks > 0 && client_ticks < RIDING_TICKS && client_vehicle == host_vehicle)",
         "client_ticks > 0 && client_ticks < RIDING_TICKS)")], "host-step-off-other-vehicle-arms"),
+    "landing-in-air-arms": ("network", [("else if (!host_changed && client_changed &&\n\t\t\t\tvehicle_riding_transition_landed(",
+        "else if (FALSE && !host_changed && client_changed &&\n\t\t\t\tvehicle_riding_transition_landed(")],
+        "host-client-lands-in-host-air"),
+    "landing-any-vehicle": ("riding", [(" && client_ticks == RIDING_TICKS && client_vehicle == host_vehicle;", " && client_ticks == RIDING_TICKS;")],
+        "host-client-lands-other-vehicle-arms"),
+    "landing-over-riding-host": ("riding", [("return host_ticks > 0 && host_ticks < RIDING_TICKS && client_ticks == RIDING_TICKS", "return host_ticks > 0 && client_ticks == RIDING_TICKS")],
+        "host-client-lands-host-riding-arms"),
     "board-ack-arms": ("network", [("if (acknowledged)", "if (acknowledged && FALSE)")], "host-physics-board-agreed"),
     "board-ack-unbounded": ("network", [("\t\t\t\tnow <= accepted->transition_board_until &&\n", "")], "host-board-ack-late-arms"),
-    "board-ack-spends": ("network", [("\t\t\t\taccepted->transition_board_vehicle = NONE;\n\t\t\t}\n\t\t\telse if (host_changed ||",
-        "\t\t\t\taccepted->transition_board_vehicle = NONE;\n\t\t\t\taccepted->transition_client_spent = TRUE;\n\t\t\t}\n\t\t\telse if (host_changed ||")],
+    "board-ack-spends": ("network", [("\t\t\t\taccepted->transition_board_vehicle = NONE;\n\t\t\t}\n\t\t\telse if (!host_changed && client_changed &&",
+        "\t\t\t\taccepted->transition_board_vehicle = NONE;\n\t\t\t\taccepted->transition_client_spent = TRUE;\n\t\t\t}\n\t\t\telse if (!host_changed && client_changed &&")],
         "host-board-ack-then-jump-arms"),
     "board-ack-any-vehicle": ("network", [("client_ticks == RIDING_TICKS && client_vehicle == accepted->transition_board_vehicle &&\n",
         "client_ticks == RIDING_TICKS &&\n")], "host-board-ack-other-vehicle-arms"),

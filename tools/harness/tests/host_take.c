@@ -2210,6 +2210,33 @@ int main(int argc, char **argv)
         CHECK(distributed_accepted[0].transition_until == 500 + 9, "a boarding in the client's air armed until %ld", distributed_accepted[0].transition_until);
         return 0;
     }
+    CASE("host-client-lands-in-host-air")
+    {
+        setup(); game_time = 500;
+        /* (both copies in the jump over V; the client's word lands first, the host's physics lands the copy a few ticks on) */
+        transition_memory(RIDING_TICKS - 1, V, RIDING_TICKS - 1, V); client_word(RIDING_TICKS, V, TRUE);
+        host_window(RIDING_TICKS - 1, V);
+        CHECK(distributed_accepted[0].transition_until <= game_time, "a landing on the deck the host's copy jumps from armed until %ld",
+            distributed_accepted[0].transition_until);
+        CHECK(!distributed_accepted[0].transition_client_spent, "the landing spent the client's entitlement");
+        return 0;
+    }
+    CASE("host-client-lands-other-vehicle-arms")
+    {
+        setup(); game_time = 500;
+        transition_memory(RIDING_TICKS - 1, V, RIDING_TICKS - 1, V); client_word(RIDING_TICKS, OTHER, TRUE);
+        host_window(RIDING_TICKS - 1, V);
+        CHECK(distributed_accepted[0].transition_until == 500 + 9, "a landing on another vehicle armed until %ld", distributed_accepted[0].transition_until);
+        return 0;
+    }
+    CASE("host-client-lands-host-riding-arms")
+    {
+        setup(); game_time = 500;
+        transition_memory(RIDING_TICKS, V, RIDING_TICKS - 1, V); client_word(RIDING_TICKS, V, TRUE);
+        host_window(RIDING_TICKS, V);
+        CHECK(distributed_accepted[0].transition_until == 500 + 9, "a landing after the copy rides again armed until %ld", distributed_accepted[0].transition_until);
+        return 0;
+    }
     CASE("host-transition-real-drop")
     {
         setup(); game_time = 500;

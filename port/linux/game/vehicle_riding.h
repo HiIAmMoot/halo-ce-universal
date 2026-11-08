@@ -311,6 +311,7 @@ real vehicle_riding_transition_leash(void);
 boolean vehicle_riding_host_leash(real_point3d const *client_base, real_point3d const *host_base, real leash);
 boolean vehicle_riding_transition_agreed(short host_before, long host_vehicle_before, short host_now, long host_vehicle,
 	short client_ticks, long client_vehicle, boolean client_part, boolean word_taken);
+boolean vehicle_riding_transition_landed(short host_ticks, long host_vehicle, short client_ticks, long client_vehicle);
 void vehicle_riding_host_target(short path, struct vehicle_riding_vehicle const *client_node,
 	struct vehicle_riding_vehicle const *host_node, real_point3d const *host_base,
 	struct vehicle_riding_deck const *deck, real_point3d const *client_base, real_point3d *base);

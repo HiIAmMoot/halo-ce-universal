@@ -1431,6 +1431,17 @@ boolean vehicle_riding_transition_agreed(
 	return FALSE;
 }
 
+/* whether the client's word lands on the deck the host copy is in the air over: the copy lands itself within a tick or two,
+and the leash would hold it at the word's world place meanwhile, off its deck by the two copies of the vehicle's offset */
+boolean vehicle_riding_transition_landed(
+	short host_ticks,
+	long host_vehicle,
+	short client_ticks,
+	long client_vehicle)
+{
+	return host_ticks > 0 && host_ticks < RIDING_TICKS && client_ticks == RIDING_TICKS && client_vehicle == host_vehicle;
+}
+
 void vehicle_riding_host_target(
 	short path,
 	struct vehicle_riding_vehicle const *client_node,

@@ -3414,6 +3414,11 @@ static void distributed_riding_transition(
 				/* (the boarding the host agreed to, arriving: used up, with the entitlement as it was) */
 				accepted->transition_board_vehicle = NONE;
 			}
+			else if (!host_changed && client_changed &&
+				vehicle_riding_transition_landed(host_ticks, host_vehicle, client_ticks, client_vehicle))
+			{
+				/* (the copy's own fall lands it: nothing to leash, and the client's entitlement for a later change stays whole) */
+			}
 			else if (host_changed || (client_changed && !accepted->transition_client_spent))
 			{
 				accepted->transition_until = now + length;
