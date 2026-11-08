@@ -707,26 +707,21 @@ def test_vehicle_riding_saved_games():
 SERVER_SETUP = "main_menu.multiplayer_type_select.server_settings.xml"
 
 
-def riding_server_setup_layout(lines):
-    """Server Setup's VEHICLE RIDING row and layout, from the generator's lines for its XML."""
+def riding_menu_layout(files):
+    """The host's switch belongs to vehicle and co-op options, not the main list."""
     import xml.etree.ElementTree as ElementTree
 
-    tree = ElementTree.fromstring("\n".join(lines))
+    tree = ElementTree.fromstring("\n".join(files[SERVER_SETUP]))
     base = "main_menu/multiplayer_type_select/server_settings"
     widgets = {w.get("name"): w for w in tree.findall("widget")}
     strings = {s.get("name"): s for s in tree.findall("strings")}
     children = widgets[base + "/options_menu"].findall("child")
     names = [c.get("widget") for c in children]
-    riding = children[names.index(base + "/op_vehicle_riding")]
-    assert names.index(base + "/op_password") < names.index(base + "/op_vehicle_riding") < \
-        names.index(base + "/op_map_share_options")
-    assert riding.get("platform") is None and int(riding.get("y")) == 183
-    assert int(children[names.index(base + "/op_map_share_options")].get("y")) == 205
-    assert [s.get("text") for s in strings[base + "/var_vehicle_riding"]] == ["ON", "OFF"]
-    assert strings[base + "/labels"][14].get("text") == "VEHICLE RIDING:"
-    assert widgets[base + "/vehicle_riding_label"].get("string_index") == "14"
-    assert strings[base + "/help_strings"][17].get("text").replace("\\n", " ") == \
-        "Players standing on a vehicle are carried by it. Off: as the original game, riders slide off."
+    assert base + "/op_vehicle_riding" not in names
+    assert base + "/op_vehicle_riding" not in widgets
+    assert base + "/var_vehicle_riding" not in strings
+    assert "VEHICLE RIDING:" not in [s.get("text") for s in strings[base + "/labels"]]
+    assert len(strings[base + "/help_strings"]) == 17
     help_widget = widgets[base + "/help"]
     assert help_widget.get("font") == "ui\\small_ui" and int(help_widget.get("top")) == 366
     assert int(help_widget.get("top")) + int(help_widget.get("height")) <= 414
@@ -735,8 +730,42 @@ def riding_server_setup_layout(lines):
         if not name.endswith("/button_bar"):
             assert int(child.get("y")) + int(widgets[name].get("height")) <= 366, name
 
+    coop = base + "/coop_options"
+    coop_rows = widgets[coop + "/coop_options_menu"].findall("child")[:-1]
+    assert coop_rows[-1].get("widget") == coop + "/op_vehicle_riding"
+    vehicle = "main_menu/settings_select/multiplayer_setup/vehicle_options_edit"
+    extra = ElementTree.fromstring("\n".join(files[vehicle.replace("/", ".") + ".port.xml"]))
+    for screen, root, label_index, labels in ((coop, tree, "9", "coop_options_labels"),
+                                            (vehicle, extra, "9", "vehicle_options_labels")):
+        made = {w.get("name"): w for w in root.findall("widget")}
+        row = made[screen + "/op_vehicle_riding"]
+        assert [c.get("widget") for c in row.findall("child")] == [
+            screen + "/vehicle_riding_label", screen + "/vehicle_riding_spinner"]
+        label = made[screen + "/vehicle_riding_label"]
+        assert label.get("string_index") == label_index
+        assert label.get("string_list") == screen + "/" + labels
+        spinner = made[screen + "/vehicle_riding_spinner"]
+        assert spinner.get("string_list") == screen + "/var_vehicle_riding"
+        words = root.find(f"strings[@name='{screen}/var_vehicle_riding']")
+        assert [s.get("text") for s in words] == ["ON", "OFF"]
+    assert strings[coop + "/coop_options_labels"][-1].get("text") == "VEHICLE RIDING:"
+    assert [s.get("text") for s in strings[coop + "/cap_coop_options"]][-2:] == [RIDING_HELP] * 2
 
-def riding_port_settings(source=None):
+
+RIDING_HELP = "Players standing on a vehicle are carried by it.\\nOff: as the original game, riders slide off."
+
+
+def riding_vehicle_patch(ns):
+    vehicle = ns["VEHICLE_EDIT"]
+    assert vehicle + "/vehicle_options_menu" in ns["WIDGET_PATCHES"]
+    assert ns["WIDGET_PATCHES"][vehicle + "/vehicle_options_menu"]["insert_before"] == {
+        vehicle + "/op_team": [f'<child widget="{vehicle}/op_vehicle_riding" x="54" y="100"/>']}
+    assert ns["STRING_INSERTS"][vehicle + "/vehicle_options_labels"] == [(9, ["VEHICLE RIDING:"])]
+    assert ns["STRING_INSERTS"][vehicle + "/cap_vehicle_options"] == [
+        (17, ["Every vehicle the map places will spawn, as in\\nHalo PC."]), (7, [RIDING_HELP] * 2)]
+
+
+def riding_port_settings_module(source=None):
     """tools/port_settings.py's multiplayer_files, from its file or (a control) from a changed copy of its text."""
     import importlib.util
 
@@ -745,16 +774,22 @@ def riding_port_settings(source=None):
         spec = importlib.util.spec_from_file_location("riding_port_settings", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.multiplayer_files
+        return vars(module)
     namespace = {"__name__": "riding_port_settings_changed", "__file__": str(path)}
     exec(compile(source, str(path), "exec"), namespace)
-    return namespace["multiplayer_files"]
+    return namespace
+
+
+def riding_port_settings(source=None):
+    return riding_port_settings_module(source)["multiplayer_files"]
+
+
+def test_vehicle_riding_patch_data():
+    riding_vehicle_patch(riding_port_settings_module())
 
 
 def test_vehicle_riding_server_setup():
-    """Server Setup's VEHICLE RIDING (tools/port_settings.py, menu_functions.c): the committed XML is the
-    generator's, the row on the main list for co-op and multiplayer alike, ON / OFF writing game.vehicle_riding, its
-    help, every row above the help and the bar; the other screens' help as it was."""
+    """Generated host options and committed extras agree, with every main row above help."""
     root = Path(__file__).resolve().parent.parent
     files = riding_port_settings()()
     raw = (root / "port/assets/menus/ce" / SERVER_SETUP).read_bytes()
@@ -762,17 +797,22 @@ def test_vehicle_riding_server_setup():
     if b"\r\n" in raw:
         generated = generated.replace(b"\n", b"\r\n")
     assert raw == generated, "the Server Setup XML is not the generator's"
-    riding_server_setup_layout(files[SERVER_SETUP])
+    riding_menu_layout(files)
+    riding_vehicle_patch(riding_port_settings_module())
+    vehicle = "main_menu/settings_select/multiplayer_setup/vehicle_options_edit"
+    extra = vehicle.replace("/", ".") + ".port.xml"
+    assert (root / "port/assets/menus/ce" / extra).read_text() == "\n".join(files[extra])
     for other, lines in files.items():
         if other != SERVER_SETUP:
             assert not any('font="ui\\small_ui"' in line and '/help"' in line for line in lines), other
 
 
 SERVER_SETUP_CONTROLS = {
-    "riding-row-platform": ('rows.append((f"{base}/op_vehicle_riding", None, SETUP_OPTIONS_PLACE - 2))',
-                            'rows.append((f"{base}/op_vehicle_riding", "android", SETUP_OPTIONS_PLACE - 2))'),
-    "riding-rows-overlap-help": ('"spacing": 22, "help_top": 366', '"spacing": 24, "help_top": 366'),
-    "riding-label-wrong": ("12 + len(COOP_SETUP_SCREENS)", "11 + len(COOP_SETUP_SCREENS)"),
+    "riding-on-main-list": ('rows.append((f"{base}/op_password", None))',
+                            'rows.append((f"{base}/op_password", None))\n    rows.append((f"{base}/op_vehicle_riding", None, SETUP_OPTIONS_PLACE - 2))'),
+    "riding-row-after-team": ('f"{VEHICLE_EDIT}/op_team": [', 'f"{VEHICLE_EDIT}/op_vehicle_presets": ['),
+    "riding-label-index": ('("vehicle_riding", 9, ["ON", "OFF"])', '("vehicle_riding", 8, ["ON", "OFF"])'),
+    "coop-riding-missing": ('        ("vehicle_riding", "VEHICLE RIDING:", ["ON", "OFF"], [VEHICLE_RIDING_HELP] * 2),\n', ''),
 }
 
 
@@ -782,9 +822,13 @@ def test_vehicle_riding_server_setup_control(control):
     source = (Path(__file__).resolve().parent / "port_settings.py").read_text(encoding="latin-1")
     before, after = SERVER_SETUP_CONTROLS[control]
     assert source.count(before) == 1, f"negative control no longer applies: {before!r}"
-    files = riding_port_settings(source.replace(before, after, 1))()
+    ns = riding_port_settings_module(source.replace(before, after, 1))
+    files = ns["multiplayer_files"]()
     with pytest.raises(AssertionError):
-        riding_server_setup_layout(files[SERVER_SETUP])
+        if control == "riding-row-after-team":
+            riding_vehicle_patch(ns)
+        else:
+            riding_menu_layout(files)
 
 
 # the riding network wiring (port/linux/game/vehicle_riding.c, port/linux/NETCODE.md): each check reads the sources
@@ -977,27 +1021,31 @@ RIDING_CONTROLS["test-host-without-switch"] = ("test", "network_test_update",
 def riding_menu_check(text):
     menus = text["menus"]
     assert '{ "vehicle_riding_spinner", _option_setting, 0, 0, 2, { 0 }, "game.vehicle_riding", { "true", "false" } },' in menus
-    assert "#define VEHICLE_RIDING_HELP 17" in menus
+    assert "VEHICLE_RIDING_HELP" not in menus
     init = riding_function(menus, "server_settings_initialize")
-    assert "setting_options_each(list, FALSE);" in init
     update = riding_function(menus, "server_settings_update")
-    assert update.index("settings_help(list);") < update.index("setting_options_each(list, TRUE);")
-    assert "help->parameters.text_box.string_list_index = VEHICLE_RIDING_HELP;" in update
+    for body in (init, update):
+        assert "op_vehicle_riding" not in body
+        assert "setting_options_each(" not in body
+    assert "visible_set(row, gametype_edit.setup);" in riding_function(menus, "gametype_options_each")
+    assert "gametype_options_each(list, TRUE);" in riding_function(menus, "gametype_options_save")
+    save = menus.split('!strcmp(name, "port setup options save")', 1)[1].split('}', 1)[0]
+    assert "setting_options_each(list, TRUE);" in save
     rows = menus.split("server_settings_gametype_rows[] =", 1)[1].split("};", 1)[0]
-    assert "op_vehicle_riding" not in rows
+    assert '"op_vehicle_options"' in rows
 
 
 RIDING_CHECKS["menu"] = riding_menu_check
 RIDING_CONTROLS["riding-setting-inverted"] = ("menus", None, '"game.vehicle_riding", { "true", "false" }',
                                               '"game.vehicle_riding", { "false", "true" }', "menu")
-RIDING_CONTROLS["riding-row-not-saved"] = ("menus", "server_settings_update", "setting_options_each(list, TRUE);",
-                                           "setting_options_each(list, FALSE);", "menu")
-RIDING_CONTROLS["riding-row-not-shown"] = ("menus", "server_settings_initialize", "\tsetting_options_each(list, FALSE);\n",
-                                           "", "menu")
-RIDING_CONTROLS["riding-help-wrong"] = ("menus", None, "#define VEHICLE_RIDING_HELP 17", "#define VEHICLE_RIDING_HELP 16",
-                                        "menu")
-RIDING_CONTROLS["riding-row-hidden-in-coop"] = ("menus", None, '\t"op_team_options",\n};',
-                                                '\t"op_team_options", "op_vehicle_riding",\n};', "menu")
+RIDING_CONTROLS["riding-row-not-saved"] = ("menus", "gametype_options_save", "gametype_options_each(list, TRUE);",
+                                           "gametype_options_each(list, FALSE);", "menu")
+RIDING_CONTROLS["riding-row-in-edit-gametypes"] = ("menus", "gametype_options_each", "visible_set(row, gametype_edit.setup);",
+                                                "visible_set(row, TRUE);", "menu")
+RIDING_CONTROLS["coop-riding-not-saved"] = ("menus", None,
+    'if (list)\n\t\t\t\tsetting_options_each(list, TRUE);',
+    'if (list)\n\t\t\t\tsetting_options_each(list, FALSE);', "menu")
+RIDING_CONTROLS["vehicle-screen-shown-in-coop"] = ("menus", None, '"op_vehicle_options", ', '', "menu")
 
 
 def riding_scenario_check(text):
