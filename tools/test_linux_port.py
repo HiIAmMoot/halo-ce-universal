@@ -806,6 +806,11 @@ RIDING_SOURCES = {
     "bipeds": "source/units/bipeds.c",
     "players": "source/game/players.c",
     "format": "port/linux/network_format.txt",
+    "hs": "source/hs/hs.c",
+    "vbipeds": "port/linux/game/vehicle_riding_bipeds.c",
+    "main": "source/main/main.c",
+    "game_state": "source/saved games/game_state.c",
+    "hs_globals": "source/hs/hs_globals_external.c",
 }
 RIDING_CHECKS = {}
 RIDING_CONTROLS = {}
@@ -1532,6 +1537,53 @@ RIDING_CONTROLS["write-carry-unwired"] = (
     "", "write-carry")
 
 
+def riding_script_function_check(text):
+    # the standalone tool imports its siblings as top-level modules
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from custom_edition_script_names import build_names, build_types
+    finally:
+        sys.path.pop(0)
+    types = build_types()
+    assert build_names()[0]['vehicle_riding'] == (types['_hs_type_void'], 'hs_macro_function_parse',
+                                                [types['_hs_type_boolean']])
+    hs = text['hs']
+    table = re.search(r'struct hs_function_table_storage hs_function_table\s*=\s*\{\s*\{(.*?)\n\t\},', hs, re.S)
+    assert table
+    entries = re.findall(r'&\w+(?:\.definition)?', table.group(1))
+    assert entries[-1] == '&vehicle_riding_definition.definition'
+    assert hs.count('418 + 8') == 2
+    allowed = re.search(r'hs_function_allowed_in_maps\[\]\s*=\s*\{(.*?)\n\};', hs, re.S)
+    assert allowed and re.search(r'TRUE, /\* vehicle_riding \*/\s*$', allowed.group(1))
+    denied = re.search(r'hs_functions_denied_to_downloaded_maps\[\]\s*=\s*\{(.*?)\n\};', hs, re.S)
+    assert denied and '"vehicle_riding"' not in denied.group(1)
+    assert 'HS_EVALUATE_VOID_BOOLEAN(hs_vehicle_riding_evaluate, vehicle_riding_map_script)' in hs
+    assert 'vehicle_riding_map_reset();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_reset')
+    assert 'vehicle_riding_map_initialize();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_initialize')
+    assert 'network_riding_map_update();' in text['main']
+    pulse = riding_function(text['game'], 'game_initial_pulse')
+    assert 'vehicle_riding_map_start();' in pulse and 'bipeds_riding_latch();' in pulse
+    assert pulse.index('vehicle_riding_map_start();') < pulse.index('bipeds_riding_latch();')
+    after_load = re.search(r'after_load_procs\[\]\s*=\s*\{(.*?)\n\};', text['game_state'], re.S)
+    assert after_load and 'vehicle_riding_map_start' not in after_load.group(1)
+    assert 'vehicle_riding_map_start' not in riding_function(text['riding'], 'vehicle_riding_latch')
+    assert 'vehicle_riding_map_start' not in riding_function(text['vbipeds'], 'bipeds_riding_latch')
+    assert 'vehicle_riding' not in re.findall(r'definition\s*=\s*\{\s*"([a-z0-9_]+)"', text['hs_globals'])
+
+
+RIDING_CHECKS['script-function'] = riding_script_function_check
+RIDING_CONTROLS.update({
+    'script-not-allowed': ('hs', None, 'TRUE, /* vehicle_riding */', 'FALSE, /* vehicle_riding */', 'script-function'),
+    'script-not-last': ('hs', None, '\t\t&vehicle_riding_definition.definition,\n', '', 'script-function'),
+    'script-map-reset-unwired': ('vbipeds', 'vehicle_riding_objects_reset', 'vehicle_riding_map_reset();', '', 'script-function'),
+    'global-read-after-latch': ('game', 'game_initial_pulse', 'vehicle_riding_map_start();\n\tbipeds_riding_latch();',
+                              'bipeds_riding_latch();\n\tvehicle_riding_map_start();', 'script-function'),
+    'global-read-on-load': ('game_state', None, 'after_load_procs[] =\n{', 'after_load_procs[] =\n{\n\tvehicle_riding_map_start,', 'script-function'),
+    'global-shadowed': ('hs_globals', None, 'static struct hs_external_global_definition screenshot_size_definition',
+                        'struct hs_external_global_definition vehicle_riding_definition = { "vehicle_riding", 0 };\nstatic struct hs_external_global_definition screenshot_size_definition', 'script-function'),
+})
+
+
 # (the riding wiring tests: every check and control above)
 @pytest.mark.parametrize("name", sorted(RIDING_CHECKS))
 def test_riding_network_wiring(name):
@@ -1545,6 +1597,9 @@ def test_riding_network_wiring_control(control):
     text = riding_sources()
     body = riding_function(text[owner], scope) if scope else text[owner]
     text[owner] = text[owner].replace(body, mutated(body, before, after), 1)
+    if control == 'script-not-last':
+        text['hs'] = text['hs'].replace('\t\t&sv_say_definition.definition,',
+                                        '\t\t&vehicle_riding_definition.definition,\n\t\t&sv_say_definition.definition,', 1)
     # (a check finds code by its text: a fault that removes the text fails its .index as ValueError)
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(AssertionError if check == 'script-function' else (AssertionError, ValueError)):
         RIDING_CHECKS[check](text)
