@@ -1581,6 +1581,7 @@ static void distributed_host_send_states(
 	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, DATAGRAM_ENTRIES(struct distributed_object_state));
 	short resting = 0;
 	long told_count = objects_host_told_count;
+	long resting_start = objects_host_resting_cursor;
 	long state_count = 0;
 	long absolute_index;
 	long step;
@@ -1610,7 +1611,9 @@ static void distributed_host_send_states(
 	{
 		long object_index;
 
-		absolute_index = (objects_host_resting_cursor + step) % told_count;
+		/* (the scan counts steps from where it began: from the cursor it moves, it skips rested objects, and a
+		rested hull a rider stands on goes unrefreshed; riding off keeps the original scan) */
+		absolute_index = ((vehicle_riding_enabled() ? resting_start : objects_host_resting_cursor) + step) % told_count;
 		object_index = distributed_host_placed_object(absolute_index);
 		if (object_index == NONE || !TEST_FLAG(object_get(object_index)->object.flags, _object_at_rest_bit))
 			continue;
