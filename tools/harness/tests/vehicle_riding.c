@@ -86,6 +86,28 @@ struct network_game *network_game_get_game(void)
 	return test_game_pointer;
 }
 
+static long slot_storage = NONE, slot_size, slot_calls, game_time;
+static short script_type = NONE, scenario_global = NONE;
+static int logged, cleared;
+static char const *global_name;
+static void *game_state_malloc(char const *name, void *type, long size)
+{
+	CHECK(!strcmp(name, "vehicle riding map") && !type, "allocation arguments");
+	slot_size = size;
+	slot_calls++;
+	return &slot_storage;
+}
+static short hs_runtime_port_executing_script_type(void) { return script_type; }
+static short hs_runtime_port_scenario_boolean(char const *name) { global_name = name; return scenario_global; }
+static long game_time_get(void) { return game_time; }
+static void error(long priority, char const *format, ...) { (void)priority; (void)format; logged++; }
+struct object_iterator { int next; };
+struct biped_datum { int unused; };
+static struct biped_datum fake_biped;
+enum { _object_mask_biped = 1 };
+static void object_iterator_new(struct object_iterator *i, long mask, long flags) { (void)mask; (void)flags; i->next = 0; }
+static void *object_iterator_next(struct object_iterator *i) { return i->next++ ? NULL : &fake_biped; }
+static void biped_riding_clear(struct biped_datum *biped) { (void)biped; cleared++; }
 #include "under_test.inc"
 
 /* the airborne and ground branches of biped_update_physics (bipeds.c),
@@ -668,6 +690,110 @@ int main(int argc, char **argv)
 	struct vehicle_riding_step step;
 
 	vehicle_riding_latch();
+
+	if (!strncmp(case_name, "map-", 4))
+	{
+		if (strcmp(case_name, "map-unallocated"))
+		{
+			vehicle_riding_map_initialize();
+			vehicle_riding_map_reset();
+		}
+		script_type = _hs_script_startup;
+		CASE("map-wins-local") {
+			vehicle_riding_map_script(FALSE); CHECK(!vehicle_riding_enabled(), "map off lost");
+			setting_riding = 0; vehicle_riding_latch();
+			vehicle_riding_map_script(TRUE); CHECK(vehicle_riding_enabled(), "map on lost");
+			vehicle_riding_map_script(FALSE); vehicle_riding_map_script(TRUE);
+			CHECK(vehicle_riding_enabled(), "last call lost");
+		}
+		else CASE("map-wins-network") {
+			connection = _game_connection_network_server;
+			vehicle_riding_map_script(TRUE); CHECK(vehicle_riding_enabled(), "host map on lost");
+			test_game.cooperative_flags = FLAG(_network_game_cooperative_vehicle_riding_bit);
+			vehicle_riding_map_script(FALSE); CHECK(!vehicle_riding_enabled(), "host map off lost");
+			connection = _game_connection_network_client; test_game.cooperative_flags = 0;
+			vehicle_riding_map_received(TRUE); CHECK(vehicle_riding_enabled(), "received on lost");
+			test_game.cooperative_flags = FLAG(_network_game_cooperative_vehicle_riding_bit);
+			vehicle_riding_map_received(FALSE); CHECK(!vehicle_riding_enabled(), "received off lost");
+			vehicle_riding_map_received(NONE); CHECK(vehicle_riding_enabled(), "bit fallback lost");
+			test_game.cooperative_flags = 0; CHECK(!vehicle_riding_enabled(), "bit off fallback lost");
+		}
+		else CASE("map-client-own-call") {
+			connection = _game_connection_network_client; vehicle_riding_map_script(TRUE);
+			CHECK(slot_storage == NONE && !logged, "client wrote or logged");
+			connection = _game_connection_local; CHECK(vehicle_riding_map() == NONE, "client slot counted");
+		}
+		else CASE("map-script-startup-only") {
+			short types[] = { NONE, _hs_script_dormant, _hs_script_continuous, _hs_script_startup };
+			int i;
+			for (i = 0; i < 4; i++) {
+				script_type = types[i]; game_time = i == 3 ? 1 : 0; vehicle_riding_map_script(TRUE);
+				CHECK(vehicle_riding_map() == NONE, "invalid script counted");
+			}
+			CHECK(logged == 1, "refusal not once"); vehicle_riding_map_reset();
+			vehicle_riding_map_script(TRUE); CHECK(logged == 2, "refusal not rearmed");
+		}
+		else CASE("map-per-map") {
+			setting_riding = 0; vehicle_riding_latch(); vehicle_riding_map_script(TRUE);
+			vehicle_riding_map_reset(); CHECK(vehicle_riding_map() == NONE && !vehicle_riding_enabled(), "map leaked");
+		}
+		else CASE("map-latch") {
+			setting_riding = 0; vehicle_riding_map_script(TRUE); CHECK(vehicle_riding_latch(), "latch ignored on");
+			setting_riding = 1; vehicle_riding_map_script(FALSE); CHECK(!vehicle_riding_latch(), "latch ignored off");
+			vehicle_riding_map_reset(); CHECK(vehicle_riding_latch(), "latch fallback lost");
+		}
+		else CASE("map-revert-kept") { vehicle_riding_map_script(TRUE); vehicle_riding_latch(); CHECK(vehicle_riding_map() == TRUE, "latch erased map"); }
+		else CASE("map-persist") {
+			long saved;
+			CHECK(slot_calls == 1 && slot_size == sizeof(long) && slot_size == 4, "not game state allocation");
+			vehicle_riding_map_script(TRUE); saved = slot_storage;
+			vehicle_riding_map_script(FALSE); CHECK(vehicle_riding_map() == FALSE, "change lost");
+			slot_storage = saved; CHECK(vehicle_riding_map() == TRUE, "saved bytes did not restore choice");
+		}
+		else CASE("map-restore-server") {
+			int i;
+			for (i = 0; i < 2; i++) {
+				connection = i ? _game_connection_local : _game_connection_network_server;
+				setting_riding = 0; vehicle_riding_map_script(TRUE); cleared = 0;
+				bipeds_riding_latch(); CHECK(cleared == 0, "restored rider cleared");
+				vehicle_riding_map_reset(); bipeds_riding_latch(); CHECK(cleared == 1, "off rider kept");
+				setting_riding = 1; vehicle_riding_map_script(FALSE); cleared = 0;
+				bipeds_riding_latch(); CHECK(cleared == 1, "map off rider kept");
+			}
+		}
+		else CASE("map-editor") {
+			vehicle_riding_map_script(TRUE); in_editor = TRUE; CHECK(!vehicle_riding_enabled(), "editor rides");
+			vehicle_riding_map_reset(); vehicle_riding_map_script(TRUE);
+			CHECK(vehicle_riding_map() == NONE && !logged, "editor call counted");
+		}
+		else CASE("map-unallocated") { vehicle_riding_map_script(TRUE); CHECK(vehicle_riding_map() == NONE && !logged, "unallocated counted"); }
+		else CASE("map-global") {
+			setting_riding = 0; vehicle_riding_latch(); scenario_global = TRUE; vehicle_riding_map_start();
+			CHECK(vehicle_riding_enabled() && !strcmp(global_name, "vehicle_riding"), "global on or name lost");
+			setting_riding = 1; vehicle_riding_latch(); scenario_global = FALSE; vehicle_riding_map_start();
+			CHECK(!vehicle_riding_enabled(), "global off lost");
+			vehicle_riding_map_reset(); scenario_global = NONE; vehicle_riding_map_start();
+			CHECK(vehicle_riding_map() == NONE && vehicle_riding_enabled(), "absent global counted");
+		}
+		else CASE("map-global-then-call") {
+			scenario_global = TRUE; vehicle_riding_map_start(); vehicle_riding_map_script(FALSE);
+			CHECK(vehicle_riding_map() == FALSE, "global beat call");
+		}
+		else CASE("map-global-set-later") {
+			scenario_global = TRUE; vehicle_riding_map_start(); scenario_global = FALSE;
+			CHECK(vehicle_riding_latch() && vehicle_riding_enabled() && vehicle_riding_map() == TRUE, "set leaked through latch");
+			vehicle_riding_map_reset(); vehicle_riding_map_start(); CHECK(vehicle_riding_map() == FALSE, "new map not read");
+		}
+		else CASE("map-global-client") {
+			connection = _game_connection_network_client; scenario_global = TRUE; vehicle_riding_map_start();
+			CHECK(slot_storage == NONE, "client global counted");
+		}
+		else CASE("map-global-editor") {
+			in_editor = TRUE; scenario_global = TRUE; vehicle_riding_map_start(); CHECK(slot_storage == NONE, "editor global counted");
+		}
+		else return 2;
+		return 0;
+	}
 
 	CASE("claim-grace")
 	{

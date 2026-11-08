@@ -19,6 +19,10 @@ the original game.
 #include "editor/editor_stubs.h"
 #include "game/game.h"
 #include "game/players.h"
+#include "game/game_time.h"
+#include "hs/hs.h"
+#include "hs/hs_scenario_definitions.h"
+#include "saved games/game_state.h"
 
 #include <math.h>
 
@@ -75,6 +79,10 @@ boolean network_game_port_vehicle_riding(void);
 
 /* the settings as of the last latch */
 static boolean riding_setting;
+/* game state so a revert or saved game keeps the map's choice */
+static long *riding_map;
+static short riding_host_map = NONE;
+static boolean riding_map_refusal_logged;
 static boolean riding_look_carry = TRUE;
 static real riding_damage_speed;
 static real riding_teleport_step = 4.f;
@@ -452,6 +460,7 @@ boolean vehicle_riding_latch(
 	short player_index;
 	long object_index;
 	double grace;
+	short map;
 
 	riding_setting = config_boolean("game.vehicle_riding") != 0;
 	riding_look_carry = config_boolean("debug.riding_look_carry") != 0;
@@ -501,24 +510,80 @@ boolean vehicle_riding_latch(
 		vehicle_riding_correction_identity(&riding_corrections[object_index], NONE);
 	vehicle_riding_contacts_clear();
 
-	return riding_setting;
+	map = vehicle_riding_map();
+	return map != NONE ? map != FALSE : riding_setting;
 }
 
 boolean vehicle_riding_enabled(
 	void)
 {
 	short connection = game_connection();
+	short map;
 
 	/* (the connection is asked on every call: a latch does not know which
 	game comes next; in a network game the host's switch decides for every
 	machine, never a client's own setting) */
 	if (game_in_editor())
 		return FALSE;
+	map = vehicle_riding_map();
 	if (connection == _game_connection_local)
-		return riding_setting;
+		return map != NONE ? map != FALSE : riding_setting;
 	if (connection == _game_connection_network_server || connection == _game_connection_network_client)
-		return network_game_port_vehicle_riding();
+		return map != NONE ? map != FALSE : network_game_port_vehicle_riding();
 	return FALSE;
+}
+
+void vehicle_riding_map_initialize(void)
+{
+	riding_map = (long *)game_state_malloc("vehicle riding map", NULL, sizeof(long));
+}
+
+void vehicle_riding_map_reset(void)
+{
+	if (riding_map)
+		*riding_map = NONE;
+	riding_map_refusal_logged = FALSE;
+}
+
+short vehicle_riding_map(void)
+{
+	/* a client's own scripts never decide: only the host's received value */
+	if (game_connection()==_game_connection_network_client)
+		return riding_host_map;
+	return riding_map ? (short)*riding_map : NONE;
+}
+
+void vehicle_riding_map_received(short map)
+{
+	riding_host_map = map;
+}
+
+void vehicle_riding_map_script(boolean on)
+{
+	if (game_in_editor() || game_connection()==_game_connection_network_client || !riding_map)
+		return;
+	/* the first tick only, so riding never changes under a rider */
+	if (hs_runtime_port_executing_script_type()!=_hs_script_startup || game_time_get()!=0)
+	{
+		if (!riding_map_refusal_logged)
+		{
+			error(_error_silent, "vehicle_riding: a map sets riding only from a startup script, on its first tick; this call does nothing");
+			riding_map_refusal_logged = TRUE;
+		}
+		return;
+	}
+	*riding_map = on != FALSE;
+}
+
+void vehicle_riding_map_start(void)
+{
+	short map;
+
+	if (game_in_editor() || game_connection()==_game_connection_network_client || !riding_map)
+		return;
+	map = hs_runtime_port_scenario_boolean("vehicle_riding");
+	if (map != NONE)
+		*riding_map = map;
 }
 
 boolean vehicle_riding_applies(

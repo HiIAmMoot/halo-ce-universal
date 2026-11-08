@@ -350,6 +350,13 @@ boolean vehicle_riding_latch(void);
 /* the latched setting in a local game, the host's switch in a network
 game; never in film playback or the editor */
 boolean vehicle_riding_enabled(void);
+/* the map's choice, saved with the game and authoritative on the host */
+void vehicle_riding_map_initialize(void);
+void vehicle_riding_map_reset(void);
+void vehicle_riding_map_script(boolean on);
+short vehicle_riding_map(void);
+void vehicle_riding_map_received(short map);
+void vehicle_riding_map_start(void);
 /* whether a biped rides at all: a living player's, riding on */
 boolean vehicle_riding_applies(boolean has_player, boolean dead);
 /* whether a biped updates after the main loop (objects_update_passes) */

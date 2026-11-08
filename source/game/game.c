@@ -433,7 +433,9 @@ void game_initial_pulse(
 {
 	struct data_iterator iterator;
 
-	/* port: (vehicle_riding.c) */
+	/* port: the map's declared value before scripts run; a load must not read
+	it again (vehicle_riding.c) */
+	vehicle_riding_map_start();
 	bipeds_riding_latch();
 
 	data_iterator_new(&iterator, player_data);

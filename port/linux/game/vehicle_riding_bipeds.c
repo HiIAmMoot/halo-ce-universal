@@ -1717,12 +1717,14 @@ static long *object_update_counts;
 
 void vehicle_riding_objects_initialize(void)
 {
+	vehicle_riding_map_initialize();
 	object_update_counts = (long *)game_state_malloc("object update counts", NULL,
 		MAXIMUM_OBJECTS_PER_MAP*sizeof(long));
 }
 
 void vehicle_riding_objects_reset(void)
 {
+	vehicle_riding_map_reset();
 	if (object_update_counts)
 		memset(object_update_counts, 0, MAXIMUM_OBJECTS_PER_MAP*sizeof(long));
 }
