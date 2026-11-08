@@ -2749,7 +2749,18 @@ boolean sound_refresh_looping(
 				0x30E,
 				loop->definition_index==definition_index);
 
-			loop->source = *source;
+			{
+				/* port: the owner's source has no obstruction or occlusion of
+				its own (source_audible works them out), and a sound past its
+				range is no longer tested (source_audible), so a loop taking
+				the owner's would hand a fading voice garbage gains */
+				real obstruction = new_looping_sound ? 0.f : loop->source.obstruction;
+				real occlusion = new_looping_sound ? 0.f : loop->source.occlusion;
+
+				loop->source = *source;
+				loop->source.obstruction = obstruction;
+				loop->source.occlusion = occlusion;
+			}
 			loop->flip_flop = sound_manager_globals.flip_flop;
 
 			if ((refresh_state == _looping_sound_refresh_stop ||
