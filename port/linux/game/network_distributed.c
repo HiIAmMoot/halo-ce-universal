@@ -3416,9 +3416,10 @@ static void distributed_riding_transition(
 				accepted->transition_board_vehicle = NONE;
 			}
 			else if (!host_changed && client_changed &&
-				vehicle_riding_transition_landed(host_ticks, host_vehicle, client_ticks, client_vehicle))
+				vehicle_riding_word_on_air_deck(host_ticks, host_vehicle, client_ticks, client_vehicle))
 			{
-				/* (the copy's own fall lands it: nothing to leash, and the client's entitlement for a later change stays whole) */
+				/* (the word rides the deck the copy is over: the copy's take puts it on its own deck, so nothing to leash and a leash already running is ended, with the client's entitlement for a later change as it was) */
+				accepted->transition_until = 0;
 			}
 			else if (host_changed || (client_changed && !accepted->transition_client_spent))
 			{

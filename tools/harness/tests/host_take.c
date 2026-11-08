@@ -758,6 +758,8 @@ static void landing_riding_leash(long slot, short ticks, boolean part)
     riding[0].ticks = 59;
     host_on(0, &landing_before);
     distributed_accepted[0].transition_until = game_time + 9;
+    /* (a leash the host's own change armed, the word already on the deck: a client change landing in it would end the leash) */
+    distributed_accepted[0].transition_client_ticks = RIDING_TICKS; distributed_accepted[0].transition_client_vehicle = V;
     /* (the word is taken by the leash, as in the run, never as a re-board: none is granted outside the riding test) */
     test_running = FALSE;
     distributed_accepted[0].reboard_vehicle = NONE;
@@ -880,6 +882,8 @@ static int landing_case(char const *case_name)
         riding[0].ticks = 59;
         host_on(0, &landing_before);
         distributed_accepted[0].transition_until = game_time + 9;
+        /* (a leash the host's own change armed, the word already on the deck: a client change landing in it would end the leash) */
+        distributed_accepted[0].transition_client_ticks = RIDING_TICKS; distributed_accepted[0].transition_client_vehicle = V;
         test_running = FALSE;
         distributed_accepted[0].reboard_vehicle = NONE;
         word_on(0, &landing_before, RIDING_TICKS, TRUE);
@@ -2219,6 +2223,19 @@ int main(int argc, char **argv)
         CHECK(distributed_accepted[0].transition_until <= game_time, "a landing on the deck the host's copy jumps from armed until %ld",
             distributed_accepted[0].transition_until);
         CHECK(!distributed_accepted[0].transition_client_spent, "the landing spent the client's entitlement");
+        return 0;
+    }
+    CASE("host-client-lands-ends-running-leash")
+    {
+        setup(); game_time = 500;
+        /* (the client's own take-off arms its leash while the copy is in the air; a short hop later its word rides the deck again, the copy still in the air) */
+        transition_memory(RIDING_TICKS - 1, V, RIDING_TICKS, V); client_word(RIDING_TICKS - 1, V, TRUE);
+        host_window(RIDING_TICKS - 1, V);
+        CHECK(distributed_accepted[0].transition_until == 500 + 9, "the take-off armed until %ld", distributed_accepted[0].transition_until);
+        game_time = 503; client_word(RIDING_TICKS, V, TRUE);
+        host_window(RIDING_TICKS - 1, V);
+        CHECK(distributed_accepted[0].transition_until <= game_time, "a landing left the take-off's leash running until %ld", distributed_accepted[0].transition_until);
+        CHECK(distributed_accepted[0].transition_client_spent, "the landing gave the client's entitlement back");
         return 0;
     }
     CASE("host-client-lands-other-vehicle-arms")

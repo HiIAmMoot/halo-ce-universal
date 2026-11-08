@@ -1552,9 +1552,10 @@ boolean vehicle_riding_transition_agreed(
 	return FALSE;
 }
 
-/* whether the client's word lands on the deck the host copy is in the air over: the copy lands itself within a tick or two,
-and the leash would hold it at the word's world place meanwhile, off its deck by the two copies of the vehicle's offset */
-boolean vehicle_riding_transition_landed(
+/* whether the client's word rides the deck the host copy is in the air over, however the word came to be there: the copy's take puts it
+on its own deck and its fall lands it, where a leash would hold it at the word's world place, off its deck by the two copies of the
+vehicle's offset */
+boolean vehicle_riding_word_on_air_deck(
 	short host_ticks,
 	long host_vehicle,
 	short client_ticks,
