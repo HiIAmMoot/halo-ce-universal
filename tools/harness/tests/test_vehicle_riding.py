@@ -459,7 +459,7 @@ NEGATIVE_CONTROLS = {
                            "cabin-keys"),
     "grace-narrows-early": (('grace = config_real("debug.riding_enclosure_grace_ticks");',
                              'grace = (real)config_real("debug.riding_enclosure_grace_ticks");'), "grace-setting"),
-    "grace-nan-kept": (("\tif (!isfinite(grace))\n", "\tif (FALSE)\n"), "grace-setting"),
+    "grace-nan-kept": (("\tif (!(grace == grace && grace - grace == 0.))\n", "\tif (FALSE)\n"), "grace-setting"),
     "grace-unclamped": (("\telse if (grace >= (double)RIDING_CABIN_GRACE_MAXIMUM)\n\t\triding_cabin_grace = RIDING_CABIN_GRACE_MAXIMUM;\n", ""),
                         "grace-setting"),
     "grace-rounded": (("riding_cabin_grace = (short)grace;", "riding_cabin_grace = (short)(grace + .5f);"), "grace-setting"),

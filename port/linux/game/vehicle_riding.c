@@ -471,7 +471,9 @@ boolean vehicle_riding_latch(
 	grace = config_real("debug.riding_enclosure_grace_ticks");
 	/* (player ticks: not a number is the default, a fraction cut off, then
 	held to the range) */
-	if (!isfinite(grace))
+	/* (not isfinite: the Linux build's math.h has no such macro, so it would
+	be an undefined function) */
+	if (!(grace == grace && grace - grace == 0.))
 		riding_cabin_grace = RIDING_CABIN_GRACE;
 	else if (grace <= 0.)
 		riding_cabin_grace = 0;
