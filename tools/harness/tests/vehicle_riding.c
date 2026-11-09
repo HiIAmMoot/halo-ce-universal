@@ -808,7 +808,9 @@ int main(int argc, char **argv)
 		CASE("host-values-win") {
 			vehicle_riding_latched_get(&own);
 			CHECK(own.air_grip == .3f && own.cabin_grace == 9 && own.look_carry == 1, "own values lost before the message");
+			logged = 0;
 			vehicle_riding_latched_received(&host);
+			CHECK(logged == 1, "the values from the host not logged once");
 			vehicle_riding_latched_get(&got);
 			CHECK(got.damage_speed == .5f && got.teleport_step == 7.f && got.moved_alone == .6f && got.air_grip == .2f &&
 				got.look_carry == 0 && got.cabin_grace == 2, "client kept its own config over the host's");

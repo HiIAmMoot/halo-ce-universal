@@ -543,6 +543,8 @@ NEGATIVE_CONTROLS.update({
     'latch-rereads-global': (('map = vehicle_riding_map();', 'vehicle_riding_map_start();\n\tmap = vehicle_riding_map();', 'latch'), 'map-global-set-later'),
     'global-wrong-name': (('"vehicle_riding"', '"vehicle_ride"'), 'map-global'),
     'host-values-ignored': (('\triding_host_held = TRUE;\n\triding_take_host_values(host);', '\triding_host_held = TRUE;'), 'host-values-win'),
+    'host-values-unlogged': (('error(_error_silent, "vehicle riding: values from the host', 'if (0) error(_error_silent, "vehicle riding: values from the host'),
+                             'host-values-win'),
     'host-values-not-held': (('\triding_host_held = TRUE;', ''), 'host-values-win'),
     'host-values-never-forgotten': (('\triding_host_held = FALSE;\n}', '}'), 'host-values-win'),
     'host-held-from-start': (('static boolean riding_host_held;', 'static boolean riding_host_held = TRUE;'), 'host-no-message-keeps-own'),
