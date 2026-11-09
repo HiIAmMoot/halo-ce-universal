@@ -844,6 +844,19 @@ int main(int argc, char **argv)
 			CHECK(got.air_grip == 0.f && got.damage_speed == 0.f && got.teleport_step == 4.f && got.moved_alone == .25f,
 				"negative values taken");
 		}
+		else CASE("host-latch-clamped") {
+			connection = _game_connection_network_server;
+			setting_damage_speed = -2.0; setting_teleport_step = NAN; setting_moved_alone = -1.0;
+			vehicle_riding_latch();
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == 0.f, "negative damage speed latched");
+			CHECK(got.teleport_step == 4.f, "NaN teleport step latched");
+			CHECK(got.moved_alone == .25f, "negative moved alone latched");
+			setting_damage_speed = INFINITY; setting_teleport_step = -1.0; setting_moved_alone = NAN;
+			vehicle_riding_latch();
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == 0.f && got.teleport_step == 4.f && got.moved_alone == .25f, "non-finite or negative latched");
+		}
 		else CASE("host-joiner-latched") {
 			connection = _game_connection_network_server;
 			setting_damage_speed = .9; setting_teleport_step = 8.0; setting_moved_alone = .8; setting_air_grip = .7;

@@ -8,8 +8,9 @@ hurt it. These are the decisions of each tick, over a plain copy of a
 biped's riding fields, so the asset-free harness compiles this file whole
 (tools/harness/tests/vehicle_riding.c); bipeds.c gathers what the game
 knows and applies what comes back, objects.c updates riders after the
-vehicles, and physics.c asks the collision decision. In a network game the
-host's switch decides for every machine; film playback and the editor play
+vehicles, and physics.c asks the collision decision. The map's choice
+wins where it made one, else in a network game the host's switch decides
+for every machine; film playback and the editor play
 the original game.
 */
 
@@ -484,14 +485,22 @@ void vehicle_riding_latched_get(
 	latched->cabin_grace = (word)riding_cabin_grace;
 }
 
+/* a calibration value as the client holds it, so the host's latch and a client taking the host's agree */
+static real riding_checked(
+	real value,
+	real fallback)
+{
+	return valid_real(value) && value >= 0.f ? value : fallback;
+}
+
 static void riding_take_host_values(
 	struct distributed_riding_latched const *host)
 {
 	/* (a value off the wire is held to what its config would be: no number,
 	infinite or negative falls back to the default, and the grip to none) */
-	riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;
-	riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;
-	riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;
+	riding_damage_speed = riding_checked(host->damage_speed, 0.f);
+	riding_teleport_step = riding_checked(host->teleport_step, 4.f);
+	riding_moved_alone = riding_checked(host->moved_alone, 0.25f);
 	riding_air_grip = 0.f;
 	if (valid_real(host->air_grip) && host->air_grip >= 0.f)
 		riding_air_grip = host->air_grip;
@@ -528,9 +537,9 @@ boolean vehicle_riding_latch(
 
 	riding_setting = config_boolean("game.vehicle_riding") != 0;
 	riding_look_carry = config_boolean("debug.riding_look_carry") != 0;
-	riding_damage_speed = (real)config_real("debug.riding_damage_speed");
-	riding_teleport_step = (real)config_real("debug.riding_teleport_step");
-	riding_moved_alone = (real)config_real("debug.riding_moved_alone");
+	riding_damage_speed = riding_checked((real)config_real("debug.riding_damage_speed"), 0.f);
+	riding_teleport_step = riding_checked((real)config_real("debug.riding_teleport_step"), 4.f);
+	riding_moved_alone = riding_checked((real)config_real("debug.riding_moved_alone"), 0.25f);
 	riding_transition_leash = (real)config_real("debug.riding_transition_leash");
 	/* (the leash is a distance, never an unbounded or negative allowance) */
 	if (!valid_real(riding_transition_leash) || riding_transition_leash < 0.f)

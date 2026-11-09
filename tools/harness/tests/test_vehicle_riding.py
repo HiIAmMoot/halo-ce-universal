@@ -41,7 +41,7 @@ CASES += ["map-wins-local", "map-wins-network", "map-client-own-call", "map-scri
           "map-unallocated", "map-global", "map-global-then-call", "map-global-set-later",
           "map-global-client", "map-global-editor"]
 CASES += ["host-values-win", "host-no-message-keeps-own", "host-bad-value-clamped", "host-joiner-latched",
-          "host-local-unchanged"]
+          "host-local-unchanged", "host-latch-clamped"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -552,14 +552,20 @@ NEGATIVE_CONTROLS.update({
                                      'host-local-unchanged'),
     'wire-air-grip-unchecked': (('if (valid_real(host->air_grip) && host->air_grip >= 0.f)\n\t\triding_air_grip = host->air_grip;',
                                  'riding_air_grip = host->air_grip;'), 'host-bad-value-clamped'),
-    'wire-damage-speed-unchecked': (('riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;',
+    'wire-damage-speed-unchecked': (('riding_damage_speed = riding_checked(host->damage_speed, 0.f);',
                                      'riding_damage_speed = host->damage_speed;'), 'host-bad-value-clamped'),
-    'wire-teleport-step-unchecked': (('riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;',
+    'wire-teleport-step-unchecked': (('riding_teleport_step = riding_checked(host->teleport_step, 4.f);',
                                       'riding_teleport_step = host->teleport_step;'), 'host-bad-value-clamped'),
-    'wire-moved-alone-unchecked': (('riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;',
+    'wire-moved-alone-unchecked': (('riding_moved_alone = riding_checked(host->moved_alone, 0.25f);',
                                     'riding_moved_alone = host->moved_alone;'), 'host-bad-value-clamped'),
     'wire-grace-unclamped': (('riding_latch_grace((double)host->cabin_grace);', 'riding_cabin_grace = (short)host->cabin_grace;'),
                              'host-bad-value-clamped'),
+    'latch-damage-speed-unchecked': (('riding_damage_speed = riding_checked((real)config_real("debug.riding_damage_speed"), 0.f);',
+                                      'riding_damage_speed = (real)config_real("debug.riding_damage_speed");'), 'host-latch-clamped'),
+    'latch-teleport-step-unchecked': (('riding_teleport_step = riding_checked((real)config_real("debug.riding_teleport_step"), 4.f);',
+                                       'riding_teleport_step = (real)config_real("debug.riding_teleport_step");'), 'host-latch-clamped'),
+    'latch-moved-alone-unchecked': (('riding_moved_alone = riding_checked((real)config_real("debug.riding_moved_alone"), 0.25f);',
+                                     'riding_moved_alone = (real)config_real("debug.riding_moved_alone");'), 'host-latch-clamped'),
     'latched-reads-live-config': (('latched->air_grip = riding_air_grip;', 'latched->air_grip = (real)config_real("debug.riding_air_grip");'),
                                   'host-joiner-latched'),
 })
