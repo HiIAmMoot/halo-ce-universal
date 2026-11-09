@@ -156,6 +156,8 @@ enum
 	stream */
 	_distributed_message_map_vote = 94,
 	_distributed_message_map_vote_choice = 95,
+	/* the map's riding choice (network_riding_map.c), reliably from the host */
+	_distributed_message_vehicle_riding_map = 96,
 
 	NUMBER_OF_DISTRIBUTED_MESSAGES
 };

@@ -12,6 +12,7 @@ tests: the physical proof is the live run.
 */
 
 #include "harness.h"
+typedef unsigned short word;
 #include <math.h>
 typedef struct { real i, j; } real_vector2d;
 #include "enums.inc"
@@ -38,6 +39,20 @@ struct network_game { byte cooperative_flags; };
 static struct network_game test_game;
 struct network_game *network_game_get_game(void) { return &test_game; }
 
+/* the map's riding slot and its script and latch reach (vehicle_riding.c's map functions); no case here sets a map */
+struct object_datum;
+struct biped_datum;
+struct object_iterator { long index; long next; };
+static struct object_datum *object_iterator_next(struct object_iterator *iterator);
+static void object_iterator_new(struct object_iterator *iterator, long mask, long flags);
+#define _object_mask_biped 1
+static long map_slot_storage;
+static void *game_state_malloc(char const *name, void *type, long size) { (void)name; (void)type; (void)size; return &map_slot_storage; }
+static short hs_runtime_port_executing_script_type(void) { return NONE; }
+static short hs_runtime_port_scenario_boolean(char const *name) { (void)name; return NONE; }
+static long game_time_get(void) { return 0; }
+static void error(long priority, char const *format, ...) { (void)priority; (void)format; }
+static void biped_riding_clear(struct biped_datum *biped) { (void)biped; }
 #include "under_test.inc"
 
 #define VEHICLE 0x10000001
@@ -80,8 +95,6 @@ struct biped_datum
 };
 
 struct biped_definition { long unused; };
-
-struct object_iterator { long index; long next; };
 
 /* a vehicle: its object, and the hull as one box in its body frame (low above high: none) */
 struct fake_vehicle

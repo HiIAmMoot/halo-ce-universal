@@ -36,6 +36,12 @@ COOP = "port/linux/game/network_coop.c"
 CASES += ["claim-grace", "write-carry-decision", "write-carry-window-next-step"]
 CASES += ["cabin-hold-no-touch", "cabin-hold-ends", "cabin-client-crossing", "crossing-rest-place-free"]
 CASES += ["window-base-matches-step", "window-base-write-left-out", "window-base-followed", "window-base-role-change"]
+CASES += ["map-wins-local", "map-wins-network", "map-client-own-call", "map-script-startup-only",
+          "map-per-map", "map-latch", "map-revert-kept", "map-persist", "map-restore-server", "map-editor",
+          "map-unallocated", "map-global", "map-global-then-call", "map-global-set-later",
+          "map-global-client", "map-global-editor"]
+CASES += ["host-values-win", "host-no-message-keeps-own", "host-bad-value-clamped", "host-joiner-latched",
+          "host-local-unchanged"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
@@ -132,9 +138,9 @@ NEGATIVE_CONTROLS = {
     "teleport-step-reversed": (("distance > riding_teleport_step*step->updates",
                                 "distance < riding_teleport_step*step->updates"), "guards"),
     "drop-forgets-falling": (("\tif (falling)\n", "\tif (FALSE)\n"), "guards"),
-    "local-setting-everywhere": (("\tif (connection == _game_connection_local)\n\t\treturn riding_setting;\n",
-                                  "\tif (TRUE)\n\t\treturn riding_setting;\n"), "gate"),
-    "network-uses-local-setting": (("\t\treturn network_game_port_vehicle_riding();\n", "\t\treturn riding_setting;\n"),
+    "local-setting-everywhere": (("\tif (connection == _game_connection_local)\n\t\treturn map != NONE ? map != FALSE : riding_setting;\n",
+                                  "\tif (TRUE)\n\t\treturn map != NONE ? map != FALSE : riding_setting;\n"), "gate"),
+    "network-uses-local-setting": ((": network_game_port_vehicle_riding();", ": riding_setting;"),
                                    "network-gate"),
     "network-client-off": (("connection == _game_connection_network_server || connection == _game_connection_network_client",
                             "connection == _game_connection_network_server"), "network-gate"),
@@ -518,6 +524,47 @@ NEGATIVE_CONTROLS = {
 }
 
 
+NEGATIVE_CONTROLS.update({
+    'map-any-script': (('hs_runtime_port_executing_script_type()!=_hs_script_startup', 'FALSE'), 'map-script-startup-only'),
+    'map-late-call': (('game_time_get()!=0', 'FALSE'), 'map-script-startup-only'),
+    'map-client-sets': (('game_connection()==_game_connection_network_client || !riding_map', '!riding_map', 'map_script'), 'map-client-own-call'),
+    'map-ignored-local': (('return map != NONE ? map != FALSE : riding_setting;', 'return riding_setting;', 'enabled'), 'map-wins-local'),
+    'map-ignored-network': (('return map != NONE ? map != FALSE : network_game_port_vehicle_riding();', 'return network_game_port_vehicle_riding();'), 'map-wins-network'),
+    'client-own-slot': (('return riding_host_map;', 'return riding_map ? (short)*riding_map : NONE;'), 'map-wins-network'),
+    'map-not-reset': (('*riding_map = NONE;', ';'), 'map-per-map'),
+    'latch-ignores-map': (('return map != NONE ? map != FALSE : riding_setting;', '(void)map; return riding_setting;', 'latch'), 'map-latch'),
+    'latch-local-only': (('return map != NONE ? map != FALSE : riding_setting;', 'return game_connection() == _game_connection_local && map != NONE ? map != FALSE : riding_setting;', 'latch'), 'map-restore-server'),
+    'map-in-static': (('riding_map = (long *)game_state_malloc("vehicle riding map", NULL, sizeof(long));', '{ static long own; riding_map = &own; }'), 'map-persist'),
+    'map-before-editor': (('\tif (game_in_editor())\n\t\treturn FALSE;\n\tmap = vehicle_riding_map();', '\tmap = vehicle_riding_map();\n\tif (map != NONE) return map != FALSE;\n\tif (game_in_editor())\n\t\treturn FALSE;'), 'map-editor'),
+    'log-every-call': (('if (!riding_map_refusal_logged)', 'if (TRUE)'), 'map-script-startup-only'),
+    'global-ignored': (('*riding_map = map;', ';'), 'map-global'),
+    'global-on-client': (('game_connection()==_game_connection_network_client || !riding_map', '!riding_map', 'map_start'), 'map-global-client'),
+    'global-overrides-call': (('!riding_map)\n\t\treturn;\n\t/* the first tick', '(!riding_map || *riding_map != NONE))\n\t\treturn;\n\t/* the first tick'), 'map-global-then-call'),
+    'latch-rereads-global': (('map = vehicle_riding_map();', 'vehicle_riding_map_start();\n\tmap = vehicle_riding_map();', 'latch'), 'map-global-set-later'),
+    'global-wrong-name': (('"vehicle_riding"', '"vehicle_ride"'), 'map-global'),
+    'host-values-ignored': (('\triding_host_held = TRUE;\n\triding_take_host_values(host);', '\triding_host_held = TRUE;'), 'host-values-win'),
+    'host-values-unlogged': (('error(_error_silent, "vehicle riding: values from the host', 'if (0) error(_error_silent, "vehicle riding: values from the host'),
+                             'host-values-win'),
+    'host-values-not-held': (('\triding_host_held = TRUE;', ''), 'host-values-win'),
+    'host-values-never-forgotten': (('\triding_host_held = FALSE;\n}', '}'), 'host-values-win'),
+    'host-held-from-start': (('static boolean riding_host_held;', 'static boolean riding_host_held = TRUE;'), 'host-no-message-keeps-own'),
+    'host-values-taken-everywhere': (('if (game_connection() != _game_connection_network_client)\n\t\treturn;\n\triding_host_values', 'riding_host_values'),
+                                     'host-local-unchanged'),
+    'wire-air-grip-unchecked': (('if (valid_real(host->air_grip) && host->air_grip >= 0.f)\n\t\triding_air_grip = host->air_grip;',
+                                 'riding_air_grip = host->air_grip;'), 'host-bad-value-clamped'),
+    'wire-damage-speed-unchecked': (('riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;',
+                                     'riding_damage_speed = host->damage_speed;'), 'host-bad-value-clamped'),
+    'wire-teleport-step-unchecked': (('riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;',
+                                      'riding_teleport_step = host->teleport_step;'), 'host-bad-value-clamped'),
+    'wire-moved-alone-unchecked': (('riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;',
+                                    'riding_moved_alone = host->moved_alone;'), 'host-bad-value-clamped'),
+    'wire-grace-unclamped': (('riding_latch_grace((double)host->cabin_grace);', 'riding_cabin_grace = (short)host->cabin_grace;'),
+                             'host-bad-value-clamped'),
+    'latched-reads-live-config': (('latched->air_grip = riding_air_grip;', 'latched->air_grip = (real)config_real("debug.riding_air_grip");'),
+                                  'host-joiner-latched'),
+})
+
+
 def without_includes(text):
     return re.sub(r"^#include .*$", "", text, flags=re.M)
 
@@ -603,6 +650,8 @@ def generated(fault=None):
     branch or in network_coop.c's network_game_port_vehicle_riding."""
     game = read("source/game/game.h")
     enums = enum_with(game, "_game_connection_local") + "\n"
+    enums += enum_with(read('source/hs/hs_scenario_definitions.h'), '_hs_script_startup') + '\n'
+    enums += enum_with(read('source/cseries/errors.h'), '_error_silent') + '\n'
     enums += (f"#define HALO_PORT_MAXIMUM_OBJECTS_PER_MAP "
               f"{constant(read('port/linux/include/halo_port_capacity.h'), 'HALO_PORT_MAXIMUM_OBJECTS_PER_MAP')}\n")
     enums += f"#define MAXIMUM_LOCAL_PLAYERS {constant(read('source/game/players.h'), 'MAXIMUM_LOCAL_PLAYERS')}\n"
@@ -617,14 +666,19 @@ def generated(fault=None):
         enums += f"#define {fault[1]} 1\n"
         fault = None
     if fault and len(fault) == 3:
-        if fault[2] == COOP:
+        if fault[2] in ('enabled', 'latch', 'map_start', 'map_script'):
+            name = 'vehicle_riding_' + fault[2]
+            scope = function(code, name)
+            code = code.replace(scope, mutated(scope, *fault[:2]), 1)
+            fault = None
+        elif fault[2] == COOP:
             coop, fault = mutated(coop, *fault[:2]), None
         else:
             branch_fault, fault = fault[:2], None
     if fault:
         code = mutated(code, *fault)
     text = (without_includes(read("port/linux/game/vehicle_riding.h")) + "\n" + without_includes(code) + "\n"
-            + coop + "\n")
+            + coop + "\n" + function(read('port/linux/game/vehicle_riding_bipeds.c'), 'bipeds_riding_latch') + '\n')
     return (("enums.inc", enums), ("engine.inc", engine()), ("under_test.inc", text),
             ("airborne.inc", airborne(branch_fault)), ("ground.inc", ground()))
 

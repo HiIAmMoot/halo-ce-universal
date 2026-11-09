@@ -16,9 +16,13 @@ the original game.
 #include "cseries.h"
 #include "math/real_math.h"
 #include "vehicle_riding.h"
+#include "cseries/errors.h"
 #include "editor/editor_stubs.h"
 #include "game/game.h"
 #include "game/players.h"
+#include "hs/hs.h"
+#include "hs/hs_scenario_definitions.h"
+#include "saved games/game_state.h"
 
 #include <math.h>
 
@@ -75,6 +79,10 @@ boolean network_game_port_vehicle_riding(void);
 
 /* the settings as of the last latch */
 static boolean riding_setting;
+/* game state so a revert or saved game keeps the map's choice */
+static long *riding_map;
+static short riding_host_map = NONE;
+static boolean riding_map_refusal_logged;
 static boolean riding_look_carry = TRUE;
 static real riding_damage_speed;
 static real riding_teleport_step = 4.f;
@@ -83,6 +91,10 @@ static real riding_transition_leash = 0.25f;
 static real riding_air_grip = .045f;
 static short riding_step_refusal;
 static short riding_cabin_grace = RIDING_CABIN_GRACE;
+/* the host's values a client holds for this game; a latch puts them back over
+its own config */
+static boolean riding_host_held;
+static struct distributed_riding_latched riding_host_values;
 
 /* each local player's view turn by its vehicle this tick, for the direct
 camera (render_interpolation.c) */
@@ -445,6 +457,66 @@ boolean vehicle_riding_claim_grace(
 	return TRUE;
 }
 
+static void riding_latch_grace(double grace)
+{
+	/* (player ticks: not a number is the default, a fraction cut off, then
+	held to the range) */
+	/* (not isfinite: the Linux build's math.h has no such macro, so it would
+	be an undefined function) */
+	if (!(grace == grace && grace - grace == 0.))
+		riding_cabin_grace = RIDING_CABIN_GRACE;
+	else if (grace <= 0.)
+		riding_cabin_grace = 0;
+	else if (grace >= (double)RIDING_CABIN_GRACE_MAXIMUM)
+		riding_cabin_grace = RIDING_CABIN_GRACE_MAXIMUM;
+	else
+		riding_cabin_grace = (short)grace;
+}
+
+void vehicle_riding_latched_get(
+	struct distributed_riding_latched *latched)
+{
+	latched->damage_speed = riding_damage_speed;
+	latched->teleport_step = riding_teleport_step;
+	latched->moved_alone = riding_moved_alone;
+	latched->air_grip = riding_air_grip;
+	latched->look_carry = riding_look_carry != FALSE;
+	latched->cabin_grace = (word)riding_cabin_grace;
+}
+
+static void riding_take_host_values(
+	struct distributed_riding_latched const *host)
+{
+	/* (a value off the wire is held to what its config would be: no number,
+	infinite or negative falls back to the default, and the grip to none) */
+	riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;
+	riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;
+	riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;
+	riding_air_grip = 0.f;
+	if (valid_real(host->air_grip) && host->air_grip >= 0.f)
+		riding_air_grip = host->air_grip;
+	riding_look_carry = host->look_carry != 0;
+	riding_latch_grace((double)host->cabin_grace);
+}
+
+void vehicle_riding_latched_received(
+	struct distributed_riding_latched const *host)
+{
+	if (game_connection() != _game_connection_network_client)
+		return;
+	riding_host_values = *host;
+	riding_host_held = TRUE;
+	riding_take_host_values(host);
+	/* (the one line a run shows the client rides by the host's calibration) */
+	error(_error_silent, "vehicle riding: values from the host: air grip %f, damage speed %f, teleport step %f, moved alone %f, look carry %d, enclosure grace %d",
+		riding_air_grip, riding_damage_speed, riding_teleport_step, riding_moved_alone, riding_look_carry != FALSE, (int)riding_cabin_grace);
+}
+
+void vehicle_riding_latched_forget(void)
+{
+	riding_host_held = FALSE;
+}
+
 boolean vehicle_riding_latch(
 	void)
 {
@@ -452,6 +524,7 @@ boolean vehicle_riding_latch(
 	short player_index;
 	long object_index;
 	double grace;
+	short map;
 
 	riding_setting = config_boolean("game.vehicle_riding") != 0;
 	riding_look_carry = config_boolean("debug.riding_look_carry") != 0;
@@ -469,18 +542,10 @@ boolean vehicle_riding_latch(
 	if (!(riding_air_grip >= 0.f))
 		riding_air_grip = 0.f;
 	grace = config_real("debug.riding_enclosure_grace_ticks");
-	/* (player ticks: not a number is the default, a fraction cut off, then
-	held to the range) */
-	/* (not isfinite: the Linux build's math.h has no such macro, so it would
-	be an undefined function) */
-	if (!(grace == grace && grace - grace == 0.))
-		riding_cabin_grace = RIDING_CABIN_GRACE;
-	else if (grace <= 0.)
-		riding_cabin_grace = 0;
-	else if (grace >= (double)RIDING_CABIN_GRACE_MAXIMUM)
-		riding_cabin_grace = RIDING_CABIN_GRACE_MAXIMUM;
-	else
-		riding_cabin_grace = (short)grace;
+	riding_latch_grace(grace);
+	/* (a client's latch after the host's message keeps the host's values) */
+	if (riding_host_held && game_connection() == _game_connection_network_client)
+		riding_take_host_values(&riding_host_values);
 	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
 	{
 		riding_kept_dyaws[local_player_index] = 0.f;
@@ -501,24 +566,80 @@ boolean vehicle_riding_latch(
 		vehicle_riding_correction_identity(&riding_corrections[object_index], NONE);
 	vehicle_riding_contacts_clear();
 
-	return riding_setting;
+	map = vehicle_riding_map();
+	return map != NONE ? map != FALSE : riding_setting;
 }
 
 boolean vehicle_riding_enabled(
 	void)
 {
 	short connection = game_connection();
+	short map;
 
 	/* (the connection is asked on every call: a latch does not know which
 	game comes next; in a network game the host's switch decides for every
 	machine, never a client's own setting) */
 	if (game_in_editor())
 		return FALSE;
+	map = vehicle_riding_map();
 	if (connection == _game_connection_local)
-		return riding_setting;
+		return map != NONE ? map != FALSE : riding_setting;
 	if (connection == _game_connection_network_server || connection == _game_connection_network_client)
-		return network_game_port_vehicle_riding();
+		return map != NONE ? map != FALSE : network_game_port_vehicle_riding();
 	return FALSE;
+}
+
+void vehicle_riding_map_initialize(void)
+{
+	riding_map = (long *)game_state_malloc("vehicle riding map", NULL, sizeof(long));
+}
+
+void vehicle_riding_map_reset(void)
+{
+	if (riding_map)
+		*riding_map = NONE;
+	riding_map_refusal_logged = FALSE;
+}
+
+short vehicle_riding_map(void)
+{
+	/* a client's own scripts never decide: only the host's received value */
+	if (game_connection()==_game_connection_network_client)
+		return riding_host_map;
+	return riding_map ? (short)*riding_map : NONE;
+}
+
+void vehicle_riding_map_received(short map)
+{
+	riding_host_map = map;
+}
+
+void vehicle_riding_map_script(boolean on)
+{
+	if (game_in_editor() || game_connection()==_game_connection_network_client || !riding_map)
+		return;
+	/* the first tick only, so riding never changes under a rider */
+	if (hs_runtime_port_executing_script_type()!=_hs_script_startup || game_time_get()!=0)
+	{
+		if (!riding_map_refusal_logged)
+		{
+			error(_error_silent, "vehicle_riding: a map sets riding only from a startup script, on its first tick; this call does nothing");
+			riding_map_refusal_logged = TRUE;
+		}
+		return;
+	}
+	*riding_map = on != FALSE;
+}
+
+void vehicle_riding_map_start(void)
+{
+	short map;
+
+	if (game_in_editor() || game_connection()==_game_connection_network_client || !riding_map)
+		return;
+	map = hs_runtime_port_scenario_boolean("vehicle_riding");
+	if (map != NONE)
+		*riding_map = map;
 }
 
 boolean vehicle_riding_applies(

@@ -8,6 +8,7 @@ front-facing from outside.
 */
 
 #include "harness.h"
+typedef unsigned short word;
 #include <math.h>
 typedef struct { real i, j; } real_vector2d;
 #include "enums.inc"
@@ -35,6 +36,19 @@ static struct network_game test_game;
 struct network_game *network_game_get_game(void) { return &test_game; }
 static boolean game_players_are_double_speed(void);
 
+/* the map's riding slot and its script and latch reach (vehicle_riding.c's map functions); no case here sets a map */
+struct biped_datum;
+static long map_slot_storage;
+static void *game_state_malloc(char const *name, void *type, long size) { (void)name; (void)type; (void)size; return &map_slot_storage; }
+static short hs_runtime_port_executing_script_type(void) { return NONE; }
+static short hs_runtime_port_scenario_boolean(char const *name) { (void)name; return NONE; }
+static void error(long priority, char const *format, ...) { (void)priority; (void)format; }
+struct object_iterator { int next; };
+enum { _object_mask_biped = 1 };
+static void object_iterator_new(struct object_iterator *i, long mask, long flags) { (void)mask; (void)flags; i->next = 0; }
+static void *object_iterator_next(struct object_iterator *i) { (void)i; return NULL; }
+static void biped_riding_clear(struct biped_datum *biped) { (void)biped; }
+static long game_time_get(void);
 #include "under_test.inc"
 
 /* ---------- the fake collision world */
@@ -412,7 +426,6 @@ static real biped_riding_damage_speed(struct biped_datum const *biped) { (void)b
 
 /* bipeds.c's world for the recovery, beside Task 5's biped, tags and gravity: the fix, the carry, the touch, the hit,
 the log */
-enum { _error_log = 1 };
 static short pushes;
 static short damages;
 static short logged;
