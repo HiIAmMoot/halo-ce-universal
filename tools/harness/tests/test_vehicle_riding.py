@@ -550,7 +550,7 @@ NEGATIVE_CONTROLS.update({
     'host-held-from-start': (('static boolean riding_host_held;', 'static boolean riding_host_held = TRUE;'), 'host-no-message-keeps-own'),
     'host-values-taken-everywhere': (('if (game_connection() != _game_connection_network_client)\n\t\treturn;\n\triding_host_values', 'riding_host_values'),
                                      'host-local-unchanged'),
-    'wire-air-grip-unchecked': (('riding_air_grip = valid_real(host->air_grip) && host->air_grip >= 0.f ? host->air_grip : 0.f;',
+    'wire-air-grip-unchecked': (('if (valid_real(host->air_grip) && host->air_grip >= 0.f)\n\t\triding_air_grip = host->air_grip;',
                                  'riding_air_grip = host->air_grip;'), 'host-bad-value-clamped'),
     'wire-damage-speed-unchecked': (('riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;',
                                      'riding_damage_speed = host->damage_speed;'), 'host-bad-value-clamped'),

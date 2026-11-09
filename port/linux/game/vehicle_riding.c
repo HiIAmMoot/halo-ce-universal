@@ -492,7 +492,9 @@ static void riding_take_host_values(
 	riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;
 	riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;
 	riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;
-	riding_air_grip = valid_real(host->air_grip) && host->air_grip >= 0.f ? host->air_grip : 0.f;
+	riding_air_grip = 0.f;
+	if (valid_real(host->air_grip) && host->air_grip >= 0.f)
+		riding_air_grip = host->air_grip;
 	riding_look_carry = host->look_carry != 0;
 	riding_latch_grace((double)host->cabin_grace);
 }
