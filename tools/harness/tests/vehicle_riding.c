@@ -795,6 +795,73 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	if (!strncmp(case_name, "host-", 5))
+	{
+		struct vehicle_riding_latched own, got;
+		struct vehicle_riding_latched host = { .5f, 7.f, .6f, .2f, 0, 2 };
+
+		setting_damage_speed = .1; setting_teleport_step = 3.0; setting_moved_alone = .4; setting_air_grip = .3;
+		setting_look_carry = 1; setting_grace = 9.0;
+		vehicle_riding_latch();
+		connection = _game_connection_network_client;
+		CASE("host-values-win") {
+			vehicle_riding_latched_get(&own);
+			CHECK(own.air_grip == .3f && own.cabin_grace == 9 && own.look_carry == 1, "own values lost before the message");
+			vehicle_riding_latched_received(&host);
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == .5f && got.teleport_step == 7.f && got.moved_alone == .6f && got.air_grip == .2f &&
+				got.look_carry == 0 && got.cabin_grace == 2, "client kept its own config over the host's");
+			CHECK(vehicle_riding_cabin_grace() == 2, "grace not the host's");
+			vehicle_riding_latch();
+			vehicle_riding_latched_get(&got);
+			CHECK(got.air_grip == .2f && got.cabin_grace == 2, "a later latch took the client's config back");
+			vehicle_riding_latched_forget(); vehicle_riding_latch();
+			vehicle_riding_latched_get(&got);
+			CHECK(got.air_grip == .3f && got.cabin_grace == 9, "host values kept past the game");
+		}
+		else CASE("host-no-message-keeps-own") {
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == .1f && got.teleport_step == 3.f && got.moved_alone == .4f && got.air_grip == .3f &&
+				got.look_carry == 1 && got.cabin_grace == 9, "client lost its own values with no message");
+		}
+		else CASE("host-bad-value-clamped") {
+			host.damage_speed = (real)NAN; host.teleport_step = -1.f; host.moved_alone = (real)INFINITY; host.air_grip = (real)NAN;
+			host.look_carry = 7; host.cabin_grace = 60000;
+			vehicle_riding_latched_received(&host);
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == 0.f, "NaN damage speed taken");
+			CHECK(got.teleport_step == 4.f, "negative teleport step taken");
+			CHECK(got.moved_alone == .25f, "infinite moved alone taken");
+			CHECK(got.air_grip == 0.f, "NaN air grip taken");
+			CHECK(got.look_carry == 1, "look carry not a boolean");
+			CHECK(got.cabin_grace == 30 && vehicle_riding_cabin_grace() == 30, "grace past the maximum taken");
+			host.air_grip = -.5f; host.damage_speed = -2.f; host.teleport_step = (real)NAN; host.moved_alone = -.1f;
+			vehicle_riding_latched_received(&host);
+			vehicle_riding_latched_get(&got);
+			CHECK(got.air_grip == 0.f && got.damage_speed == 0.f && got.teleport_step == 4.f && got.moved_alone == .25f,
+				"negative values taken");
+		}
+		else CASE("host-joiner-latched") {
+			connection = _game_connection_network_server;
+			setting_damage_speed = .9; setting_teleport_step = 8.0; setting_moved_alone = .8; setting_air_grip = .7;
+			setting_look_carry = 0; setting_grace = 3.0;
+			vehicle_riding_latched_get(&got);
+			CHECK(got.damage_speed == .1f && got.teleport_step == 3.f && got.moved_alone == .4f && got.air_grip == .3f &&
+				got.look_carry == 1 && got.cabin_grace == 9, "a mid-match config change reached the latched values");
+			vehicle_riding_latched_received(&host);
+			vehicle_riding_latched_get(&got);
+			CHECK(got.air_grip == .3f, "host took values from the wire");
+		}
+		else CASE("host-local-unchanged") {
+			connection = _game_connection_local;
+			vehicle_riding_latched_received(&host);
+			vehicle_riding_latched_get(&got);
+			CHECK(got.air_grip == .3f && got.cabin_grace == 9, "a local game took values from the wire");
+		}
+		else return 2;
+		return 0;
+	}
+
 	CASE("claim-grace")
 	{
 		struct vehicle_riding_claim *claim = vehicle_riding_player_claim(127);

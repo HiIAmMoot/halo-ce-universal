@@ -22,7 +22,7 @@ def generated(fault=None):
     return (('under_test.inc', code), ('message_ids.inc', message_ids()))
 
 
-@pytest.mark.parametrize('case', ['replication', 'admission', 'reset'])
+@pytest.mark.parametrize('case', ['replication', 'admission', 'reset', 'values', 'client-values'])
 def test_case(case):
     status, output = run(build('riding_map_message', generated()), case)
     assert status == 0, output

@@ -40,6 +40,8 @@ CASES += ["map-wins-local", "map-wins-network", "map-client-own-call", "map-scri
           "map-per-map", "map-latch", "map-revert-kept", "map-persist", "map-restore-server", "map-editor",
           "map-unallocated", "map-global", "map-global-then-call", "map-global-set-later",
           "map-global-client", "map-global-editor"]
+CASES += ["host-values-win", "host-no-message-keeps-own", "host-bad-value-clamped", "host-joiner-latched",
+          "host-local-unchanged"]
 
 # a fault in vehicle_riding.c, and the case that must catch it
 NEGATIVE_CONTROLS = {
