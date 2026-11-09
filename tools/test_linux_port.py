@@ -730,8 +730,13 @@ def riding_menu_layout(files):
         if not name.endswith("/button_bar"):
             assert int(child.get("y")) + int(widgets[name].get("height")) <= 366, name
 
+    # (no empty row slot where a row left, and no row over the next one's)
+    rows_y = sorted({int(c.get("y")) for c in children if not c.get("widget").endswith("/button_bar")})
+    assert {b - a for a, b in zip(rows_y, rows_y[1:])} == {22}, rows_y
     coop = base + "/coop_options"
     coop_rows = widgets[coop + "/coop_options_menu"].findall("child")[:-1]
+    for above, below in zip(coop_rows, coop_rows[1:]):
+        assert int(below.get("y")) - int(above.get("y")) >= int(widgets[above.get("widget")].get("height")), above.get("widget")
     assert coop_rows[-1].get("widget") == coop + "/op_vehicle_riding"
     vehicle = "main_menu/settings_select/multiplayer_setup/vehicle_options_edit"
     extra = ElementTree.fromstring("\n".join(files[vehicle.replace("/", ".") + ".port.xml"]))
@@ -811,7 +816,9 @@ SERVER_SETUP_CONTROLS = {
     "riding-on-main-list": ('rows.append((f"{base}/op_password", None))',
                             'rows.append((f"{base}/op_password", None))\n    rows.append((f"{base}/op_vehicle_riding", None, SETUP_OPTIONS_PLACE - 2))'),
     "riding-row-after-team": ('f"{VEHICLE_EDIT}/op_team": [', 'f"{VEHICLE_EDIT}/op_vehicle_presets": ['),
-    "riding-label-index": ('("vehicle_riding", 9, ["ON", "OFF"])', '("vehicle_riding", 8, ["ON", "OFF"])'),
+    "riding-label-index": ('"vehicle_riding", 9, ["ON", "OFF"]', '"vehicle_riding", 8, ["ON", "OFF"]'),
+    "setup-gap-left": ("SETUP_OPTIONS_PLACE = 6", "SETUP_OPTIONS_PLACE = 7"),
+    "coop-rows-overlap": ('("height", min(28, spacing))', '("height", 28)'),
     "coop-riding-missing": ('        ("vehicle_riding", "VEHICLE RIDING:", ["ON", "OFF"], [VEHICLE_RIDING_HELP] * 2),\n', ''),
 }
 
@@ -855,6 +862,7 @@ RIDING_SOURCES = {
     "main": "source/main/main.c",
     "game_state": "source/saved games/game_state.c",
     "hs_globals": "source/hs/hs_globals_external.c",
+    "hs_runtime": "source/hs/hs_runtime.c",
 }
 RIDING_CHECKS = {}
 RIDING_CONTROLS = {}
@@ -1608,6 +1616,8 @@ def riding_script_function_check(text):
     assert 'HS_EVALUATE_VOID_BOOLEAN(hs_vehicle_riding_evaluate, vehicle_riding_map_script)' in hs
     assert 'vehicle_riding_map_reset();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_reset')
     assert 'vehicle_riding_map_initialize();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_initialize')
+    # (the engine reads a boolean from its low byte: a false global with upper bytes set stays false)
+    assert 'return (boolean)hs_global_evaluate(designator)!=FALSE;' in riding_function(text['hs_runtime'], 'hs_runtime_port_scenario_boolean')
     assert 'network_riding_map_update();' in text['main']
     new_game = riding_function(text['network'], 'network_distributed_new_game')
     assert 'network_riding_map_reset();' in new_game
@@ -1630,6 +1640,7 @@ RIDING_CHECKS['script-function'] = riding_script_function_check
 RIDING_CONTROLS.update({
     'script-not-allowed': ('hs', None, 'TRUE, /* vehicle_riding */', 'FALSE, /* vehicle_riding */', 'script-function'),
     'script-not-last': ('hs', None, '\t\t&vehicle_riding_definition.definition,\n', '', 'script-function'),
+    'global-read-whole-long': ('hs_runtime', 'hs_runtime_port_scenario_boolean', 'return (boolean)hs_global_evaluate(designator)!=FALSE;', 'return hs_global_evaluate(designator)!=FALSE;', 'script-function'),
     'riding-main-update-unwired': ('main', None, 'network_riding_map_update();', '', 'script-function'),
     'riding-new-game-reset-unwired': ('network', 'network_distributed_new_game', 'network_riding_map_reset();', '', 'script-function'),
     'riding-dispatch-unwired': ('network', 'network_distributed_handle_message', 'network_riding_map_handle_message(machine_index, message, size);', '', 'script-function'),

@@ -1736,7 +1736,7 @@ MAP_SHARE_SETUP = ("map_share_options", "MAP SHARING",
 ])
 # (Server Setup's place of its options' rows, co-op's or the gametype's: after
 # MAP SHARING's)
-SETUP_OPTIONS_PLACE = 7
+SETUP_OPTIONS_PLACE = 6
 # (their screens' titles)
 TITLES.update({f"{MT}/server_settings/{key}/header_{key}": title
                for key, title, _, _ in [*COOP_SETUP_SCREENS, MAP_SHARE_SETUP]})
@@ -1761,8 +1761,8 @@ def _setup_option_screen(base: str, key: str, rows: list, fit: bool = False) -> 
                                            ("font", "ui\\large_ui"), ("color", "#FFFFFFFF")], [])
     children = ['<data input="game settings lists text update"/>',
                 '<on event="created" run="port setup options init"/>']
-    # (30 apart; with fit, closer for more rows than eight, the last 28 tall
-    # clear of the help at 341: Server Setup's, whose rows are all shown, as
+    # (30 apart; with fit, closer for more rows than eight, the last clear of the help at 341
+    # and the rows no taller than their spacing: Server Setup's, whose rows are all shown, as
     # OpenCE Options' are not)
     places = len([row_key for row_key, *_ in rows if row_key not in SETUP_OPTION_SAME_PLACE])
     spacing = min(30, (341 - 1 - 73 - 28) // max(1, places - 1)) if fit else 30
@@ -1782,7 +1782,7 @@ def _setup_option_screen(base: str, key: str, rows: list, fit: bool = False) -> 
     lines += _button(f"{base}/{key}_button_ok", 1, ['<on event="a" run="port setup options save" back="true"/>',
                                                      '<on event="start" run="port setup options save" back="true"/>'])
     for index, (row_key, label, strings, _) in enumerate(rows):
-        lines += _widget(f"{base}/op_{row_key}", [("width", 512), ("height", 28),
+        lines += _widget(f"{base}/op_{row_key}", [("width", 512), ("height", min(28, spacing)),
                                                  ("flags", "pass_unhandled_to_focused_child"),
                                                  ("bitmap", "bitmaps/option_bkds"), ("color", "#FF2896FF")],
                          [f'<child widget="{base}/{row_key}_label"/>',
@@ -2200,23 +2200,23 @@ def _vehicle_options_extras() -> list:
     """the host's riding setting, hidden while editing saved gametypes"""
     base = VEHICLE_EDIT
     lines = []
-    for key, label_index, words in (("vehicle_riding", 9, ["ON", "OFF"]),):
-        lines += _widget(f"{base}/op_{key}", [("width", 512), ("height", 28),
-            ("flags", "pass_unhandled_to_focused_child"), ("bitmap", "bitmaps/option_bkds"),
-            ("color", "#FF2896FF")], [f'<child widget="{base}/{key}_label"/>',
-            f'<child widget="{base}/{key}_spinner" x="286" y="1"/>'])
-        lines += _widget(f"{base}/{key}_label", [("type", "text"), ("controller", 1),
-            ("width", 280), ("height", 22), ("string_list", f"{base}/vehicle_options_labels"),
-            ("string_index", label_index), ("font", "ui\\large_ui"), ("color", "#FF2896FF"),
-            ("text_x", 13), ("text_y", 4)], [])
-        lines += _widget(f"{base}/{key}_spinner", [("type", "spinner"), ("top", 2),
-            ("width", 206), ("height", 20), ("flags", "pass_unhandled_to_focused_child left_right_tabs_items"),
-            ("string_list", f"{base}/var_{key}"), ("font", "ui\\large_ui"),
-            ("color", "#FF2896FF"), ("align", "center"), ("text_y", 4),
-            ("list_flags", "items_from_strings"), ("header_bitmap", "bitmaps/arrow_sm_left"),
-            ("footer_bitmap", "bitmaps/arrow_sm_right"), ("header_bounds", "7 -13 19 -7"),
-            ("footer_bounds", "7 208 19 214")], ['<on event="left_mouse" run="mouse spinner 1wide click"/>'])
-        lines += _strings(f"{base}/var_{key}", words)
+    key, label_index, words = "vehicle_riding", 9, ["ON", "OFF"]
+    lines += _widget(f"{base}/op_{key}", [("width", 512), ("height", 28),
+        ("flags", "pass_unhandled_to_focused_child"), ("bitmap", "bitmaps/option_bkds"),
+        ("color", "#FF2896FF")], [f'<child widget="{base}/{key}_label"/>',
+        f'<child widget="{base}/{key}_spinner" x="286" y="1"/>'])
+    lines += _widget(f"{base}/{key}_label", [("type", "text"), ("controller", 1),
+        ("width", 280), ("height", 22), ("string_list", f"{base}/vehicle_options_labels"),
+        ("string_index", label_index), ("font", "ui\\large_ui"), ("color", "#FF2896FF"),
+        ("text_x", 13), ("text_y", 4)], [])
+    lines += _widget(f"{base}/{key}_spinner", [("type", "spinner"), ("top", 2),
+        ("width", 206), ("height", 20), ("flags", "pass_unhandled_to_focused_child left_right_tabs_items"),
+        ("string_list", f"{base}/var_{key}"), ("font", "ui\\large_ui"),
+        ("color", "#FF2896FF"), ("align", "center"), ("text_y", 4),
+        ("list_flags", "items_from_strings"), ("header_bitmap", "bitmaps/arrow_sm_left"),
+        ("footer_bitmap", "bitmaps/arrow_sm_right"), ("header_bounds", "7 -13 19 -7"),
+        ("footer_bounds", "7 208 19 214")], ['<on event="left_mouse" run="mouse spinner 1wide click"/>'])
+    lines += _strings(f"{base}/var_{key}", words)
     return lines
 
 
