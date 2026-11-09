@@ -16,11 +16,11 @@ static int game_in_progress(void) { return playing; }
 static int main_menu_is_active(void) { return menu; }
 static short vehicle_riding_map(void) { return map_value; }
 static void vehicle_riding_map_received(short map) { received = map; }
-struct vehicle_riding_latched { real damage_speed, teleport_step, moved_alone, air_grip; word look_carry, cabin_grace; };
-static struct vehicle_riding_latched latched = { .5f, 6.f, .3f, .2f, 1, 7 }, received_values;
+struct distributed_riding_latched { real damage_speed, teleport_step, moved_alone, air_grip; word look_carry, cabin_grace; };
+static struct distributed_riding_latched latched = { .5f, 6.f, .3f, .2f, 1, 7 }, received_values;
 static int received_count, forgotten;
-static void vehicle_riding_latched_get(struct vehicle_riding_latched *out) { *out = latched; }
-static void vehicle_riding_latched_received(struct vehicle_riding_latched const *in) { received_values = *in; received_count++; }
+static void vehicle_riding_latched_get(struct distributed_riding_latched *out) { *out = latched; }
+static void vehicle_riding_latched_received(struct distributed_riding_latched const *in) { received_values = *in; received_count++; }
 static void vehicle_riding_latched_forget(void) { forgotten++; }
 static void distributed_send(void *data, byte type, int count, word size, int destination)
 {
@@ -34,7 +34,7 @@ static void distributed_send_to_machine_reliably(long machine, void *data, byte 
 #include "under_test.inc"
 static void receive(int from, int value, int count, int size, int reserved)
 {
-    struct riding_map_message m = {{8, _distributed_message_vehicle_riding_map, count, 0}, value, reserved};
+    struct distributed_riding_map_message m = {{8, _distributed_message_vehicle_riding_map, count, 0}, value, reserved};
     m.values = latched;
     network_riding_map_handle_message(from, (word *)&m, size);
 }
@@ -44,24 +44,24 @@ int main(int argc, char **argv)
     char const *case_name = argv[1];
     network_riding_map_reset();
     CASE("replication") {
-        network_riding_map_update(); CHECK(sends == 1 && wire_size == 32 && ((struct riding_map_message *)wire)->map == 0, "none not sent");
+        network_riding_map_update(); CHECK(sends == 1 && wire_size == 32 && ((struct distributed_riding_map_message *)wire)->map == 0, "none not sent");
         network_riding_map_update(); CHECK(sends == 1, "none spam");
-        network_riding_map_send(7); CHECK(sends == 2 && last_machine == 7 && ((struct riding_map_message *)wire)->map == 0, "none late join missing");
+        network_riding_map_send(7); CHECK(sends == 2 && last_machine == 7 && ((struct distributed_riding_map_message *)wire)->map == 0, "none late join missing");
         map_value = TRUE; network_riding_map_update();
-        CHECK(sends == 3 && wire_size == 32 && ((struct riding_map_message *)wire)->map == 2, "on wire layout");
+        CHECK(sends == 3 && wire_size == 32 && ((struct distributed_riding_map_message *)wire)->map == 2, "on wire layout");
         CHECK(network_riding_map_handles_message((word *)wire, wire_size), "dispatch missing");
         CHECK(!network_riding_map_handles_message((word *)wire, 7), "short dispatch");
         network_riding_map_update(); CHECK(sends == 3, "unchanged spam");
         network_riding_map_send(7); CHECK(sends == 4 && last_machine == 7, "late join missing");
         map_value = FALSE; network_riding_map_update();
-        CHECK(sends == 5 && ((struct riding_map_message *)wire)->map == 1 && !((struct riding_map_message *)wire)->reserved, "off wire layout");
+        CHECK(sends == 5 && ((struct distributed_riding_map_message *)wire)->map == 1 && !((struct distributed_riding_map_message *)wire)->reserved, "off wire layout");
         connection = _game_connection_network_client; network_riding_map_update(); network_riding_map_send(7);
         CHECK(sends == 5, "client sent");
         connection = _game_connection_network_server; map_value = TRUE; playing = 0; network_riding_map_update();
         playing = 1; menu = 1; network_riding_map_update(); CHECK(sends == 5, "outside game sent");
     }
     else CASE("values") {
-        struct riding_map_message *m = (struct riding_map_message *)wire;
+        struct distributed_riding_map_message *m = (struct distributed_riding_map_message *)wire;
         network_riding_map_update();
         CHECK(sends == 1 && m->map == 0, "sent only with a map choice");
         CHECK(m->values.damage_speed == .5f && m->values.teleport_step == 6.f && m->values.moved_alone == .3f &&
@@ -90,7 +90,7 @@ int main(int argc, char **argv)
         menu = 0; receive(NONE, 0, 1, 32, 0); CHECK(received == NONE, "none decode");
     }
     else CASE("client-values") {
-        struct riding_map_message m = {{8, _distributed_message_vehicle_riding_map, 1, 0}, 2, 0};
+        struct distributed_riding_map_message m = {{8, _distributed_message_vehicle_riding_map, 1, 0}, 2, 0};
         connection = _game_connection_network_client;
         m.values = latched; m.values.air_grip = .77f;
         network_riding_map_handle_message(NONE, (word *)&m, 32);
@@ -102,7 +102,7 @@ int main(int argc, char **argv)
         CHECK(received_count == 1, "datagram values accepted");
         unreliable = 0; connection = _game_connection_network_server; network_riding_map_handle_message(NONE, (word *)&m, 32);
         CHECK(received_count == 1, "host took values");
-        connection = _game_connection_network_client; network_riding_map_reset();
+        connection = _game_connection_network_client; forgotten = 0; network_riding_map_reset();
         CHECK(forgotten == 1, "host values kept past the game");
     }
     else CASE("reset") {

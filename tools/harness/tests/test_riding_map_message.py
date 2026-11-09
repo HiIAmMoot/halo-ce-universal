@@ -10,8 +10,13 @@ from harness import CHECK_FAILED, build, mutated, read, run
 from test_aim_assist import message_ids
 
 CONTROLS = {'authority': ('machine_index != NONE ||', 'FALSE ||', 'admission'),
-            'send-none': ('map == NONE', 'FALSE', 'replication'),
-            'unchanged-spam': ('sent_map == map', 'FALSE', 'replication')}
+            'send-needs-map': ('if (!sent ||', 'if (vehicle_riding_map() != NONE) if (!sent ||', 'replication'),
+            'unchanged-spam': ('!sent || sent_map != vehicle_riding_map() ||', 'TRUE ||', 'replication'),
+            'values-not-resent': (' || memcmp(&sent_values, &message.values, sizeof(sent_values))', '', 'values'),
+            'values-not-filled': ('vehicle_riding_latched_get(&message->values);', '', 'values'),
+            'values-not-handed-on': ('vehicle_riding_latched_received(&message.values);', '', 'client-values'),
+            'bad-look-carry-accepted': (' || message.values.look_carry > 1', '', 'client-values'),
+            'host-values-kept': ('vehicle_riding_latched_forget();', '', 'client-values')}
 
 
 def generated(fault=None):

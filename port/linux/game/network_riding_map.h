@@ -1,4 +1,4 @@
-/* The map's riding choice, from the host to every client. */
+/* The map's riding choice and the host's latched riding values, from the host to every client. */
 #ifndef NETWORK_RIDING_MAP_H
 #define NETWORK_RIDING_MAP_H
 

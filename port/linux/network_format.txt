@@ -307,6 +307,8 @@ struct distributed_pings_message 35c6009dee29
 struct distributed_player_input a0cf65a1197c
 struct distributed_player_ping 377e0e3045f4
 struct distributed_player_statistics 2a44afb8f96c
+struct distributed_riding_latched 3d13fb412582
+struct distributed_riding_map_message 01a360e89e36
 struct distributed_statistics_message 79134e6e9811
 struct distributed_structure_bsp 53f7d5067cc9
 struct distributed_structure_bsp_message 096278a05681

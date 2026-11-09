@@ -12,6 +12,7 @@ tests: the physical proof is the live run.
 */
 
 #include "harness.h"
+typedef unsigned short word;
 #include <math.h>
 typedef struct { real i, j; } real_vector2d;
 #include "enums.inc"

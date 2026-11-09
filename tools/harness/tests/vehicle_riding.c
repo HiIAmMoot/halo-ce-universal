@@ -8,6 +8,7 @@ code (under_test.inc) and the enums (enums.inc) from the sources.
 */
 
 #include "harness.h"
+typedef unsigned short word;
 #include <math.h>
 /* (the airborne branch's 2d maths, engine.inc) */
 typedef struct { real i, j; } real_vector2d;
@@ -797,13 +798,13 @@ int main(int argc, char **argv)
 
 	if (!strncmp(case_name, "host-", 5))
 	{
-		struct vehicle_riding_latched own, got;
-		struct vehicle_riding_latched host = { .5f, 7.f, .6f, .2f, 0, 2 };
+		struct distributed_riding_latched own, got;
+		struct distributed_riding_latched host = { .5f, 7.f, .6f, .2f, 0, 2 };
 
 		setting_damage_speed = .1; setting_teleport_step = 3.0; setting_moved_alone = .4; setting_air_grip = .3;
 		setting_look_carry = 1; setting_grace = 9.0;
-		vehicle_riding_latch();
 		connection = _game_connection_network_client;
+		vehicle_riding_latch();
 		CASE("host-values-win") {
 			vehicle_riding_latched_get(&own);
 			CHECK(own.air_grip == .3f && own.cabin_grace == 9 && own.look_carry == 1, "own values lost before the message");

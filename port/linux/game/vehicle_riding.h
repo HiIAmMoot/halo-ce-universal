@@ -356,6 +356,21 @@ void vehicle_riding_map_reset(void);
 void vehicle_riding_map_script(boolean on);
 short vehicle_riding_map(void);
 void vehicle_riding_map_received(short map);
+/* the latched debug.riding_ values the host sends its clients (the leash
+stays the host's own) */
+struct distributed_riding_latched
+{
+	real damage_speed;
+	real teleport_step;
+	real moved_alone;
+	real air_grip;
+	word look_carry;
+	word cabin_grace;
+};
+void vehicle_riding_latched_get(struct distributed_riding_latched *latched);
+/* a client takes the host's values for this game, through the latch's checks */
+void vehicle_riding_latched_received(struct distributed_riding_latched const *host);
+void vehicle_riding_latched_forget(void);
 void vehicle_riding_map_start(void);
 /* whether a biped rides at all: a living player's, riding on */
 boolean vehicle_riding_applies(boolean has_player, boolean dead);

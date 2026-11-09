@@ -384,11 +384,17 @@ second at most) after the re-board, also only in the test. None of this adds
 a byte: the cabin bit (bit 3 of the flags) is the only change to the deck part,
 which stays 28 bytes, and the version stays 42.
 
-The map's riding choice (its boolean `vehicle_riding` global or startup
-call) is message 96, sent reliably by the host to every client when the map
-sets it and to a late joiner at its ready, never while the map has not set
-it. A client prefers it to the cooperative bit. It ships with the rest of
-version 42, which stays 42.
+Message 96 carries the host's riding rules: the map's choice (its boolean
+`vehicle_riding` global or startup call; none when the map makes none) and
+the host's latched `debug.riding_` values (damage speed, teleport step, moved
+alone, air grip, look carry, enclosure grace ticks; not the transition
+leash, which only the host uses). The host sends it reliably to every client
+at each map start, again when either changes, and to a late joiner at its
+ready. A client prefers the choice to the cooperative bit and takes the
+values over its own config (clamped as its own latch clamps them) until the
+next game; before the message it keeps its own. The values are the latched
+ones, so a config change on the host waits for the next map. It ships with
+the rest of version 42, which stays 42.
 
 `port/linux/network_format.txt` records the wire format of the current
 version (`tools/network_format.py`): `test_linux_port.py` fails when the

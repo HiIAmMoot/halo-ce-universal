@@ -91,6 +91,10 @@ static real riding_transition_leash = 0.25f;
 static real riding_air_grip = .045f;
 static short riding_step_refusal;
 static short riding_cabin_grace = RIDING_CABIN_GRACE;
+/* the host's values a client holds for this game; a latch puts them back over
+its own config */
+static boolean riding_host_held;
+static struct distributed_riding_latched riding_host_values;
 
 /* each local player's view turn by its vehicle this tick, for the direct
 camera (render_interpolation.c) */
@@ -453,6 +457,61 @@ boolean vehicle_riding_claim_grace(
 	return TRUE;
 }
 
+static void riding_latch_grace(double grace)
+{
+	/* (player ticks: not a number is the default, a fraction cut off, then
+	held to the range) */
+	/* (not isfinite: the Linux build's math.h has no such macro, so it would
+	be an undefined function) */
+	if (!(grace == grace && grace - grace == 0.))
+		riding_cabin_grace = RIDING_CABIN_GRACE;
+	else if (grace <= 0.)
+		riding_cabin_grace = 0;
+	else if (grace >= (double)RIDING_CABIN_GRACE_MAXIMUM)
+		riding_cabin_grace = RIDING_CABIN_GRACE_MAXIMUM;
+	else
+		riding_cabin_grace = (short)grace;
+}
+
+void vehicle_riding_latched_get(
+	struct distributed_riding_latched *latched)
+{
+	latched->damage_speed = riding_damage_speed;
+	latched->teleport_step = riding_teleport_step;
+	latched->moved_alone = riding_moved_alone;
+	latched->air_grip = riding_air_grip;
+	latched->look_carry = riding_look_carry != FALSE;
+	latched->cabin_grace = (word)riding_cabin_grace;
+}
+
+static void riding_take_host_values(
+	struct distributed_riding_latched const *host)
+{
+	/* (a value off the wire is held to what its config would be: no number,
+	infinite or negative falls back to the default, and the grip to none) */
+	riding_damage_speed = valid_real(host->damage_speed) && host->damage_speed >= 0.f ? host->damage_speed : 0.f;
+	riding_teleport_step = valid_real(host->teleport_step) && host->teleport_step >= 0.f ? host->teleport_step : 4.f;
+	riding_moved_alone = valid_real(host->moved_alone) && host->moved_alone >= 0.f ? host->moved_alone : 0.25f;
+	riding_air_grip = valid_real(host->air_grip) && host->air_grip >= 0.f ? host->air_grip : 0.f;
+	riding_look_carry = host->look_carry != 0;
+	riding_latch_grace((double)host->cabin_grace);
+}
+
+void vehicle_riding_latched_received(
+	struct distributed_riding_latched const *host)
+{
+	if (game_connection() != _game_connection_network_client)
+		return;
+	riding_host_values = *host;
+	riding_host_held = TRUE;
+	riding_take_host_values(host);
+}
+
+void vehicle_riding_latched_forget(void)
+{
+	riding_host_held = FALSE;
+}
+
 boolean vehicle_riding_latch(
 	void)
 {
@@ -478,18 +537,10 @@ boolean vehicle_riding_latch(
 	if (!(riding_air_grip >= 0.f))
 		riding_air_grip = 0.f;
 	grace = config_real("debug.riding_enclosure_grace_ticks");
-	/* (player ticks: not a number is the default, a fraction cut off, then
-	held to the range) */
-	/* (not isfinite: the Linux build's math.h has no such macro, so it would
-	be an undefined function) */
-	if (!(grace == grace && grace - grace == 0.))
-		riding_cabin_grace = RIDING_CABIN_GRACE;
-	else if (grace <= 0.)
-		riding_cabin_grace = 0;
-	else if (grace >= (double)RIDING_CABIN_GRACE_MAXIMUM)
-		riding_cabin_grace = RIDING_CABIN_GRACE_MAXIMUM;
-	else
-		riding_cabin_grace = (short)grace;
+	riding_latch_grace(grace);
+	/* (a client's latch after the host's message keeps the host's values) */
+	if (riding_host_held && game_connection() == _game_connection_network_client)
+		riding_take_host_values(&riding_host_values);
 	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
 	{
 		riding_kept_dyaws[local_player_index] = 0.f;
