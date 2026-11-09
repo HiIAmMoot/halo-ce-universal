@@ -505,6 +505,9 @@ void vehicle_riding_latched_received(
 	riding_host_values = *host;
 	riding_host_held = TRUE;
 	riding_take_host_values(host);
+	/* (the one line a run shows the client rides by the host's calibration) */
+	error(_error_silent, "vehicle riding: values from the host: air grip %f, damage speed %f, teleport step %f, moved alone %f, look carry %d, enclosure grace %d",
+		riding_air_grip, riding_damage_speed, riding_teleport_step, riding_moved_alone, riding_look_carry != FALSE, (int)riding_cabin_grace);
 }
 
 void vehicle_riding_latched_forget(void)
