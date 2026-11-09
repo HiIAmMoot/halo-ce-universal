@@ -393,7 +393,9 @@ at each map start, again when either changes, and to a late joiner at its
 ready. A client prefers the choice to the cooperative bit and takes the
 values over its own config (clamped as its own latch clamps them) until the
 next game; before the message it keeps its own. The values are the latched
-ones, so a config change on the host waits for the next map. It ships with
+ones, so a config change on the host waits for the next map; a co-op host's
+revert or saved-game load reads the config again, and the new values are
+sent again then. It ships with
 the rest of version 42, which stays 42.
 
 `port/linux/network_format.txt` records the wire format of the current

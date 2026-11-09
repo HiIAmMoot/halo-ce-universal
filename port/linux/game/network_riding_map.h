@@ -2,6 +2,8 @@
 #ifndef NETWORK_RIDING_MAP_H
 #define NETWORK_RIDING_MAP_H
 
+#include "cseries.h"
+
 void network_riding_map_reset(void);
 void network_riding_map_send(long machine_index);
 void network_riding_map_update(void);

@@ -347,8 +347,8 @@ enum vehicle_riding_settle
 /* the settings, taken at a map's start, a game's start and every load;
 whether riding is on */
 boolean vehicle_riding_latch(void);
-/* the latched setting in a local game, the host's switch in a network
-game; never in film playback or the editor */
+/* the map's choice where it made one, else the latched setting in a local
+game or the host's switch in a network game; never in film playback or the editor */
 boolean vehicle_riding_enabled(void);
 /* the map's choice, saved with the game and authoritative on the host */
 void vehicle_riding_map_initialize(void);
