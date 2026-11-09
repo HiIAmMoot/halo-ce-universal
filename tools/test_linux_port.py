@@ -1609,6 +1609,13 @@ def riding_script_function_check(text):
     assert 'vehicle_riding_map_reset();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_reset')
     assert 'vehicle_riding_map_initialize();' in riding_function(text['vbipeds'], 'vehicle_riding_objects_initialize')
     assert 'network_riding_map_update();' in text['main']
+    new_game = riding_function(text['network'], 'network_distributed_new_game')
+    assert 'network_riding_map_reset();' in new_game
+    handler = riding_function(text['network'], 'network_distributed_handle_message')
+    assert 'network_riding_map_handle_message(machine_index, message, size);' in handler
+    assert handler.index('network_riding_map_handles_message(message, size)') < handler.index('network_shield_effects_handles_message(message, size)')
+    ready = handler[handler.index("case _distributed_message_client_ready:\n\t{"):]
+    assert 'network_riding_map_send(machine_index);' in ready[:ready.index('break;')]
     pulse = riding_function(text['game'], 'game_initial_pulse')
     assert 'vehicle_riding_map_start();' in pulse and 'bipeds_riding_latch();' in pulse
     assert pulse.index('vehicle_riding_map_start();') < pulse.index('bipeds_riding_latch();')
@@ -1623,6 +1630,10 @@ RIDING_CHECKS['script-function'] = riding_script_function_check
 RIDING_CONTROLS.update({
     'script-not-allowed': ('hs', None, 'TRUE, /* vehicle_riding */', 'FALSE, /* vehicle_riding */', 'script-function'),
     'script-not-last': ('hs', None, '\t\t&vehicle_riding_definition.definition,\n', '', 'script-function'),
+    'riding-main-update-unwired': ('main', None, 'network_riding_map_update();', '', 'script-function'),
+    'riding-new-game-reset-unwired': ('network', 'network_distributed_new_game', 'network_riding_map_reset();', '', 'script-function'),
+    'riding-dispatch-unwired': ('network', 'network_distributed_handle_message', 'network_riding_map_handle_message(machine_index, message, size);', '', 'script-function'),
+    'riding-client-ready-unsent': ('network', 'network_distributed_handle_message', 'network_riding_map_send(machine_index);', '', 'script-function'),
     'script-map-reset-unwired': ('vbipeds', 'vehicle_riding_objects_reset', 'vehicle_riding_map_reset();', '', 'script-function'),
     'global-read-after-latch': ('game', 'game_initial_pulse', 'vehicle_riding_map_start();\n\tbipeds_riding_latch();',
                               'bipeds_riding_latch();\n\tvehicle_riding_map_start();', 'script-function'),
