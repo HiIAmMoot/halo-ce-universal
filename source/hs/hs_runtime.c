@@ -990,7 +990,8 @@ short hs_runtime_port_scenario_boolean(
 		hs_global_get_type(designator)!=_hs_type_boolean || hs_scenario_global_initializer_disabled(designator))
 		return NONE;
 
-	return hs_global_evaluate(designator)!=FALSE;
+	/* (a boolean is its low byte, as the engine reads it: the global's value is a whole long) */
+	return (boolean)hs_global_evaluate(designator)!=FALSE;
 }
 
 char const *hs_runtime_get_executing_thread_name(
